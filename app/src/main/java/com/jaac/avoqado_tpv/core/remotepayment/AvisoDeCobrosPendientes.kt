@@ -150,7 +150,10 @@ object AvisoDeCobrosPendientes {
      */
     fun barreraDeLaLibreta(
         apartaLaVenta: String?, apartaElAparato: String?, laVentaYaCobrada: Boolean = false,
-        /** F1-textos (catálogo D5, fila 17 ⚙): la fila que cerca la venta es de un cobro del POS (se suelta sola al techo). */
+        /**
+         * F1-textos (catálogo D5, fila 17 ⚙): la fila que cerca la venta es la duda de un cobro del POS que el techo suelta sola
+         * (`PaymentAttemptLedger.seSueltaSolaAlTecho`); con dinero en juego llega false y va la frase general.
+         */
         laVentaLaApartaUnCobroDelPos: Boolean = false,
     ): String = when {
         // Decisión del founder (23-sep): un cobro que SÍ pasó se resuelve con el «Entendido» del aviso, no en otra terminal.

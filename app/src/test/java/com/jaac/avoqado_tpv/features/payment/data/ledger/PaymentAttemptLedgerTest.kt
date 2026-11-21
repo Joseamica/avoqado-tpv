@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.payment.data.ledger
 
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentLedgerMode
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
@@ -335,6 +336,72 @@ class PaymentAttemptLedgerTest {
         assertThat(motivo).isEqualTo(
             "Esta cuenta tiene una tarjeta por confirmar (\$120.00, hace 2 min). No se inició otro cobro. " +
                 "Se libera sola a los 5 min o con el gerente.")
+    }
+
+    // ── F1-textos: «se libera sola a los 5 min» SÓLO si el techo de verdad la suelta ──────────────────────────────
+    // Una fila del POS también frena por DINERO EN JUEGO (`SQL_CERCA_LA_VENTA`), y eso no lo suelta el tiempo ni el gerente.
+
+    private fun delPos(estado: String = PaymentAttemptEntity.STATE_INDETERMINADO) =
+        fila("otro", 12000, 0L).copy(state = estado, terminalPaymentRequestId = "req-del-pos")
+
+    /** (caso, la fila que frena, ¿la suelta sola el techo?) */
+    private fun casosDelTecho() = listOf(
+        Triple("POS INDETERMINADO limpia", delPos(), true),
+        Triple("POS con veto del servidor", delPos().copy(serverVeto = PaymentAttemptEntity.VETO_EVIDENCE_CONTRADICTION), false),
+        Triple("POS con el cobro corriendo", delPos(PaymentAttemptEntity.STATE_AUTORIZANDO), false),
+        Triple("POS DESCARTADA con aprobado del banco", delPos(PaymentAttemptEntity.STATE_DESCARTADA).copy(hostApproved = true), false),
+        Triple(
+            "POS soltada con marca del historial y sin dinero",
+            delPos(PaymentAttemptEntity.STATE_DESCARTADA).copy(
+                historyReadAt = 1L, serverOutcome = PaymentAttemptEntity.SERVER_RELEASED_NO_EVIDENCE,
+                lastError = PaymentAttemptEntity.LAST_ERROR_LIBERADA_PREFIX + "NO_EVIDENCE_AFTER_WINDOW",
+            ),
+            true,
+        ),
+        Triple("POS con evidencia APPROVED del servidor",
+            delPos().copy(serverProcessorEvidence = PaymentAttemptEntity.SERVER_PROCESSOR_EVIDENCE_APPROVED), false),
+        Triple("POS con server_outcome de dinero", delPos().copy(serverOutcome = PaymentAttemptEntity.SERVER_PENDING_EVIDENCE), false),
+        Triple("POS con el chip rechazando tras aprobar", delPos().copy(lastError = PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION), false),
+        Triple("POS en cuarentena por reloj de ESTE proceso",
+            delPos().copy(lastError = PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD, processToken = ledger.tokenDelProceso()), false),
+        Triple("POS en cuarentena por reloj de un proceso muerto",
+            delPos().copy(lastError = PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD, processToken = "otro-proceso"), true),
+        Triple("terminal sola", fila("otro", 12000, 0L), false),
+    )
+
+    @Test
+    fun `F1-textos fila 17 la barrera promete los 5 min solo si el techo suelta la fila que cerca`() = runTest {
+        coEvery { dao.findTerminalHold(any()) } returns null
+        for ((caso, cerca, seSuelta) in casosDelTecho()) {
+            coEvery { dao.otraCercaDeLaTarjeta(any(), any(), any()) } returns cerca
+
+            val motivo = ledger.motivoDeLaBarrera(orderId = "order-1", attemptIdPropio = "mio", ahoraMillis = 120_000L)
+
+            if (seSuelta) assertWithMessage(caso).that(motivo).contains("Se libera sola a los 5 min o con el gerente.")
+            else {
+                assertWithMessage(caso).that(motivo).doesNotContain("5 min")
+                assertWithMessage(caso).that(motivo).contains("Avísale al gerente.")
+            }
+        }
+    }
+
+    @Test
+    fun `F1-textos filas 4 y 5 lo que frena el resuelto promete los 5 min solo si el techo suelta la fila`() = runTest {
+        for ((caso, frena, seSuelta) in casosDelTecho()) {
+            coEvery { dao.filaQueFrenaLaTarjetaDelCobro(any(), any(), any(), any()) } returns frena
+
+            val freno = ledger.loQueFrenaElResuelto(attemptId = null, requestId = null)!!
+            val texto = freno.textoSegunElFlujo
+
+            // Un solo predicado para los dos lugares: el que lleva el freno es el mismo que contesta la libreta.
+            assertWithMessage(caso).that(ledger.seSueltaSolaAlTecho(frena)).isEqualTo(seSuelta)
+            assertWithMessage(caso).that(freno.seSueltaSolaAlTecho).isEqualTo(seSuelta)
+            if (seSuelta) assertWithMessage(caso).that(texto).contains("Se libera sola a los 5 min")
+            else {
+                assertWithMessage(caso).that(texto).doesNotContain("5 min")
+                assertWithMessage(caso).that(texto).contains("Avísale al gerente.")
+            }
+        }
     }
 
     @Test

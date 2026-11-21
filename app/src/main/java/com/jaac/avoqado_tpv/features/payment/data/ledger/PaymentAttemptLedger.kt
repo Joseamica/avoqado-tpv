@@ -195,6 +195,25 @@ class PaymentAttemptLedger(
             fila.serverOutcome in PaymentAttemptEntity.SERVER_OUTCOMES_CON_DINERO || fila.state in ESTADOS_CON_DINERO
 
     /**
+     * F1-textos (catálogo D5, filas 4, 5 y 17 ⚙): ¿la fila que frena es la DUDA de un cobro del POS que el techo
+     * ([PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS]) suelta sola? Sólo entonces es verdad «se libera sola a los 5 min». Una fila del
+     * POS también frena por dinero en juego ([PaymentAttemptEntity.SQL_CERCA_LA_VENTA]), que no lo suelta el tiempo ni el gerente: es la
+     * negación de esa cerca, cláusula por cláusula. Ante la duda, false (la frase general). Sólo escoge texto; no decide ningún freno.
+     */
+    fun seSueltaSolaAlTecho(fila: PaymentAttemptEntity?): Boolean =
+        fila != null && !fila.terminalPaymentRequestId.isNullOrBlank() &&
+            // Un cobro corriendo o respondido (PREPARANDO … REGISTRO_FALLIDO): sólo una duda o una soltada pueden ser duda pura.
+            (fila.state == PaymentAttemptEntity.STATE_INDETERMINADO || fila.state == PaymentAttemptEntity.STATE_DESCARTADA) &&
+            // host_approved, evidencia APPROVED, server_outcome con dinero (y, de más, Payment o aprobado sólo en memoria).
+            !tieneDinero(fila) &&
+            // server_veto IS NOT NULL: también uno vacío, que [tieneDinero] no cuenta.
+            fila.serverVeto == null &&
+            // El chip rechazó tras aprobar: escrito o todavía sólo en memoria.
+            fila.lastError != PaymentAttemptEntity.MOTIVO_CHIP_RECHAZO_TRAS_APROBACION && fila.attemptId !in chipRechazoSinEscribir &&
+            // La cuarentena por reloj de ESTE proceso (la llamada pudo seguir viva).
+            !(fila.lastError == PaymentAttemptEntity.CUARENTENA_POR_ANTIGUEDAD && fila.processToken == processToken)
+
+    /**
      * 🔴 Familia «el texto miente sobre el dinero» (Codex final r2 #2 y #3): el ÚNICO predicado del que salen todos los «ya se puede
      * volver a cobrar», «ya se resolvió / ya no está por revisar» y «declaración guardada» (PAX y N86). null = se puede decir. Lo impide:
      *  1. [FrenoDelResuelto.DINERO]: CUALQUIER intento de la solicitud (Reintentar crea varios; [PaymentAttemptDao.intentosDeLaSolicitud],
@@ -211,7 +230,12 @@ class PaymentAttemptLedger(
             if (conDinero != null) return@withContext LoQueFrenaElResuelto(FrenoDelResuelto.DINERO, conDinero)
             val cuenta = filas.firstNotNullOfOrNull(::cuentaDe) ?: requestId?.let { dao.cuentaDeLaSolicitud(it) }?.takeIf { it.isNotEmpty() }
             dao.filaQueFrenaLaTarjetaDelCobro(attemptId, requestId, cuenta?.let { "\"orderId\":" + com.google.gson.Gson().toJson(it) }, processToken)
-                ?.let { LoQueFrenaElResuelto(if (it.historyReadAt != null) FrenoDelResuelto.HISTORIAL_PENDIENTE else FrenoDelResuelto.TARJETA_FRENADA, it) }
+                ?.let {
+                    LoQueFrenaElResuelto(
+                        if (it.historyReadAt != null) FrenoDelResuelto.HISTORIAL_PENDIENTE else FrenoDelResuelto.TARJETA_FRENADA, it,
+                        seSueltaSolaAlTecho = seSueltaSolaAlTecho(it),
+                    )
+                }
         }
     } catch (cancelled: kotlinx.coroutines.CancellationException) {
         throw cancelled
@@ -1669,8 +1693,9 @@ class PaymentAttemptLedger(
         return AvisoDeCobrosPendientes.barreraDeLaLibreta(
             laVenta, elAparato,
             laVentaYaCobrada = laVenta != null && filaVenta != null && esCobroPorReconocer(filaVenta),
-            // F1-textos (catálogo D5, fila 17 ⚙): la fila que cerca ya está a la mano; con solicitud es un cobro del POS.
-            laVentaLaApartaUnCobroDelPos = !filaVenta?.terminalPaymentRequestId.isNullOrBlank(),
+            // F1-textos (catálogo D5, fila 17 ⚙): la fila que cerca ya está a la mano; «se libera sola» sólo si es la duda de un
+            // cobro del POS que el techo suelta (con dinero en juego, la frase general).
+            laVentaLaApartaUnCobroDelPos = seSueltaSolaAlTecho(filaVenta),
         )
     }
 
@@ -1886,10 +1911,15 @@ enum class FrenoDelResuelto(
     ),
     ;
 
-    /** F1-textos (⚙ filas 4 y 5): la frase según el flujo de la fila que frena; sin fila, la que vale para los dos. */
-    fun textoSegun(fila: PaymentAttemptEntity?): String = when {
+    /**
+     * F1-textos (⚙ filas 4 y 5): la frase según la fila que frena; sin fila, la que vale para los dos. «Se libera sola» sólo si la
+     * libreta comprobó que el techo la suelta ([PaymentAttemptLedger.seSueltaSolaAlTecho]); una fila del POS con dinero en juego
+     * lleva la general.
+     */
+    fun textoSegun(fila: PaymentAttemptEntity?, seSueltaSolaAlTecho: Boolean = false): String = when {
         fila == null -> texto
-        !fila.terminalPaymentRequestId.isNullOrBlank() -> delPos
+        seSueltaSolaAlTecho -> delPos
+        !fila.terminalPaymentRequestId.isNullOrBlank() -> texto
         else -> local
     }
 }
@@ -1910,10 +1940,17 @@ const val FALTA_CONFIRMAR_LA_REVISION =
 /** F1-textos: «5 min», leído del techo de la duda de un cobro del POS, nunca escrito a mano. */
 internal val MINUTOS_DEL_TECHO: String = "${PaymentAttemptEntity.TECHO_DE_LA_DUDA_DEL_POS_MS / 60_000} min"
 
-/** [fila] = la que lo impide (null si la libreta no se pudo leer: se falla cerrado). */
-data class LoQueFrenaElResuelto(val freno: FrenoDelResuelto, val fila: PaymentAttemptEntity?) {
-    /** F1-textos (⚙ filas 4 y 5): lo que se dice, según si la fila que frena es de un cobro del POS o de la terminal sola. */
-    val textoSegunElFlujo: String get() = freno.textoSegun(fila)
+/**
+ * [fila] = la que lo impide (null si la libreta no se pudo leer: se falla cerrado). [seSueltaSolaAlTecho] lo calcula la libreta al
+ * crearlo ([PaymentAttemptLedger.seSueltaSolaAlTecho]); false = no se promete que se suelte sola.
+ */
+data class LoQueFrenaElResuelto(
+    val freno: FrenoDelResuelto,
+    val fila: PaymentAttemptEntity?,
+    val seSueltaSolaAlTecho: Boolean = false,
+) {
+    /** F1-textos (⚙ filas 4 y 5): lo que se dice, según si la fila que frena se suelta sola al techo, es del POS o de la terminal sola. */
+    val textoSegunElFlujo: String get() = freno.textoSegun(fila, seSueltaSolaAlTecho)
 }
 
 /** D13: los estados en que la respuesta del banco todavía cabe por su propio CAS ([PaymentAttemptLedger.markHostResponded]). */

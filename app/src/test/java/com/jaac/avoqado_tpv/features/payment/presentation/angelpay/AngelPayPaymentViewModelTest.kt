@@ -4381,7 +4381,7 @@ class AngelPayPaymentViewModelTest {
         coEvery { paymentAttemptLedger.leerIntento(any()) } returns null andThen fila
         coEvery { paymentAttemptLedger.loQueFrenaElResuelto(any(), any()) } returns
             com.jaac.avoqado_tpv.features.payment.data.ledger.LoQueFrenaElResuelto(
-                com.jaac.avoqado_tpv.features.payment.data.ledger.FrenoDelResuelto.HISTORIAL_PENDIENTE, fila,
+                com.jaac.avoqado_tpv.features.payment.data.ledger.FrenoDelResuelto.HISTORIAL_PENDIENTE, fila, seSueltaSolaAlTecho = true,
             )
         val vm = vmConCobroDelPos("REQ-H2")
         try {

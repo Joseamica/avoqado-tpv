@@ -26,7 +26,6 @@ import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
-import com.jaac.avoqado_tpv.core.presentation.screens.avisoDePagadosEnElBloqueo
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
 import com.jaac.avoqado_tpv.core.receivers.AppUpdateReceiver
@@ -50,7 +49,6 @@ import com.jaac.avoqado_tpv.features.verification.presentation.components.ACTION
 import com.jaac.avoqado_tpv.features.verification.presentation.components.CameraState
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
@@ -102,10 +100,6 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var maintenanceManager: MaintenanceManager
-
-    /** D661 (Ruling 68): la pantalla de bloqueo dice si suena un pedido pagado en línea (la banda queda debajo del bloqueo). */
-    @Inject
-    lateinit var vigiaDeFolios: com.jaac.avoqado_tpv.features.onlineorders.data.VigiaDeFolios
 
     /**
      * Injected so we can evict stale HTTP/2 connections when the activity comes
@@ -209,15 +203,6 @@ class MainActivity : ComponentActivity() {
 
                 // 🔒 ROOT-LEVEL Lock/Maintenance state - covers ALL screens
                 val isLocked by lockScreenManager.isLocked.collectAsStateWithLifecycle()
-                // D661 (Ruling 68): estados, no valores: sólo el bloqueo los lee (su reloj no recompone la app entera).
-                val foliosDelBloqueo = vigiaDeFolios.estado.collectAsStateWithLifecycle()
-                val relojDelBloqueo = produceState(System.currentTimeMillis(), isLocked) {
-                    value = System.currentTimeMillis()
-                    while (isLocked) {
-                        delay(15_000)
-                        value = System.currentTimeMillis()
-                    }
-                }
                 val lockReason by lockScreenManager.lockReason.collectAsStateWithLifecycle()
                 val lockMessage by lockScreenManager.lockMessage.collectAsStateWithLifecycle()
                 val lockedBy by lockScreenManager.lockedBy.collectAsStateWithLifecycle()
@@ -277,8 +262,7 @@ class MainActivity : ComponentActivity() {
                         visible = isLocked,
                         lockReason = lockReason,
                         lockMessage = lockMessage,
-                        lockedBy = lockedBy,
-                        avisoDePagados = { avisoDePagadosEnElBloqueo(foliosDelBloqueo.value, relojDelBloqueo.value) },
+                        lockedBy = lockedBy
                     )
                 }
             }

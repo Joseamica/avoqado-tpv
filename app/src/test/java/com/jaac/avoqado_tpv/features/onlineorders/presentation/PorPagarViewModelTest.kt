@@ -27,8 +27,10 @@ import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder
 import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
+import io.mockk.clearMocks
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -1359,15 +1361,41 @@ class PorPagarViewModelTest {
     }
 
     @Test
-    fun `Ruling 69 al abrirlo aqui el vigia lo sabe para avisar si su comanda no sale`() = runTest {
+    fun `Ruling 69 el vigia sabe que esta caja lo abrio ANTES de mandarlo - tambien si la respuesta se pierde, es un 5xx o se confirma`() =
+        runTest {
+            val desenlaces = listOf<Result<Unit>>(
+                Result.success(Unit),
+                Result.failure(IOException("sin red")),
+                Result.failure(BackendHttpException(503, "Servicio no disponible")),
+                Result.failure(
+                    BackendHttpException(409, "Confirmando el pago con el banco.", errorCode = "ONLINE_ORDER_CONFIRMING_PAYMENT"),
+                ),
+            )
+            for (desenlace in desenlaces) {
+                clearMocks(vigia, folios, answers = false)
+                val t1 = tarjeta("t1", folio = "T-0042")
+                conTarjetas(t1)
+                coEvery { folios.aceptar("v1", "t1", true) } returns desenlace
+                val vm = vm()
+
+                vm.abrirYCobrar(t1)
+
+                // Antes de mandarlo: el aviso sólo sale si después el SERVIDOR lista su comanda (un pedido que no se abrió, nunca).
+                coVerifyOrder {
+                    vigia.abiertoAqui("t1", "T-0042")
+                    folios.aceptar("v1", "t1", true)
+                }
+            }
+        }
+
+    @Test
+    fun `Ruling 69 sin permiso no se manda ni se anota`() = runTest {
         val t1 = tarjeta("t1", folio = "T-0042")
         conTarjetas(t1)
-        coEvery { folios.aceptar("v1", "t1", true) } returns Result.success(Unit)
-        val vm = vm()
+        coEvery { permisos.hasPermission("orders:update") } returns false
+        vm().abrirYCobrar(t1)
 
-        vm.abrirYCobrar(t1)
-
-        verify(exactly = 1) { vigia.abiertoAqui("t1", "T-0042") }
+        verify(exactly = 0) { vigia.abiertoAqui(any(), any()) }
     }
 
     @Test

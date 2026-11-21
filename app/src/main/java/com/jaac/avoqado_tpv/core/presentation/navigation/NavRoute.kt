@@ -391,9 +391,18 @@ sealed class NavRoute(val route: String) {
         }
 
         /**
-         * D661 (Ruling 68): la banda de los pedidos pagados en línea sale en TODA pantalla de la app, menos en el cobro con
-         * tarjeta: ahí el lector es dueño de la pantalla (el timbre sigue). La pantalla de bloqueo de la app lo dice aparte.
+         * D661 (Ruling 68, enmendado): donde la cajera NO puede usar la terminal, ni hay banda de los pedidos pagados en línea ni
+         * la caja se anuncia como «puedo avisar»: antes de la sesión (arranque, activación, entrada, checador) y el kiosco (legacy).
+         * El bloqueo y el mantenimiento de la app cuentan igual, pero no son rutas: los mira el vigía.
          */
-        val RUTAS_SIN_AVISO_DE_PAGADOS_EN_LINEA: Set<String> by lazy { setOf(Payment.route, AngelPayPayment.route) }
+        val RUTAS_SIN_AVISO_DE_PAGADOS_EN_LINEA: Set<String> by lazy {
+            setOf(
+                Splash.route, Activation.route, Login.route, Timeclock.route,
+                KioskWelcome.route, KioskMenu.route, KioskCart.route, KioskSuccess.route,
+            )
+        }
+
+        /** D661 (Ruling 68, enmendado): el cobro con tarjeta. Ahí la banda se esconde sólo MIENTRAS hay una venta en curso. */
+        val RUTAS_DEL_COBRO_CON_TARJETA: Set<String> by lazy { setOf(Payment.route, AngelPayPayment.route) }
     }
 }

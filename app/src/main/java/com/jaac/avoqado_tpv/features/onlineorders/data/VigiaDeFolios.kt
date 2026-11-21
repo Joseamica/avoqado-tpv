@@ -1,9 +1,12 @@
 package com.jaac.avoqado_tpv.features.onlineorders.data
 
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
+import com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result as AppResult
+import com.jaac.avoqado_tpv.core.presentation.screens.avisoALaVista
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaPorImprimir
 import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
@@ -11,6 +14,7 @@ import com.jaac.avoqado_tpv.features.onlineorders.domain.Folio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.PaginaDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.SeccionDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.tarjetasQueAvisan
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import com.jaac.avoqado_tpv.features.shift.presentation.CachedShiftInfo
@@ -51,12 +55,12 @@ import javax.inject.Singleton
  * **D661 · pagados con tarjeta en línea («No, entran solos»).** Mientras el SERVIDOR diga que hay uno por abrir (`tarjetasPorAbrir`),
  * la terminal suena cada [REPETIR_TIMBRE_MS], sólo con una lectura en vivo ([tarjetasQueAvisan]: sin red, tras un 4xx o con la copia
  * vieja, no) y sin los que otra caja cobra; y no espera más de [SONDEO_CON_TARJETAS_S] para volver a preguntar. Ruling 45: este sondeo
- * (y sólo éste) manda `x-online-orders-card-alert: 1`, y sólo con la app al frente: así la tienda sólo ofrece la tarjeta mientras una
- * caja pueda sonar y enseñarla. La comanda de lo ya cobrado sale de aquí ([imprimirComandas]), de una lectura fresca de
- * `comandasPorImprimir`, nunca de la respuesta de abrir, y un papel a la vez (la terminal tiene UNA impresora). Ruling 67: sin turno
- * sigue sonando y anunciándose (el aviso dice «Abre tu turno…», [EstadoDeFolios.sinTurno]). Ruling 69: lo que ESTA caja abrió y cuya
- * comanda no sale aquí (sin impresora o el papel falló) se avisa hasta que salga en otra o la cajera lo descarte
- * ([EstadoDeFolios.comandasSinSalir]).
+ * (y sólo éste) manda `x-online-orders-card-alert: 1`, y sólo con la app al frente y el aviso a la vista de la cajera ([cajaQueAvisa],
+ * Ruling 68): así la tienda sólo ofrece la tarjeta mientras una caja pueda sonar y enseñarla. La comanda de lo ya cobrado sale de aquí
+ * ([imprimirComandas]), de una lectura fresca de `comandasPorImprimir`, nunca de la respuesta de abrir, y un papel a la vez (la terminal
+ * tiene UNA impresora). Ruling 67: sin turno (o sin entrada registrada) sigue sonando y anunciándose (el aviso dice «Abre tu turno…» o
+ * «Registra tu entrada…», [EstadoDeFolios.sinTurno], [EstadoDeFolios.sinEntrada]). Ruling 69: lo que ESTA caja abrió y cuya comanda no
+ * sale aquí (sin impresora o el papel falló) se avisa hasta que salga en otra o la cajera lo descarte ([EstadoDeFolios.comandasSinSalir]).
  *
  * Constructor primario `internal` (con reloj) para las pruebas; el que usa Hilt es el secundario (Dagger rechaza los defaults).
  */
@@ -70,8 +74,11 @@ class VigiaDeFolios internal constructor(
     private val reloj: () -> Long,
     /** D661: el timbre de los pagados en línea ([Timbre.sonar]). */
     private val timbre: () -> Unit,
-    /** D661 (Ruling 45): la app está al frente (proceso al menos STARTED): sólo así se anuncia como caja que avisa. */
-    private val enPrimerPlano: () -> Boolean,
+    /**
+     * D661 (Ruling 45 · 68): ¿la caja puede anunciarse como «puedo avisar»? Recibe la pantalla que la cajera tiene enfrente
+     * ([rutaALaVista]); sólo con la app al frente y el aviso a la vista.
+     */
+    private val anunciaQueAvisa: (String?) -> Boolean,
     /** D661: la comanda de lo cobrado en línea (reclamo + papel + confirmación). */
     private val comanda: ComandaDeApoyo,
 ) {
@@ -84,7 +91,17 @@ class VigiaDeFolios internal constructor(
         storage: SecureStorage,
         timbre: Timbre,
         comanda: ComandaDeApoyo,
-    ) : this(folios, shifts, asistencia, ajustes, storage, System::currentTimeMillis, timbre::sonar, ::appAlFrente, comanda)
+        cobro: PaymentStateProvider,
+        bloqueo: LockScreenManager,
+        mantenimiento: MaintenanceManager,
+    ) : this(
+        folios, shifts, asistencia, ajustes, storage, System::currentTimeMillis, timbre::sonar,
+        cajaQueAvisa(::appAlFrente, cobro, bloqueo, mantenimiento), comanda,
+    )
+
+    /** D661 (Ruling 68): la pantalla que la cajera tiene enfrente (la ruta); la escribe la navegación. */
+    @Volatile
+    var rutaALaVista: String? = null
 
     private val _estado = MutableStateFlow(EstadoDeFolios())
     val estado: StateFlow<EstadoDeFolios> = _estado.asStateFlow()
@@ -180,13 +197,14 @@ class VigiaDeFolios internal constructor(
         synchronized(candadoDeAvisos) { abiertosAqui[orderId] = folio }
     }
 
-    /** D661 (Ruling 69): la cajera ya avisó a cocina («Entendido»): se quita y ese pedido ya no se vuelve a avisar aquí. */
-    fun descartarComandaSinSalir(orderId: String) {
+    /** D661 (Ruling 69): la cajera ya avisó a cocina («Entendido»): se quitan las que vio y ya no se vuelven a avisar aquí. */
+    fun descartarComandasSinSalir(orderIds: Collection<String>) {
+        val vistas = orderIds.toSet()
         synchronized(candadoDeAvisos) {
-            comandasQueNoSalieron.remove(orderId)
-            abiertosAqui.remove(orderId)
+            comandasQueNoSalieron.keys.removeAll(vistas)
+            abiertosAqui.keys.removeAll(vistas)
         }
-        _estado.update { e -> e.copy(comandasSinSalir = e.comandasSinSalir.filterNot { it.orderId == orderId }) }
+        _estado.update { e -> e.copy(comandasSinSalir = e.comandasSinSalir.filterNot { it.orderId in vistas }) }
     }
 
     private val candadoDeAvisos = Any()
@@ -340,10 +358,12 @@ class VigiaDeFolios internal constructor(
             olvidarListas()
             negocioActual = venueId
         }
-        // Ruling 45: «esta caja suena y enseña los pagados en línea» sólo con la app al frente (se mira en cada vuelta).
-        // Ruling 67: sin turno no cobra aquí, pero sigue sonando, anunciándose y diciendo por dónde se entra.
+        // Ruling 45 · 68: «esta caja suena y enseña los pagados en línea» sólo con la app al frente y el aviso a la vista de la cajera
+        // (se mira en cada vuelta, con la pantalla que tiene enfrente). Ruling 67: sin turno o sin entrada no cobra aquí, pero sigue
+        // sonando, anunciándose y diciendo por dónde se entra.
         val conTurno = turnoAbierto(venueId)
-        val pagina = folios.listar(venueId, puedeCobrar(venueId, conTurno), avisaTarjetas = enPrimerPlano()).getOrElse { error ->
+        val cobra = puedeCobrar(venueId, conTurno)
+        val pagina = folios.listar(venueId, cobra, avisaTarjetas = anunciaQueAvisa(rutaALaVista)).getOrElse { error ->
             // Red caída o 5xx = «sin conexión»; un 4xx (401/403/404) sí es respuesta: la lista ya no es fiable y se dice «desactualizado».
             _estado.value = if (esRespuesta(error)) _estado.value.copy(desactualizado = true) else _estado.value.copy(sinConexion = true)
             Timber.w(error, "[Folios] sin respuesta del servidor")
@@ -354,7 +374,9 @@ class VigiaDeFolios internal constructor(
         // R79 #6: las páginas extra NO regresan a la página 1; se releen después de esta vuelta (ver [releerSeccion]). Una sección
         // cuya página 1 ya no trae cursor no tiene camino a ellas: se sueltan YA (nunca quedan tarjetas viejas, p. ej. un «Listo»).
         for (sec in SeccionDeFolios.values()) if (sec !in pagina.siguientes) { extras = extras - sec; cursorExtra = cursorExtra - sec }
-        _estado.value = componer(pagina.aEstado(ahora, sinTurno = !conTurno).copy(errorAlCargarMas = _estado.value.errorAlCargarMas))
+        _estado.value = componer(
+            pagina.aEstado(ahora, sinTurno = !conTurno, sinEntrada = conTurno && !cobra).copy(errorAlCargarMas = _estado.value.errorAlCargarMas),
+        )
         if (extras.values.any { it.isNotEmpty() }) releer.trySend(Unit)
         imprimirComandas(venueId, pagina)
         segundosDeEspera(pagina) * 1000L
@@ -522,7 +544,7 @@ class VigiaDeFolios internal constructor(
     private fun esRespuesta(error: Throwable): Boolean =
         error is BackendHttpException && error.statusCode in 400..499
 
-    private fun PaginaDeFolios.aEstado(ahora: Long, sinTurno: Boolean) = EstadoDeFolios(
+    private fun PaginaDeFolios.aEstado(ahora: Long, sinTurno: Boolean, sinEntrada: Boolean) = EstadoDeFolios(
         showTile = showTile,
         counts = conteo,
         porPagar = porPagar,
@@ -533,6 +555,7 @@ class VigiaDeFolios internal constructor(
         desfaseDelServidorMs = horaDelServidor?.let { it.toEpochMilli() - ahora } ?: 0L,
         tarjetasPorAbrir = tarjetasPorAbrir,
         sinTurno = sinTurno,
+        sinEntrada = sinEntrada,
         comandasSinSalir = comandasSinSalir(comandasPorImprimir),
     )
 
@@ -550,6 +573,24 @@ class VigiaDeFolios internal constructor(
         /** D661: mientras haya pagados en línea por abrir, el sondeo nunca espera más que esto, diga lo que diga `pollSeconds`. */
         const val SONDEO_CON_TARJETAS_S = 30
     }
+}
+
+/**
+ * D661 (Ruling 45 · 68, enmendado): la caja se anuncia como «puedo avisar» sólo si la cajera puede VER el aviso: la app al frente y
+ * [avisoALaVista] con lo que hay en pantalla (una venta en curso en el cobro con tarjeta, el bloqueo, el mantenimiento).
+ */
+internal fun cajaQueAvisa(
+    alFrente: () -> Boolean,
+    cobro: PaymentStateProvider,
+    bloqueo: LockScreenManager,
+    mantenimiento: MaintenanceManager,
+): (String?) -> Boolean = { ruta ->
+    alFrente() && avisoALaVista(
+        ruta,
+        ventaEnCurso = cobro.isChargeAttemptActive() || cobro.isCharging(),
+        bloqueada = bloqueo.isLocked.value,
+        mantenimiento = mantenimiento.isInMaintenance.value,
+    )
 }
 
 /** Ruling 45: el PROCESO al frente (al menos STARTED). Leerlo fuera del hilo principal está bien: no cambia el estado. */

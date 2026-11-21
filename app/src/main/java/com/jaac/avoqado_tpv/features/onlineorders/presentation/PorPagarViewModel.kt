@@ -218,13 +218,13 @@ object TextosPorPagar {
     fun avisoDePagadosEnLinea(n: Int) = if (n > 1) "$PAGADO_EN_LINEA_POR_ABRIR ($n por abrir)" else PAGADO_EN_LINEA_POR_ABRIR
     fun pagadosEnLinea(n: Int) = if (n == 1) "1 pagado en línea" else "$n pagados en línea"
     const val VER = "Ver"
-    /** Ruling 67: sin turno abierto, el recuadro y la banda dicen por dónde se entra. */
+    /** Ruling 67: sin turno abierto (o sin entrada registrada), el recuadro y la banda dicen por dónde se entra. */
     fun abreTuTurno(n: Int) = if (n > 1) "Abre tu turno para abrir los $n pedidos pagados" else "Abre tu turno para abrir el pedido pagado"
-    /** Ruling 68: la pantalla de bloqueo de la app (la banda queda debajo). */
-    fun desbloqueaParaAbrir(n: Int) =
-        if (n > 1) "$n pedidos pagados en línea: desbloquea para abrirlos" else "Pedido pagado en línea: desbloquea para abrirlo"
+    fun registraTuEntrada(n: Int) =
+        if (n > 1) "Registra tu entrada para abrir los $n pedidos pagados" else "Registra tu entrada para abrir el pedido pagado"
     /** Ruling 69: esta terminal abrió el pedido y su comanda no salió aquí (sin impresora o falló el papel). */
     fun comandaNoSalio(folio: String) = "La comanda del pedido $folio no salió en esta terminal: avísale a cocina"
+    fun comandasNoSalieron(n: Int) = "$n comandas no salieron en esta terminal: avísale a cocina"
     /** Ruling 70: el pedido abierto ya no vino en la lista: se relee antes de volver a ofrecer «Listo» o «Entregado». */
     const val ACTUALIZANDO = "Actualizando…"
 }
@@ -588,6 +588,9 @@ class PorPagarViewModel @Inject constructor(
         val vigente = pantalla.tarjetasPorAbrir.firstOrNull { it.orderId == tarjeta.orderId } ?: return
         if (botonDeAbrir(vigente, pantalla)?.activo != true || !ocupar(vigente.orderId)) return
         viewModelScope.launch {
+            // Ruling 69 (enmendado): ANTES de mandarlo. Una respuesta perdida, un 5xx o «confirmando» pueden ser una apertura real de ESTA
+            // caja; el aviso sólo sale si después el SERVIDOR lista su comanda (la de un pedido que nadie abrió nunca viene).
+            vigia.abiertoAqui(vigente.orderId, vigente.folio)
             val r = folios.aceptar(venueId, vigente.orderId, abrirPagadoEnLinea = true)
             // La lista que se veía al contestar: «confirmando» espera una lectura buena POSTERIOR a ésta.
             val marca = vigia.estado.value.actualizadoEnMs
@@ -606,8 +609,6 @@ class PorPagarViewModel @Inject constructor(
                     },
                 )
             }
-            // Ruling 69: el vigía sabe que ESTA caja lo abrió (antes de la lectura que trae su comanda) para avisar si no sale aquí.
-            if (r.isSuccess) vigia.abiertoAqui(vigente.orderId, vigente.folio)
             vigia.sondearYa()
         }
     }

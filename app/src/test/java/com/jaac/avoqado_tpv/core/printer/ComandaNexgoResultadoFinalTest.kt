@@ -181,15 +181,33 @@ class ComandaNexgoResultadoFinalTest {
         verify(exactly = 1) { hardware.start() }
     }
 
-    /** D661 · Ruling 69 (b): un arranque fallido de la impresora no se queda guardado: el siguiente uso lo intenta otra vez. */
-    @Test fun `Ruling 69 un arranque fallido de la impresora se reintenta y uno bueno se guarda`() {
+    /**
+     * D661 · Ruling 69 (b), ronda 3: un arranque fallido de la impresora no se queda guardado, pero tampoco se reintenta en cada uso
+     * (`canPrintReceipt` se lee al pintar: sin tope, una PAX con la impresora mala reintentaba en cada recomposición). A lo más uno cada
+     * [REINTENTO_DE_ARRANQUE_MS]; uno bueno se guarda.
+     */
+    @Test fun `Ruling 69 un arranque fallido de la impresora se reintenta a lo mas cada 30 s y uno bueno se guarda`() {
+        var ahora = 1_000L
         var intentos = 0
-        val impresora by lazyQueReintenta {
+        var arranca = false
+        val impresora by lazyQueReintenta(reloj = { ahora }) {
             intentos++
-            if (intentos == 1) null else "PAX"
+            if (arranca) "PAX" else null
         }
         assertNull("la primera falla", impresora)
-        assertEquals("la siguiente arranca sin reiniciar la app", "PAX", impresora)
+        assertEquals(1, intentos)
+
+        ahora += 10_000
+        arranca = true
+        assertNull("a los 10 s no se intenta otra vez", impresora)
+        assertNull(impresora)
+        assertEquals(1, intentos)
+
+        ahora += REINTENTO_DE_ARRANQUE_MS - 10_000
+        assertEquals("a los 30 s se intenta y arranca, sin reiniciar la app", "PAX", impresora)
+        assertEquals(2, intentos)
+
+        ahora += 10 * REINTENTO_DE_ARRANQUE_MS
         assertEquals("PAX", impresora)
         assertEquals("la buena se guarda", 2, intentos)
     }

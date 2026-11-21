@@ -14,10 +14,18 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Before
 import org.junit.Test
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * La comanda de apoyo de un folio ya cobrado (P4, decisión 18 del diseño): reclama, imprime y confirma sólo si el papel salió.
@@ -198,5 +206,36 @@ class ComandaDeApoyoTest {
         impresoraQueTarda(200_000)
         assertThat(conReloj.intentar("v1", folio)).isEqualTo(ResultadoDeComanda.IMPRESA)
         coVerify(exactly = 1) { folios.confirmarImpresion("v1", "ord-1") }
+    }
+
+    /**
+     * D661 · ronda 3: el papel es bloqueante (la Nexgo espera la respuesta de su SDK sin tope). La comanda lo corre en un hilo de E/S
+     * aunque la pida el hilo principal: con el papel colgado, el hilo de quien la pidió sigue libre (un hilo real, no un reloj de prueba).
+     */
+    @Test
+    fun `el papel colgado corre fuera del hilo de quien pide la comanda y ese hilo sigue libre`() {
+        runBlocking {
+            val quienPide = Executors.newSingleThreadExecutor { Thread(it, "quien-pide") }.asCoroutineDispatcher()
+            val empezo = CountDownLatch(1)
+            val suelta = CountDownLatch(1)
+            var hiloDelPapel: String? = null
+            every { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any(), any(), any(), any()) } answers {
+                hiloDelPapel = Thread.currentThread().name
+                empezo.countDown()
+                suelta.await(5, TimeUnit.SECONDS)
+                Result.success(Unit)
+            }
+            try {
+                val resultado = async(quienPide) { comanda.intentar("v1", folio) }
+                assertThat(empezo.await(5, TimeUnit.SECONDS)).isTrue()
+                assertThat(withTimeoutOrNull(2_000) { withContext(quienPide) { "libre" } }).isEqualTo("libre")
+                suelta.countDown()
+                assertThat(resultado.await()).isEqualTo(ResultadoDeComanda.IMPRESA)
+                assertThat(hiloDelPapel).isNotEqualTo("quien-pide")
+            } finally {
+                suelta.countDown()
+                quienPide.close()
+            }
+        }
     }
 }

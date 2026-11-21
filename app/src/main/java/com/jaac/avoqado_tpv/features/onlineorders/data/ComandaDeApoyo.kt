@@ -9,6 +9,7 @@ import com.jaac.avoqado_tpv.features.ordering.domain.ModifierType
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderItem
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import timber.log.Timber
@@ -16,6 +17,7 @@ import java.math.BigDecimal
 import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.CoroutineContext
 
 /** Qué pasó al intentar la comanda en ESTE aparato. */
 enum class ResultadoDeComanda {
@@ -45,7 +47,8 @@ enum class ResultadoDeComanda {
  * D661: también la de un pedido pagado con tarjeta en línea (la pide [VigiaDeFolios] de una lectura fresca). Ruling 9: el reclamo es
  * «al menos una vez»; si se concede sobre otro que venció sin confirmarse, arriba sale «POSIBLE REPETIDA» (en cualquier reclamo, porque
  * esta caja se lo dice al SERVIDOR en todos, Ruling 37). Reclamo, papel y confirmación corren sin cancelarse: cerrar la pantalla o la
- * actividad a media impresión no deja un papel sin confirmar.
+ * actividad a media impresión no deja un papel sin confirmar. Y en un hilo de E/S, la pida quien la pida: el papel es bloqueante (en la
+ * Nexgo espera la respuesta de su SDK sin tope) y nunca detiene el hilo de quien la pidió.
  *
  * Constructor primario `internal` (con el reloj monótono) para las pruebas; el que usa Hilt es el secundario.
  */
@@ -53,11 +56,14 @@ enum class ResultadoDeComanda {
 class ComandaDeApoyo internal constructor(
     private val folios: FoliosRepository,
     private val impresora: PrinterManager,
+    /** Dónde corre todo, papel incluido (bloqueante): E/S. Las pruebas del vigía lo dejan en su hilo para medir con su reloj. */
+    private val hilo: CoroutineContext = Dispatchers.IO,
     /** Reloj MONÓTONO (no salta si cambian la hora del aparato): de él sale la edad del reclamo (Ruling 50). */
     private val monotonico: () -> Long,
 ) {
     @Inject
-    constructor(folios: FoliosRepository, impresora: PrinterManager) : this(folios, impresora, SystemClock::elapsedRealtime)
+    constructor(folios: FoliosRepository, impresora: PrinterManager) :
+        this(folios, impresora, Dispatchers.IO, SystemClock::elapsedRealtime)
 
     /** ¿Esta terminal tiene impresora? (un modelo sin impresora no lee ningún pedido para su comanda). */
     fun puedeImprimir(): Boolean = impresora.isPrinterAvailable()
@@ -71,7 +77,7 @@ class ComandaDeApoyo internal constructor(
         venueId: String,
         folio: ComandaDeFolio,
         edadMaximaDelReclamo: Long? = null,
-    ): ResultadoDeComanda = withContext(NonCancellable) {
+    ): ResultadoDeComanda = withContext(NonCancellable + hilo) {
         if (!impresora.isPrinterAvailable()) return@withContext ResultadoDeComanda.NO_SALIO
         // Ruling 50: la edad se cuenta desde ANTES de pedir el reclamo (el SERVIDOR lo concede después): nunca se queda corta.
         val pedidoEn = monotonico()

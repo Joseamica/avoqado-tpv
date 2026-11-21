@@ -69,12 +69,7 @@ fun LockScreenOverlay(
     lockReason: String?,
     lockMessage: String?,
     lockedBy: String?,
-    modifier: Modifier = Modifier,
-    /**
-     * D661 (Ruling 68): «Pedido pagado en línea: desbloquea para abrirlo» mientras suena uno (la banda de la app queda debajo del
-     * bloqueo). Se lee aquí adentro para que su reloj sólo recomponga el bloqueo.
-     */
-    avisoDePagados: () -> String? = { null },
+    modifier: Modifier = Modifier
 ) {
     val scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.84f)
 
@@ -134,24 +129,6 @@ fun LockScreenOverlay(
                     )
 
                     Spacer(modifier = Modifier.height(12.dp))
-
-                    avisoDePagados()?.let { aviso ->
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer
-                        ) {
-                            Text(
-                                text = aviso,
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 10.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(12.dp))
-                    }
 
                     if (!lockReason.isNullOrBlank()) {
                         Text(

@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.core.presentation.screens
 import com.jaac.avoqado_tpv.core.presentation.navigation.NavRoute
 import com.jaac.avoqado_tpv.features.giftcards.data.SolicitudDeSaldo
 import com.jaac.avoqado_tpv.features.giftcards.data.TextosDeSaldo
+import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaPorImprimir
 import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.tarjetasQueAvisan
 import com.jaac.avoqado_tpv.features.onlineorders.presentation.TextosPorPagar
@@ -81,22 +82,40 @@ fun avisoDeSaldoSinConfirmar(estado: EstadoDeFolios, pendientes: List<SolicitudD
     }
 }
 
+/** D661: la banda de los pagados en línea. [llevaAPorPagar] = su «Ver» abre «Pedidos por pagar»; si no, sólo informa. */
+data class AvisoDePagados(val texto: String, val llevaAPorPagar: Boolean)
+
 /**
- * D661 (Ruling 19 · 67 · 68): mientras suena un pedido pagado en línea, la banda lo dice arriba de [ruta] y lleva a «Pedidos por pagar»;
- * sin turno, dice por dónde se entra. null = no hay nada que avisar ahí (o la lista no es de una lectura en vivo: sin red o vieja, no).
+ * D661 (Ruling 19 · 67 · 68): mientras suena un pedido pagado en línea, la banda lo dice arriba de la pantalla si [aLaVista]
+ * ([avisoALaVista]). null = no hay nada que avisar ahí (o la lista no es de una lectura en vivo: sin red o vieja, no).
  */
-fun avisoDePagadosEnLinea(estado: EstadoDeFolios, ahoraMs: Long, ruta: String?): String? {
-    if (!rutaConAvisosDeLaTienda(ruta)) return null
+fun avisoDePagadosEnLinea(estado: EstadoDeFolios, ahoraMs: Long, aLaVista: Boolean): AvisoDePagados? {
+    if (!aLaVista) return null
     val n = tarjetasQueAvisan(estado, ahoraMs).size.takeIf { it > 0 } ?: return null
-    return if (estado.sinTurno) TextosPorPagar.abreTuTurno(n) else TextosPorPagar.avisoDePagadosEnLinea(n)
+    // Ruling 67: sin turno (o sin entrada) dice por dónde se entra y sólo informa: nunca entra a «Pedidos por pagar» saltándose el Inicio.
+    return when {
+        estado.sinTurno -> AvisoDePagados(TextosPorPagar.abreTuTurno(n), llevaAPorPagar = false)
+        estado.sinEntrada -> AvisoDePagados(TextosPorPagar.registraTuEntrada(n), llevaAPorPagar = false)
+        else -> AvisoDePagados(TextosPorPagar.avisoDePagadosEnLinea(n), llevaAPorPagar = true)
+    }
 }
 
-/** D661 (Ruling 68): los avisos de la tienda en línea salen en toda pantalla de la app menos en el cobro con tarjeta (el lector manda). */
-fun rutaConAvisosDeLaTienda(ruta: String?): Boolean = ruta != null && ruta !in NavRoute.RUTAS_SIN_AVISO_DE_PAGADOS_EN_LINEA
+/**
+ * D661 (Ruling 68, enmendado): ¿la cajera puede VER aquí el aviso de los pagados en línea? Sólo entonces hay banda y la caja se
+ * anuncia como «puedo avisar». [ventaEnCurso]: hay una venta a medias en el cobro con tarjeta (método, propina, calificación,
+ * leyendo la tarjeta, una devolución hablando con el procesador); su recibo o su rechazo ya no es venta en curso. Con la app bloqueada
+ * (sólo se quita a distancia), en mantenimiento, en el kiosco o antes de la sesión, la cajera no puede usar la terminal: no.
+ */
+fun avisoALaVista(ruta: String?, ventaEnCurso: Boolean, bloqueada: Boolean, mantenimiento: Boolean): Boolean =
+    ruta != null && ruta !in NavRoute.RUTAS_SIN_AVISO_DE_PAGADOS_EN_LINEA && !bloqueada && !mantenimiento &&
+        !(ventaEnCurso && ruta in NavRoute.RUTAS_DEL_COBRO_CON_TARJETA)
 
-/** D661 (Ruling 68): lo que dice la pantalla de bloqueo de la app mientras suena un pagado en línea (la banda queda debajo). */
-fun avisoDePagadosEnElBloqueo(estado: EstadoDeFolios, ahoraMs: Long): String? =
-    tarjetasQueAvisan(estado, ahoraMs).size.takeIf { it > 0 }?.let { TextosPorPagar.desbloqueaParaAbrir(it) }
+/** D661 (Ruling 69, enmendado): UNA banda para todas las comandas que no salieron aquí. null = ninguna. */
+fun avisoDeComandasSinSalir(comandas: List<ComandaPorImprimir>): String? = when (comandas.size) {
+    0 -> null
+    1 -> TextosPorPagar.comandaNoSalio(comandas.single().folio)
+    else -> TextosPorPagar.comandasNoSalieron(comandas.size)
+}
 
 /** D12 (Codex r1 #2, r3): el almacén cifrado no se pudo leer; no se sabe si hay un cobro con saldo en duda. */
 const val SALDO_GUARDADO_ILEGIBLE =

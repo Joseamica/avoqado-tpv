@@ -178,6 +178,8 @@ data class EstadoDeFolios(
     val tarjetasPorAbrir: List<TarjetaPorAbrir> = emptyList(),
     /** D661 (Ruling 67): con turnos encendidos, esta terminal no tiene turno abierto: sigue sonando y el aviso dice cómo entrar. */
     val sinTurno: Boolean = false,
+    /** D661 (Ruling 67): con turno, pero la checada es obligatoria y no hay entrada registrada: igual, el aviso dice cómo entrar. */
+    val sinEntrada: Boolean = false,
     /** D661 (Ruling 69): lo que ESTA terminal abrió y cuya comanda no salió aquí, mientras el SERVIDOR siga pidiendo su papel. */
     val comandasSinSalir: List<ComandaPorImprimir> = emptyList(),
 )

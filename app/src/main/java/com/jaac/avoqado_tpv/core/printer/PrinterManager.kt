@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.core.printer
 
 import android.content.Context
+import android.os.SystemClock
 import android.graphics.Bitmap
 import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.R
@@ -2189,13 +2190,31 @@ class PrinterManager @Inject constructor(
     }
 }
 
-/** D661 (Ruling 69 b): como `lazy`, pero un arranque fallido (null) no se guarda: el siguiente uso lo intenta otra vez. */
-internal fun <T : Any> lazyQueReintenta(crear: () -> T?): Lazy<T?> = object : Lazy<T?> {
+/**
+ * D661 (Ruling 69 b): como `lazy`, pero un arranque fallido (null) no se guarda: se vuelve a intentar, a lo más una vez cada
+ * [cadaMs] según [reloj] (monótono).
+ */
+internal fun <T : Any> lazyQueReintenta(
+    cadaMs: Long = REINTENTO_DE_ARRANQUE_MS,
+    reloj: () -> Long = SystemClock::elapsedRealtime,
+    crear: () -> T?,
+): Lazy<T?> = object : Lazy<T?> {
     @Volatile private var listo: T? = null
+    /** Cuándo falló el último intento (reloj monótono); null = nunca se ha intentado. */
+    private var fallidoEn: Long? = null
     override val value: T?
-        get() = listo ?: synchronized(this) { listo ?: crear()?.also { listo = it } }
+        get() = listo ?: synchronized(this) {
+            listo ?: run {
+                val ahora = reloj()
+                val antes = fallidoEn
+                if (antes != null && ahora - antes < cadaMs) null else crear().also { if (it != null) listo = it else fallidoEn = ahora }
+            }
+        }
     override fun isInitialized(): Boolean = listo != null
 }
+
+/** D661 (Ruling 69 b): cada cuánto se vuelve a intentar arrancar la impresora que falló. */
+internal const val REINTENTO_DE_ARRANQUE_MS = 30_000L
 
 /** D661 · Ruling 50: quien pidió la comanda dijo, ya con la impresora libre, que ya no tocaba (su reclamo envejeció esperándola). */
 class ComandaNoEmpezada : Exception("La comanda no se empezó: su reclamo envejeció esperando la impresora")

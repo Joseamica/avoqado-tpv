@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.core.presentation.screens
 
 import com.jaac.avoqado_tpv.core.presentation.navigation.NavRoute
 import com.jaac.avoqado_tpv.features.giftcards.data.SolicitudDeSaldo
+import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaPorImprimir
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ConteoDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.TarjetaPorAbrir
@@ -189,45 +190,45 @@ class RecuadroPorPagarTest {
     }
 
     @Test fun `D661 el aviso de pagados en linea sale con una lectura en vivo y se esconde sin red, tras un 4xx o con la copia vieja`() {
-        val cobrar = NavRoute.Checkout.route
-        assertEquals("Pedido pagado en línea · ábrelo para cobrar", avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")), 2_000L, cobrar))
+        fun texto(e: EstadoDeFolios, ahora: Long) = avisoDePagadosEnLinea(e, ahora, aLaVista = true)?.texto
+        assertEquals("Pedido pagado en línea · ábrelo para cobrar", texto(conTarjetas(tarjeta("t1")), 2_000L))
         assertEquals(
             "Pedido pagado en línea · ábrelo para cobrar (2 por abrir)",
-            avisoDePagadosEnLinea(conTarjetas(tarjeta("t1"), tarjeta("t2"), tarjeta("t3", cobrando = true)), 2_000L, cobrar),
+            texto(conTarjetas(tarjeta("t1"), tarjeta("t2"), tarjeta("t3", cobrando = true)), 2_000L),
         )
-        assertNull(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")).copy(sinConexion = true), 2_000L, cobrar))
-        assertNull(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")).copy(desactualizado = true), 2_000L, cobrar))
-        assertNull(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")), 1_000L + 90_001L, cobrar))
-        assertNull(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1", cobrando = true)), 2_000L, cobrar))
-        assertNull(avisoDePagadosEnLinea(conTarjetas(), 2_000L, cobrar))
-        assertNull(avisoDePagadosEnLinea(EstadoDeFolios(tarjetasPorAbrir = listOf(tarjeta("t1"))), 2_000L, cobrar)) // nunca leída
+        assertTrue(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")), 2_000L, aLaVista = true)!!.llevaAPorPagar)
+        assertNull(texto(conTarjetas(tarjeta("t1")).copy(sinConexion = true), 2_000L))
+        assertNull(texto(conTarjetas(tarjeta("t1")).copy(desactualizado = true), 2_000L))
+        assertNull(texto(conTarjetas(tarjeta("t1")), 1_000L + 90_001L))
+        assertNull(texto(conTarjetas(tarjeta("t1", cobrando = true)), 2_000L))
+        assertNull(texto(conTarjetas(), 2_000L))
+        assertNull(texto(EstadoDeFolios(tarjetasPorAbrir = listOf(tarjeta("t1"))), 2_000L)) // nunca leída
+        // Donde no está a la vista, no hay banda.
+        assertNull(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")), 2_000L, aLaVista = false))
     }
 
-    @Test fun `Ruling 68 la banda sale en toda pantalla de la cajera, tambien en Pago rapido, y no en el cobro con tarjeta`() {
-        val e = conTarjetas(tarjeta("t1"))
+    @Test fun `Ruling 68 el aviso esta a la vista en toda pantalla de la cajera y en el recibo, no durante una venta`() {
         val deLaCajera = listOf(
             NavRoute.FastPaymentEntry.route, NavRoute.Home.route, NavRoute.Tables.route, NavRoute.Checkout.route,
             NavRoute.PorPagar.route, NavRoute.Payments.route, NavRoute.Settings.route, NavRoute.TableCheckout.route,
         )
-        for (ruta in deLaCajera) assertEquals(ruta, "Pedido pagado en línea · ábrelo para cobrar", avisoDePagadosEnLinea(e, 2_000L, ruta))
-        // El cobro con tarjeta es dueño de la pantalla (el timbre sigue).
-        assertNull(avisoDePagadosEnLinea(e, 2_000L, NavRoute.Payment.route))
-        assertNull(avisoDePagadosEnLinea(e, 2_000L, NavRoute.AngelPayPayment.route))
-        assertNull(avisoDePagadosEnLinea(e, 2_000L, null))
-        // Sin red o con la copia vieja, en ninguna (como hoy).
-        assertNull(avisoDePagadosEnLinea(e.copy(sinConexion = true), 2_000L, NavRoute.FastPaymentEntry.route))
-        assertNull(avisoDePagadosEnLinea(e, 1_000L + 90_001L, NavRoute.FastPaymentEntry.route))
+        for (ruta in deLaCajera) assertTrue(ruta, avisoALaVista(ruta, ventaEnCurso = false, bloqueada = false, mantenimiento = false))
+        // El cobro con tarjeta terminado (el recibo, el rechazo): a la vista. Con una venta en curso: no (el timbre sigue).
+        for (ruta in listOf(NavRoute.Payment.route, NavRoute.AngelPayPayment.route)) {
+            assertTrue(ruta, avisoALaVista(ruta, ventaEnCurso = false, bloqueada = false, mantenimiento = false))
+            assertFalse(ruta, avisoALaVista(ruta, ventaEnCurso = true, bloqueada = false, mantenimiento = false))
+        }
     }
 
-    @Test fun `Ruling 68 la pantalla de bloqueo de la app lo dice con una lectura en vivo`() {
-        assertEquals("Pedido pagado en línea: desbloquea para abrirlo", avisoDePagadosEnElBloqueo(conTarjetas(tarjeta("t1")), 2_000L))
-        assertEquals(
-            "2 pedidos pagados en línea: desbloquea para abrirlos",
-            avisoDePagadosEnElBloqueo(conTarjetas(tarjeta("t1"), tarjeta("t2"), tarjeta("t3", cobrando = true)), 2_000L),
+    @Test fun `Ruling 68 sin poder usar la terminal no hay aviso a la vista - bloqueo, mantenimiento, kiosco y antes de la sesion`() {
+        assertFalse(avisoALaVista(NavRoute.Home.route, ventaEnCurso = false, bloqueada = true, mantenimiento = false))
+        assertFalse(avisoALaVista(NavRoute.Home.route, ventaEnCurso = false, bloqueada = false, mantenimiento = true))
+        val sinUso = listOf(
+            NavRoute.Splash.route, NavRoute.Activation.route, NavRoute.Login.route, NavRoute.Timeclock.route,
+            NavRoute.KioskWelcome.route, NavRoute.KioskMenu.route, NavRoute.KioskCart.route, NavRoute.KioskSuccess.route,
         )
-        assertNull(avisoDePagadosEnElBloqueo(conTarjetas(tarjeta("t1")).copy(sinConexion = true), 2_000L))
-        assertNull(avisoDePagadosEnElBloqueo(conTarjetas(tarjeta("t1")), 1_000L + 90_001L))
-        assertNull(avisoDePagadosEnElBloqueo(conTarjetas(), 2_000L))
+        for (ruta in sinUso) assertFalse(ruta, avisoALaVista(ruta, ventaEnCurso = false, bloqueada = false, mantenimiento = false))
+        assertFalse(avisoALaVista(null, ventaEnCurso = false, bloqueada = false, mantenimiento = false))
     }
 
     @Test fun `Ruling 67 sin turno el recuadro sigue apagado y dice Abre tu turno para abrir el pedido pagado`() {
@@ -242,10 +243,25 @@ class RecuadroPorPagarTest {
         )
     }
 
-    @Test fun `Ruling 67 sin turno la banda dice Abre tu turno para abrir el pedido pagado`() {
-        val e = conTarjetas(tarjeta("t1")).copy(sinTurno = true)
-        assertEquals("Abre tu turno para abrir el pedido pagado", avisoDePagadosEnLinea(e, 2_000L, NavRoute.Tables.route))
-        assertEquals("Pedido pagado en línea · ábrelo para cobrar", avisoDePagadosEnLinea(e.copy(sinTurno = false), 2_000L, NavRoute.Tables.route))
+    @Test fun `Ruling 67 sin turno o sin entrada la banda dice por donde se entra y su Ver no abre Pedidos por pagar`() {
+        val sinTurno = avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")).copy(sinTurno = true), 2_000L, aLaVista = true)!!
+        assertEquals("Abre tu turno para abrir el pedido pagado", sinTurno.texto)
+        assertFalse(sinTurno.llevaAPorPagar)
+        val sinEntrada = avisoDePagadosEnLinea(conTarjetas(tarjeta("t1"), tarjeta("t2")).copy(sinEntrada = true), 2_000L, aLaVista = true)!!
+        assertEquals("Registra tu entrada para abrir los 2 pedidos pagados", sinEntrada.texto)
+        assertFalse(sinEntrada.llevaAPorPagar)
+    }
+
+    @Test fun `Ruling 69 una sola banda para todas las comandas que no salieron aqui`() {
+        assertNull(avisoDeComandasSinSalir(emptyList()))
+        assertEquals(
+            "La comanda del pedido T-0042 no salió en esta terminal: avísale a cocina",
+            avisoDeComandasSinSalir(listOf(ComandaPorImprimir("x", "T-0042"))),
+        )
+        assertEquals(
+            "3 comandas no salieron en esta terminal: avísale a cocina",
+            avisoDeComandasSinSalir(listOf(ComandaPorImprimir("x", "T-0042"), ComandaPorImprimir("y", "T-0043"), ComandaPorImprimir("z", "T-0044"))),
+        )
     }
 
     // endregion

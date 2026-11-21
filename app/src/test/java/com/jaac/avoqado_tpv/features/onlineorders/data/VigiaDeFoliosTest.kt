@@ -4,7 +4,10 @@ import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.domain.models.ApiException
+import com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
+import com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
 import com.jaac.avoqado_tpv.core.domain.models.Result as AppResult
+import com.jaac.avoqado_tpv.core.presentation.navigation.NavRoute
 import com.jaac.avoqado_tpv.core.presentation.screens.recuadroPorPagar
 import com.jaac.avoqado_tpv.core.printer.ComandaNoEmpezada
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
@@ -15,6 +18,7 @@ import com.jaac.avoqado_tpv.features.onlineorders.domain.FolioProducto
 import com.jaac.avoqado_tpv.features.onlineorders.domain.PaginaDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.SeccionDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.TarjetaPorAbrir
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
@@ -36,6 +40,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
@@ -43,6 +48,7 @@ import org.junit.Test
 import java.io.IOException
 import java.math.BigDecimal
 import java.time.Instant
+import kotlin.coroutines.EmptyCoroutineContext
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class VigiaDeFoliosTest {
@@ -97,6 +103,9 @@ class VigiaDeFoliosTest {
     private val avisos = mutableListOf<Boolean>()
     private var respuesta: suspend () -> Result<PaginaDeFolios> = { Result.success(pagina()) }
     private var primerPlano = true
+    /** D661 (Ruling 68): la pantalla con la que el vigía preguntó si la caja puede anunciarse como «puedo avisar». */
+    private val rutas = mutableListOf<String?>()
+    private val anunciaPorDefecto: (String?) -> Boolean = { ruta -> rutas += ruta; primerPlano }
     private var timbres = 0
     /** D661 (Ruling 50): el reloj monótono de la comanda (la edad de su reclamo). */
     private var monotonico = 0L
@@ -124,12 +133,15 @@ class VigiaDeFoliosTest {
     }
 
     /** El vigía con el scope de la prueba; se cancela al final (memoria de la TPV, líneas 33-34). */
-    private suspend fun kotlinx.coroutines.test.TestScope.conVigia(bloque: suspend (VigiaDeFolios) -> Unit) {
+    private suspend fun kotlinx.coroutines.test.TestScope.conVigia(
+        anuncia: (String?) -> Boolean = anunciaPorDefecto,
+        bloque: suspend (VigiaDeFolios) -> Unit,
+    ) {
         preparar()
         val job = SupervisorJob()
         val scope = CoroutineScope(coroutineContext + UnconfinedTestDispatcher(testScheduler) + job)
         val vigia = VigiaDeFolios(
-            folios, shifts, asistencia, ajustes, storage, { hora }, { timbres++ }, { primerPlano }, ComandaDeApoyo(folios, impresora) { monotonico },
+            folios, shifts, asistencia, ajustes, storage, { hora }, { timbres++ }, anuncia, ComandaDeApoyo(folios, impresora, EmptyCoroutineContext) { monotonico },
         )
         try {
             vigia.iniciar(scope)
@@ -1040,7 +1052,7 @@ class VigiaDeFoliosTest {
         coEvery { folios.confirmarImpresion("v1", any()) } returns Result.success(true)
         respuesta = { Result.success(pagina(porPagar = emptyList(), comandas = listOf(ComandaPorImprimir("x", "Wx")))) }
         val vigia = VigiaDeFolios(
-            folios, shifts, asistencia, ajustes, storage, { hora }, { timbres++ }, { primerPlano }, ComandaDeApoyo(folios, impresora) { monotonico },
+            folios, shifts, asistencia, ajustes, storage, { hora }, { timbres++ }, anunciaPorDefecto, ComandaDeApoyo(folios, impresora, EmptyCoroutineContext) { monotonico },
         )
         // 1) La actividad se va justo cuando la vuelta ya leyó el pedido: su alcance se cancela ahí mismo.
         val primero = SupervisorJob()
@@ -1119,26 +1131,121 @@ class VigiaDeFoliosTest {
     }
 
     @Test
-    fun `Ruling 69 si el papel falla aqui tambien avisa y Entendido lo quita para siempre`() = runTest {
+    fun `Ruling 69 si el papel falla aqui tambien avisa y un solo Entendido quita la banda entera para siempre`() = runTest {
         conImpresora()
         every { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
             Result.failure(Exception("Error al imprimir comanda (código: 2)"))
         coEvery { folios.reclamarImpresion("v1", any()) } returns Result.success(ReclamoDeComanda(true))
         var comandas = emptyList<ComandaPorImprimir>()
-        respuesta = { Result.success(pagina(porPagar = emptyList(), porEntregar = listOf(cobrado("x")), comandas = comandas)) }
+        respuesta = {
+            Result.success(pagina(porPagar = emptyList(), porEntregar = listOf(cobrado("x"), cobrado("y")), comandas = comandas))
+        }
         conVigia { vigia ->
             vigia.abiertoAqui("x", "Wx")
-            comandas = listOf(ComandaPorImprimir("x", "Wx"))
+            vigia.abiertoAqui("y", "Wy")
+            comandas = listOf(ComandaPorImprimir("x", "Wx"), ComandaPorImprimir("y", "Wy"))
             vigia.sondearYa()
-            assertThat(vigia.estado.value.comandasSinSalir).containsExactly(ComandaPorImprimir("x", "Wx"))
+            assertThat(vigia.estado.value.comandasSinSalir).containsExactly(ComandaPorImprimir("x", "Wx"), ComandaPorImprimir("y", "Wy"))
 
-            // La cajera ya avisó a cocina: «Entendido» lo quita y no vuelve aunque el papel vuelva a fallar.
-            vigia.descartarComandaSinSalir("x")
+            // La cajera ya avisó a cocina: «Entendido» quita las que vio y no vuelven aunque el papel vuelva a fallar.
+            vigia.descartarComandasSinSalir(listOf("x", "y"))
             assertThat(vigia.estado.value.comandasSinSalir).isEmpty()
             hora += 181_000
             advanceTimeBy(181_000)
-            verify(atLeast = 2) { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+            verify(atLeast = 3) { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
             assertThat(vigia.estado.value.comandasSinSalir).isEmpty()
+        }
+    }
+
+    @Test
+    fun `Ruling 68 el vigia pregunta si puede anunciarse con la pantalla que la cajera tiene enfrente`() = runTest {
+        conVigia { vigia ->
+            vigia.rutaALaVista = NavRoute.Payment.route
+            primerPlano = false // lo que conteste la regla es lo que viaja en la cabecera
+            vigia.sondearYa()
+            assertThat(rutas.last()).isEqualTo(NavRoute.Payment.route)
+            assertThat(avisos.last()).isFalse()
+
+            vigia.rutaALaVista = NavRoute.Home.route
+            primerPlano = true
+            vigia.sondearYa()
+            assertThat(rutas.last()).isEqualTo(NavRoute.Home.route)
+            assertThat(avisos.last()).isTrue()
+        }
+    }
+
+    @Test
+    fun `Ruling 68 la cabecera va en el recibo y no con una venta en curso, con la app bloqueada, en mantenimiento ni en kiosco`() = runTest {
+        val cobro = PaymentStateHolder()
+        val bloqueada = MutableStateFlow(false)
+        val mantenimiento = MutableStateFlow(false)
+        val bloqueo = mockk<LockScreenManager> { every { isLocked } returns bloqueada }
+        val enMantenimiento = mockk<MaintenanceManager> { every { isInMaintenance } returns mantenimiento }
+        conVigia(anuncia = cajaQueAvisa({ true }, cobro, bloqueo, enMantenimiento)) { vigia ->
+            // El recibo de un cobro con tarjeta (venta terminada): la cajera ve el aviso, la caja se anuncia.
+            vigia.rutaALaVista = NavRoute.Payment.route
+            vigia.sondearYa()
+            assertThat(avisos.last()).isTrue()
+
+            // Una venta en curso en esa pantalla (método, propina, leyendo tarjeta…): no.
+            cobro.setChargeAttemptActive(true)
+            vigia.sondearYa()
+            assertThat(avisos.last()).isFalse()
+            cobro.setChargeAttemptActive(false)
+            cobro.marcarDevolucionEnCurso() // una devolución hablando con el procesador, igual
+            vigia.sondearYa()
+            assertThat(avisos.last()).isFalse()
+            cobro.terminarDevolucionEnCurso()
+
+            // El bloqueo de la app (sólo se quita a distancia) y el mantenimiento tapan todo: no.
+            vigia.rutaALaVista = NavRoute.Home.route
+            bloqueada.value = true
+            vigia.sondearYa()
+            assertThat(avisos.last()).isFalse()
+            bloqueada.value = false
+            mantenimiento.value = true
+            vigia.sondearYa()
+            assertThat(avisos.last()).isFalse()
+            mantenimiento.value = false
+
+            // El kiosco (legacy) y las pantallas antes de la sesión: no.
+            vigia.rutaALaVista = NavRoute.KioskMenu.route
+            vigia.sondearYa()
+            assertThat(avisos.last()).isFalse()
+            vigia.rutaALaVista = NavRoute.Login.route
+            vigia.sondearYa()
+            assertThat(avisos.last()).isFalse()
+
+            vigia.rutaALaVista = NavRoute.Home.route
+            vigia.sondearYa()
+            assertThat(avisos.last()).isTrue()
+            assertThat(cabeceras.last()).isTrue() // el latido de «Por pagar» no depende de esto
+        }
+    }
+
+    @Test
+    fun `Ruling 67 sin entrada registrada con la checada obligatoria sigue sonando, se anuncia y el estado lo dice`() = runTest {
+        checadaObligatoria = true
+        entradaRegistrada = false
+        respuesta = { Result.success(pagina(porPagar = emptyList(), tarjetas = listOf(tarjeta("t1")))) }
+        conVigia { vigia ->
+            assertThat(vigia.estado.value.sinEntrada).isTrue()
+            assertThat(vigia.estado.value.sinTurno).isFalse()
+            assertThat(cabeceras.last()).isFalse() // sin entrada no cobra aquí…
+            assertThat(avisos.last()).isTrue() // …pero se anuncia como caja que avisa
+            advanceTimeBy(4_001)
+            assertThat(timbres).isEqualTo(1)
+
+            entradaRegistrada = true
+            vigia.sondearYa()
+            assertThat(vigia.estado.value.sinEntrada).isFalse()
+
+            // Sin turno, lo primero es abrirlo: el aviso dice eso (no la entrada).
+            turnoAbierto = false
+            entradaRegistrada = false
+            vigia.sondearYa()
+            assertThat(vigia.estado.value.sinTurno).isTrue()
+            assertThat(vigia.estado.value.sinEntrada).isFalse()
         }
     }
 }

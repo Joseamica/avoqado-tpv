@@ -44,7 +44,6 @@ import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -70,12 +69,13 @@ import com.jaac.avoqado_tpv.core.presentation.components.VenueStatusBanner
 import com.jaac.avoqado_tpv.core.presentation.screens.FastPaymentEntryScreen
 import com.jaac.avoqado_tpv.core.presentation.screens.avisoDePagadosEnLinea
 import com.jaac.avoqado_tpv.core.presentation.screens.avisoDeSaldoSinConfirmar
-import com.jaac.avoqado_tpv.core.presentation.screens.rutaConAvisosDeLaTienda
+import com.jaac.avoqado_tpv.core.presentation.screens.AvisoDePagados
+import com.jaac.avoqado_tpv.core.presentation.screens.avisoALaVista
+import com.jaac.avoqado_tpv.core.presentation.screens.avisoDeComandasSinSalir
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
-import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaPorImprimir
 import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
-import com.jaac.avoqado_tpv.features.onlineorders.domain.TarjetaPorAbrir
 import com.jaac.avoqado_tpv.features.onlineorders.presentation.TextosPorPagar
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
 import com.jaac.avoqado_tpv.core.presentation.screens.WelcomeScreen
 import com.jaac.avoqado_tpv.features.checkout.presentation.CheckoutScreen
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio
@@ -274,17 +274,19 @@ private suspend fun ensureAngelPayRefundAccount(
 }
 
 /**
- * 🔔 D661 (Ruling 19 · 68 · 69): los avisos de la tienda en línea arriba de la app. La banda de «Pedido pagado en línea · ábrelo para
- * cobrar» con «Ver» sale en toda pantalla menos en el cobro con tarjeta y con la MISMA regla que el timbre ([avisoDePagadosEnLinea]); sin
- * turno dice cómo entrar. Debajo, una por pedido que ESTA caja abrió y cuya comanda no salió aquí, con «Entendido». Lleva su propio reloj
- * (cada 15 s) para que una copia que envejece sin cambiar se quite sola, sin recomponer el resto de la navegación.
+ * 🔔 D661 (Ruling 19 · 67 · 68 · 69): los avisos de la tienda en línea arriba de la app, sólo donde la cajera puede verlos
+ * ([avisoALaVista]; la misma regla con la que el vigía se anuncia como «puedo avisar»). La banda de «Pedido pagado en línea · ábrelo
+ * para cobrar» lleva a «Pedidos por pagar»; sin turno o sin entrada sólo dice por dónde se entra. Debajo, UNA banda con las comandas de
+ * lo que ESTA caja abrió y no salió aquí, con «Entendido». Lleva su propio reloj (cada 15 s) para que una copia que envejece se quite
+ * sola, y en el cobro con tarjeta mira cada 250 ms si hay una venta en curso (esas banderas no avisan).
  */
 @Composable
 private fun AvisosDeLaTienda(
     estado: StateFlow<EstadoDeFolios>,
     ruta: String?,
+    cobro: PaymentStateProvider,
     onVer: () -> Unit,
-    onEntendido: (String) -> Unit,
+    onEntendido: (List<String>) -> Unit,
 ) {
     val folios by estado.collectAsStateWithLifecycle()
     val ahoraMs by produceState(System.currentTimeMillis()) {
@@ -293,36 +295,49 @@ private fun AvisosDeLaTienda(
             value = System.currentTimeMillis()
         }
     }
-    avisoDePagadosEnLinea(folios, ahoraMs, ruta)?.let { BandaDePagadosEnLinea(it, onVer) }
-    if (rutaConAvisosDeLaTienda(ruta)) folios.comandasSinSalir.forEach { c -> BandaDeComandaSinSalir(c) { onEntendido(c.orderId) } }
+    val ventaEnCurso by produceState(false, ruta) {
+        while (ruta in NavRoute.RUTAS_DEL_COBRO_CON_TARJETA) {
+            value = cobro.isChargeAttemptActive() || cobro.isCharging()
+            delay(250)
+        }
+        value = false
+    }
+    // El bloqueo y el mantenimiento tapan la app entera: aquí no hace falta mirarlos (el vigía sí, para la cabecera).
+    val aLaVista = avisoALaVista(ruta, ventaEnCurso, bloqueada = false, mantenimiento = false)
+    avisoDePagadosEnLinea(folios, ahoraMs, aLaVista)?.let { BandaDePagadosEnLinea(it, onVer) }
+    if (aLaVista) {
+        val comandas = folios.comandasSinSalir
+        avisoDeComandasSinSalir(comandas)?.let { texto -> BandaDeComandaSinSalir(texto) { onEntendido(comandas.map { it.orderId }) } }
+    }
 }
 
+/** Ruling 67: sin turno o sin entrada, la banda sólo informa (nunca entra a «Pedidos por pagar» saltándose las puertas del Inicio). */
 @Composable
-private fun BandaDePagadosEnLinea(texto: String, onVer: () -> Unit) {
+private fun BandaDePagadosEnLinea(aviso: AvisoDePagados, onVer: () -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.secondaryContainer,
         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onVer),
+        modifier = if (aviso.llevaAPorPagar) Modifier.fillMaxWidth().clickable(onClick = onVer) else Modifier.fillMaxWidth(),
     ) {
         Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = texto,
+                text = aviso.texto,
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f).padding(vertical = 8.dp),
             )
-            TextButton(onClick = onVer) { Text(TextosPorPagar.VER) }
+            if (aviso.llevaAPorPagar) TextButton(onClick = onVer) { Text(TextosPorPagar.VER) }
         }
     }
 }
 
 /** Ruling 69: sólo «Entendido» la quita (tocar la banda no hace nada: que no se vaya por un roce). */
 @Composable
-private fun BandaDeComandaSinSalir(comanda: ComandaPorImprimir, onEntendido: () -> Unit) {
+private fun BandaDeComandaSinSalir(texto: String, onEntendido: () -> Unit) {
     Surface(color = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer) {
         Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = TextosPorPagar.comandaNoSalio(comanda.folio),
+                text = texto,
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f).padding(vertical = 8.dp),
@@ -356,21 +371,9 @@ private fun AvisosDeLaTiendaPreview() {
                 "Cobro con saldo sin confirmar en el folio W494E (\$20.00). No lo cobres otra vez: se comprueba en «Pedidos por pagar» " +
                     "cuando haya conexión.",
             )
-            AvisosDeLaTienda(
-                estado = MutableStateFlow(
-                    EstadoDeFolios(
-                        actualizadoEnMs = System.currentTimeMillis(),
-                        tarjetasPorAbrir = listOf(
-                            TarjetaPorAbrir("t1", "W5GZD", "Ana N.", BigDecimal("250.50"), null, cobrando = false),
-                            TarjetaPorAbrir("t2", "W6H2J", "Luis", BigDecimal("89.00"), null, cobrando = false),
-                        ),
-                        comandasSinSalir = listOf(ComandaPorImprimir("t0", "T-0042")),
-                    ),
-                ),
-                ruta = NavRoute.FastPaymentEntry.route,
-                onVer = {},
-                onEntendido = {},
-            )
+            BandaDePagadosEnLinea(AvisoDePagados(TextosPorPagar.avisoDePagadosEnLinea(2), llevaAPorPagar = true)) {}
+            BandaDePagadosEnLinea(AvisoDePagados(TextosPorPagar.abreTuTurno(1), llevaAPorPagar = false)) {}
+            BandaDeComandaSinSalir(TextosPorPagar.comandasNoSalieron(2)) {}
         }
     }
 }
@@ -1183,13 +1186,17 @@ fun AppNavigation(
             }
         }
 
-        // 🔔 D661 (Ruling 19 · 68 · 69): mientras suena un pedido pagado en línea, toda pantalla lo dice arriba (menos el cobro con tarjeta)
-        // y lleva a «Pedidos por pagar»; y la comanda de lo que esta caja abrió y no salió aquí, también.
+        // 🔔 D661 (Ruling 19 · 68 · 69): mientras suena un pedido pagado en línea, lo dice arriba toda pantalla donde la cajera puede usar
+        // la terminal (no con una venta en curso en el cobro con tarjeta, ni en el kiosco o antes de la sesión) y lleva a «Pedidos por
+        // pagar»; y la comanda de lo que esta caja abrió y no salió aquí, también. Ruling 68: el vigía sólo se anuncia como «puedo avisar»
+        // con el aviso a la vista; para eso sabe qué pantalla hay enfrente.
+        LaunchedEffect(bannerRoute) { vigiaDeFolios.rutaALaVista = bannerRoute }
         AvisosDeLaTienda(
             estado = vigiaDeFolios.estado,
             ruta = bannerRoute,
+            cobro = paymentStateProvider,
             onVer = { navController.navigate(NavRoute.PorPagar.route) { launchSingleTop = true } },
-            onEntendido = vigiaDeFolios::descartarComandaSinSalir,
+            onEntendido = vigiaDeFolios::descartarComandasSinSalir,
         )
 
         // Main navigation content (takes remaining space)

@@ -1,8 +1,11 @@
 package com.jaac.avoqado_tpv.core.presentation.screens
 
+import com.jaac.avoqado_tpv.core.presentation.navigation.NavRoute
 import com.jaac.avoqado_tpv.features.giftcards.data.SolicitudDeSaldo
 import com.jaac.avoqado_tpv.features.giftcards.data.TextosDeSaldo
 import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
+import com.jaac.avoqado_tpv.features.onlineorders.domain.tarjetasQueAvisan
+import com.jaac.avoqado_tpv.features.onlineorders.presentation.TextosPorPagar
 
 /** Lo que el recuadro «Pedidos por pagar» del inicio pinta. La pantalla sólo pinta; el latido lo decide el vigía. */
 data class RecuadroPorPagar(
@@ -15,23 +18,33 @@ data class RecuadroPorPagar(
     val subtituloEsAviso: Boolean,
 )
 
-/** `null` si el servidor no pidió el recuadro. Misma condición que «Cobrar»: turno abierto y entrada registrada. */
+/**
+ * `null` si el servidor no pidió el recuadro. Misma condición que «Cobrar»: turno abierto y entrada registrada.
+ * D661: [ahoraMs] decide si los pagados en línea de la lista avisan ([tarjetasQueAvisan]).
+ */
 fun recuadroPorPagar(
     estado: EstadoDeFolios,
     canOperate: Boolean,
     canWork: Boolean,
     motivoSinTurno: String?,
+    ahoraMs: Long = System.currentTimeMillis(),
 ): RecuadroPorPagar? {
-    if (!estado.showTile) return null
-    if (!canWork) return RecuadroPorPagar(false, "Registra tu entrada", null, false)
-    if (!canOperate) return RecuadroPorPagar(false, motivoSinTurno ?: "Abre la caja primero", null, false)
+    // D661: los pagados en línea que avisan (lectura en vivo, sin los que otra caja cobra) cuentan en la insignia y se dicen abajo:
+    // es por lo que la terminal suena. Mientras haya uno, el recuadro sigue aunque la tienda cambie de modo o se apague.
+    val porAbrir = tarjetasQueAvisan(estado, ahoraMs).size
+    val pagadosEnLinea = if (porAbrir > 0) TextosPorPagar.pagadosEnLinea(porAbrir) else null
+    if (!estado.showTile && porAbrir == 0) return null
+    if (!canWork) return RecuadroPorPagar(false, "Registra tu entrada", pagadosEnLinea, false)
+    if (!canOperate) return RecuadroPorPagar(false, motivoSinTurno ?: "Abre la caja primero", pagadosEnLinea, false)
 
     // Tras un 4xx la lista es la última buena pero ya no es fiable: no se enseña su número como si fuera de hoy.
     // Con 0 por pagar no hay insignia (un «0» parece un aviso); «N por entregar» se queda abajo.
-    val badge = if (estado.desactualizado || estado.counts.porPagar == 0) null else estado.counts.porPagar.toString()
+    val numero = estado.counts.porPagar + porAbrir
+    val badge = if (estado.desactualizado || numero == 0) null else numero.toString()
     return when {
         estado.sinConexion -> RecuadroPorPagar(true, badge, "Sin conexión", true)
         estado.desactualizado -> RecuadroPorPagar(true, null, "Sin actualizar", true)
+        pagadosEnLinea != null -> RecuadroPorPagar(true, badge, pagadosEnLinea, false)
         estado.counts.porEntregar > 0 -> RecuadroPorPagar(true, badge, "${estado.counts.porEntregar} por entregar", false)
         else -> RecuadroPorPagar(true, badge, null, false)
     }
@@ -63,6 +76,16 @@ fun avisoDeSaldoSinConfirmar(estado: EstadoDeFolios, pendientes: List<SolicitudD
         "Cobros con saldo sin confirmar en $lista. No los cobres otra vez: se comprueban en «Pedidos por pagar» cuando haya conexión."
     }
 }
+
+/**
+ * D661 (Ruling 19): mientras suena un pedido pagado en línea, Mesas y Cobrar lo dicen arriba y llevan a «Pedidos por pagar». null = no
+ * hay nada que avisar (o la lista no es de una lectura en vivo: sin red o vieja no se avisa).
+ */
+fun avisoDePagadosEnLinea(estado: EstadoDeFolios, ahoraMs: Long): String? =
+    tarjetasQueAvisan(estado, ahoraMs).size.takeIf { it > 0 }?.let { TextosPorPagar.avisoDePagadosEnLinea(it) }
+
+/** D661 (Ruling 19): las pantallas principales que dicen el aviso de los pagados en línea (el Inicio lo dice en su recuadro). */
+val RUTAS_QUE_AVISAN_DE_PAGADOS_EN_LINEA: Set<String> = setOf(NavRoute.Tables.route, NavRoute.Checkout.route)
 
 /** D12 (Codex r1 #2, r3): el almacén cifrado no se pudo leer; no se sabe si hay un cobro con saldo en duda. */
 const val SALDO_GUARDADO_ILEGIBLE =

@@ -4,10 +4,12 @@ import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result as AppResult
+import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.Folio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.PaginaDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.SeccionDeFolios
+import com.jaac.avoqado_tpv.features.onlineorders.domain.tarjetasQueAvisan
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import com.jaac.avoqado_tpv.features.shift.presentation.CachedShiftInfo
@@ -18,6 +20,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -43,6 +46,13 @@ import javax.inject.Singleton
  *
  * **Sin red** se conserva la última lista y [EstadoDeFolios.sinConexion] es true. Un 4xx es una respuesta, no un apagón.
  *
+ * **D661 · pagados con tarjeta en línea («No, entran solos»).** Mientras el SERVIDOR diga que hay uno por abrir (`tarjetasPorAbrir`),
+ * la terminal suena cada [REPETIR_TIMBRE_MS], sólo con una lectura en vivo ([tarjetasQueAvisan]: sin red, tras un 4xx o con la copia
+ * vieja, no) y sin los que otra caja cobra; y no espera más de [SONDEO_CON_TARJETAS_S] para volver a preguntar. Ruling 45: este sondeo
+ * (y sólo éste) manda `x-online-orders-card-alert: 1`, y sólo con la app al frente: así la tienda sólo ofrece la tarjeta mientras una
+ * caja pueda sonar y enseñarla. La comanda de lo ya cobrado sale de aquí ([imprimirComandas]), de una lectura fresca de
+ * `comandasPorImprimir`, nunca de la respuesta de abrir.
+ *
  * Constructor primario `internal` (con reloj) para las pruebas; el que usa Hilt es el secundario (Dagger rechaza los defaults).
  */
 @Singleton
@@ -53,6 +63,12 @@ class VigiaDeFolios internal constructor(
     private val ajustes: TpvSettingsRepository,
     private val storage: SecureStorage,
     private val reloj: () -> Long,
+    /** D661: el timbre de los pagados en línea ([Timbre.sonar]). */
+    private val timbre: () -> Unit,
+    /** D661 (Ruling 45): la app está al frente (proceso al menos STARTED): sólo así se anuncia como caja que avisa. */
+    private val enPrimerPlano: () -> Boolean,
+    /** D661: la comanda de lo cobrado en línea (reclamo + papel + confirmación). */
+    private val comanda: ComandaDeApoyo,
 ) {
     @Inject
     constructor(
@@ -61,7 +77,9 @@ class VigiaDeFolios internal constructor(
         asistencia: TimeEntryRepository,
         ajustes: TpvSettingsRepository,
         storage: SecureStorage,
-    ) : this(folios, shifts, asistencia, ajustes, storage, System::currentTimeMillis)
+        timbre: Timbre,
+        comanda: ComandaDeApoyo,
+    ) : this(folios, shifts, asistencia, ajustes, storage, System::currentTimeMillis, timbre::sonar, ::appAlFrente, comanda)
 
     private val _estado = MutableStateFlow(EstadoDeFolios())
     val estado: StateFlow<EstadoDeFolios> = _estado.asStateFlow()
@@ -77,6 +95,8 @@ class VigiaDeFolios internal constructor(
 
     /** R97: la pantalla de la lista vigente ([abrirLista]); una que ya no es la vigente no suelta lo de la nueva. */
     private val listaVigente = java.util.concurrent.atomic.AtomicLong()
+    /** Lo escribe la vuelta (con [candado]); la vuelta de comandas lo lee sin él para no imprimir lo de otra sucursal. */
+    @Volatile
     private var negocioActual: String? = null
 
     /** Última respuesta de la checada por persona, para el instante sin red (ahí el latido no se puede mandar de todos modos). */
@@ -100,6 +120,15 @@ class VigiaDeFolios internal constructor(
                     } catch (e: Exception) {
                         Timber.w(e, "[Folios] la relectura de las páginas extra falló")
                     }
+                }
+            }
+            // D661: el timbre. Cada 4 s mira si un pagado en línea avisa (lectura en vivo y nadie más lo cobra) y suena. Se mira con el
+            // reloj en cada vuelta: una copia que envejece sin que cambie la lista (lectura colgada, terminal dormida) deja de sonar sola.
+            // Primero espera: el compás (4 s desde que arranca) no depende de si la primera lectura ganó o no la carrera al arrancar.
+            launch {
+                while (isActive) {
+                    delay(REPETIR_TIMBRE_MS)
+                    if (tarjetasQueAvisan(_estado.value, reloj()).isNotEmpty()) sonar()
                 }
             }
             while (isActive) {
@@ -269,7 +298,8 @@ class VigiaDeFolios internal constructor(
             olvidarListas()
             negocioActual = venueId
         }
-        val pagina = folios.listar(venueId, puedeCobrar(venueId)).getOrElse { error ->
+        // Ruling 45: «esta caja suena y enseña los pagados en línea» sólo con la app al frente (se mira en cada vuelta).
+        val pagina = folios.listar(venueId, puedeCobrar(venueId), avisaTarjetas = enPrimerPlano()).getOrElse { error ->
             // Red caída o 5xx = «sin conexión»; un 4xx (401/403/404) sí es respuesta: la lista ya no es fiable y se dice «desactualizado».
             _estado.value = if (esRespuesta(error)) _estado.value.copy(desactualizado = true) else _estado.value.copy(sinConexion = true)
             Timber.w(error, "[Folios] sin respuesta del servidor")
@@ -282,7 +312,127 @@ class VigiaDeFolios internal constructor(
         for (sec in SeccionDeFolios.values()) if (sec !in pagina.siguientes) { extras = extras - sec; cursorExtra = cursorExtra - sec }
         _estado.value = componer(pagina.aEstado(ahora).copy(errorAlCargarMas = _estado.value.errorAlCargarMas))
         if (extras.values.any { it.isNotEmpty() }) releer.trySend(Unit)
+        imprimirComandas(venueId, pagina)
         segundosDeEspera(pagina) * 1000L
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // D661: la comanda de lo cobrado en línea, de una lectura FRESCA (`comandasPorImprimir`), aunque la respuesta de abrir se haya
+    // perdido, la cajera haya salido de la pantalla, la app se haya reiniciado, la lista esté paginada o el día ya se haya cerrado. El
+    // SERVIDOR decide quién imprime (el reclamo) y su confirmación la saca de la lista.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private val candadoDeComandas = Any()
+    private var vueltaDeComandasViva = false
+    /** La lista que llegó mientras corría una vuelta: se recorre al terminarla (la más nueva gana; sin comandas, se borra). */
+    private var listaQueEspera: Pair<String, PaginaDeFolios>? = null
+    /** Pedidos cuyo papel sigue en curso aquí: su trabajo puede seguir vivo después de que la vuelta dejó de esperarlo. */
+    private val comandasEnCurso: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    /** orderId → cuándo (reloj) no salió aquí su papel o no se pudo leer. En memoria: reiniciar la app lo olvida, que es lo seguro. */
+    private val descansos = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** Una vuelta a la vez; la lista que llega mientras tanto no se pierde. Nunca bloquea al sondeo (corre en su propio trabajo). */
+    private fun imprimirComandas(venueId: String, pagina: PaginaDeFolios) {
+        val scope = alcance ?: return
+        val hay = pagina.comandasPorImprimir.isNotEmpty()
+        synchronized(candadoDeComandas) {
+            if (vueltaDeComandasViva) {
+                listaQueEspera = if (hay) venueId to pagina else null
+                return
+            }
+            if (!hay) return
+            vueltaDeComandasViva = true
+        }
+        scope.launch {
+            var siguiente: Pair<String, PaginaDeFolios>? = venueId to pagina
+            while (siguiente != null) {
+                recorrerComandas(scope, siguiente.first, siguiente.second)
+                siguiente = synchronized(candadoDeComandas) {
+                    listaQueEspera.also {
+                        listaQueEspera = null
+                        if (it == null) vueltaDeComandasViva = false
+                    }
+                }
+            }
+        }.invokeOnCompletion { causa ->
+            // Cancelada (la actividad se fue), aun antes de empezar: se suelta para que la siguiente lectura abra otra vuelta.
+            if (causa != null) synchronized(candadoDeComandas) {
+                vueltaDeComandasViva = false
+                listaQueEspera = null
+            }
+        }
+    }
+
+    /**
+     * De uno en uno (nunca hasta 50 lecturas a la vez). Antes de leer un pedido se pregunta en el aparato si podría sacar su papel: hay
+     * impresora (un modelo sin impresora no lee nada), no está en curso aquí y no descansa. El papel va en su PROPIO trabajo y la vuelta
+     * lo espera a lo más [ESPERA_POR_COMANDA_MS]: uno atorado no frena a los demás ni al sondeo (y su marca de «en curso» hace que las
+     * vueltas siguientes lo salten sin leerlo).
+     */
+    private suspend fun recorrerComandas(scope: CoroutineScope, venueId: String, pagina: PaginaDeFolios) {
+        for (c in pagina.comandasPorImprimir) {
+            if (negocioActual != venueId) return
+            try {
+                if (!comanda.puedeImprimir() || c.orderId in comandasEnCurso || enDescanso(c.orderId)) continue
+                // Sus renglones: la fila de «Por entregar» de esta MISMA lectura o, si no está ahí (página siguiente, o ya cerrado por el
+                // corte del día), ESE pedido por su camino (Ruling 14). Una lectura fallida descansa: no se relee en cada sondeo.
+                val pedido = pagina.porEntregar.firstOrNull { it.orderId == c.orderId }
+                    ?: folios.leerPedido(venueId, c.orderId).getOrElse {
+                        Timber.w(it, "🧾 [Folios] Comanda de %s: no se pudo leer el pedido; descansa", c.folio)
+                        descansar(c.orderId)
+                        null
+                    }
+                if (pedido == null || !pedido.necesitaImprimir || negocioActual != venueId) continue
+                if (pedido.productos.isEmpty()) {
+                    descansar(c.orderId)
+                    continue
+                }
+                comandasEnCurso.add(c.orderId)
+                // ponytail: un papel atorado dentro del SDK deja su trabajo (y un hilo de IO) vivo hasta que la impresora conteste; a lo
+                // más uno por pedido (≤ 50, el tope del SERVIDOR). Si llegara a pasar, se le pone tope al SDK, no a esta vuelta.
+                val papel = scope.launch {
+                    try {
+                        // Ruling 50: si esperó la impresora hasta que su reclamo casi vence, no sale y NO descansa: el siguiente sondeo
+                        // la vuelve a pedir (el SERVIDOR la lista otra vez en cuanto el reclamo vence).
+                        val resultado = comanda.intentar(venueId, pedido.aComanda(), ComandaDeApoyo.EDAD_MAXIMA_DEL_RECLAMO_MS)
+                        if (resultado == ResultadoDeComanda.NO_SALIO) descansar(c.orderId)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Timber.w(e, "🧾 [Folios] La comanda de %s falló", c.folio)
+                        descansar(c.orderId)
+                    } finally {
+                        comandasEnCurso.remove(c.orderId)
+                    }
+                }
+                if (withTimeoutOrNull(ESPERA_POR_COMANDA_MS) { papel.join() } == null) {
+                    Timber.w("🧾 [Folios] La comanda de %s sigue esperando la impresora; sigo con las demás", c.folio)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.w(e, "🧾 [Folios] No se pudo intentar la comanda de %s", c.folio)
+            }
+        }
+    }
+
+    private fun descansar(orderId: String) {
+        descansos[orderId] = reloj()
+    }
+
+    /** Ese pedido falló aquí hace menos de [DESCANSO_DE_COMANDA_MS] (de paso olvida los descansos ya vencidos). */
+    private fun enDescanso(orderId: String): Boolean {
+        val ahora = reloj()
+        descansos.entries.removeIf { ahora - it.value >= DESCANSO_DE_COMANDA_MS }
+        return descansos.containsKey(orderId)
+    }
+
+    private fun Folio.aComanda() = ComandaDeFolio(orderId, folio, nombre, nota, productos)
+
+    private fun sonar() = try {
+        timbre()
+    } catch (e: Exception) {
+        Timber.w(e, "🔔 [Folios] No sonó el aviso de pagados en línea")
     }
 
     private fun negocioConSesion(): String? {
@@ -290,8 +440,11 @@ class VigiaDeFolios internal constructor(
         return storage.getVenueId()?.takeIf { it.isNotBlank() }
     }
 
-    private fun segundosDeEspera(p: PaginaDeFolios): Long =
-        (p.pollSeconds ?: if (p.showTile) 30 else 600).coerceIn(5, 3600).toLong()
+    /** D661: con pagados en línea por abrir nunca más de [SONDEO_CON_TARJETAS_S], aunque la tienda cambie de modo o se apague. */
+    private fun segundosDeEspera(p: PaginaDeFolios): Long {
+        val segundos = (p.pollSeconds ?: if (p.showTile) 30 else 600).coerceIn(5, 3600)
+        return (if (p.tarjetasPorAbrir.isNotEmpty()) minOf(segundos, SONDEO_CON_TARJETAS_S) else segundos).toLong()
+    }
 
     /** `(turnoPermiteVender || !sistemaDeTurnos) && (entradaRegistrada || !checadaObligatoria)`, igual que «Cobrar». */
     private suspend fun puedeCobrar(venueId: String): Boolean {
@@ -337,6 +490,7 @@ class VigiaDeFolios internal constructor(
         sinConexion = false,
         actualizadoEnMs = ahora,
         desfaseDelServidorMs = horaDelServidor?.let { it.toEpochMilli() - ahora } ?: 0L,
+        tarjetasPorAbrir = tarjetasPorAbrir,
     )
 
     private fun PaginaDeFolios.de(seccion: SeccionDeFolios) = if (seccion == SeccionDeFolios.POR_PAGAR) porPagar else porEntregar
@@ -344,5 +498,17 @@ class VigiaDeFolios internal constructor(
     companion object {
         const val ESPERA_TRAS_FALLO_MS = 30_000L
         const val ESPERA_SIN_SESION_MS = 10_000L
+        /** D661: cada cuánto suena mientras haya un pagado en línea por abrir. */
+        const val REPETIR_TIMBRE_MS = 4_000L
+        /** D661: lo más que una vuelta de comandas espera el papel de UNA antes de seguir con la siguiente (el trabajo sigue solo). */
+        const val ESPERA_POR_COMANDA_MS = 20_000L
+        /** D661: tras un papel que no salió (o una lectura fallida), ese pedido descansa antes de volver a intentarse aquí. */
+        const val DESCANSO_DE_COMANDA_MS = 3 * 60_000L
+        /** D661: mientras haya pagados en línea por abrir, el sondeo nunca espera más que esto, diga lo que diga `pollSeconds`. */
+        const val SONDEO_CON_TARJETAS_S = 30
     }
 }
+
+/** Ruling 45: el PROCESO al frente (al menos STARTED). Leerlo fuera del hilo principal está bien: no cambia el estado. */
+private fun appAlFrente(): Boolean =
+    androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)

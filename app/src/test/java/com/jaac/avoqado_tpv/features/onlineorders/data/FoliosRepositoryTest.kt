@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.onlineorders.data
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
+import com.jaac.avoqado_tpv.features.onlineorders.domain.MarcaDeCierre
 import com.jaac.avoqado_tpv.features.onlineorders.domain.SeccionDeFolios
 import io.mockk.every
 import io.mockk.mockk
@@ -169,7 +170,7 @@ class FoliosRepositoryTest {
         server.enqueue(json("""{"success":true,"data":{"claimed":true}}"""))
         server.enqueue(json("""{"success":true,"data":{"ok":false}}"""))
 
-        assertThat(repo.reclamarImpresion("v1", "cord3").getOrThrow()).isTrue()
+        assertThat(repo.reclamarImpresion("v1", "cord3").getOrThrow().reclamado).isTrue()
         assertThat(repo.confirmarImpresion("v1", "cord3").getOrThrow()).isFalse()
 
         val claim = server.takeRequest()
@@ -239,4 +240,157 @@ class FoliosRepositoryTest {
         assertThat(aceptar.body.readUtf8()).isEqualTo("{}")
         assertThat(server.takeRequest().path).isEqualTo("/api/v1/tpv/venues/v1/online-orders/cord1/cancel")
     }
+
+    // region — D661 (Task 12): pagados con tarjeta en línea en «No, entran solos»
+
+    @Test
+    fun `FolioDto sin campos nuevos se lee como hoy`() = runTest {
+        // Un SERVIDOR sin D661: ni tarjetasPorAbrir, ni comandasPorImprimir, ni marcas en las filas.
+        server.enqueue(json(respuesta))
+
+        val pagina = repo.listar("v1", puedeCobrar = false).getOrThrow()
+
+        assertThat(pagina.tarjetasPorAbrir).isEmpty()
+        assertThat(pagina.comandasPorImprimir).isEmpty()
+        assertThat((pagina.porPagar + pagina.porEntregar).map { it.marca }).containsExactly(null, null, null)
+        // Lo de siempre, igual.
+        assertThat(pagina.porPagar.map { it.folio }).containsExactly("W7KQ2", "W9D5F").inOrder()
+        assertThat(pagina.porEntregar.single().necesitaImprimir).isTrue()
+        assertThat(pagina.pollSeconds).isEqualTo(30)
+    }
+
+    @Test
+    fun `lee los pagados en linea por abrir, las comandas por imprimir y las marcas de cierre`() = runTest {
+        server.enqueue(
+            json(
+                """{"success":true,"data":{"showTile":true,"pollSeconds":30,"counts":{"toPay":0,"toDeliver":4},"toPay":[],
+                  "toDeliver":[
+                    {"orderId":"c1","orderNumber":"W1","status":"ACCEPTED","total":10,"remaining":0,"refundRequestedAt":"2026-11-21T10:00:00.000Z","notPickedUpAt":null,"refundedAt":null,"items":[]},
+                    {"orderId":"c2","orderNumber":"W2","status":"COMPLETED","total":10,"remaining":0,"refundRequestedAt":"2026-11-21T10:00:00.000Z","refundedAt":"2026-11-21T10:05:00.000Z","notPickedUpAt":"2026-11-21T10:00:05.000Z","items":[]},
+                    {"orderId":"c3","orderNumber":"W3","status":"COMPLETED","total":10,"remaining":0,"notPickedUpAt":"2026-11-21T10:00:05.000Z","items":[]},
+                    {"orderId":"c4","orderNumber":"W4","status":"ACCEPTED","total":10,"remaining":0,"refundRequestedAt":"no-es-fecha","items":[]}
+                  ],
+                  "tarjetasPorAbrir":[
+                    {"orderId":"co1","orderNumber":"W5GZD","customerName":"Ana N.","total":250.5,"createdAt":"2026-11-20T18:00:00.000Z","cobrando":false},
+                    {"orderId":"co2","orderNumber":"W6","customerName":"","total":0.1,"createdAt":null,"cobrando":true},
+                    {"orderId":null,"orderNumber":"W7","total":1}
+                  ],
+                  "comandasPorImprimir":[{"orderId":"co9","orderNumber":"W9"},{"orderId":"","orderNumber":"W8"}]
+                }}""",
+            ),
+        )
+
+        val pagina = repo.listar("v1", puedeCobrar = false).getOrThrow()
+
+        val ana = pagina.tarjetasPorAbrir[0]
+        assertThat(ana.orderId).isEqualTo("co1")
+        assertThat(ana.folio).isEqualTo("W5GZD")
+        assertThat(ana.nombre).isEqualTo("Ana N.")
+        assertThat(ana.total).isEqualTo(BigDecimal("250.50"))
+        assertThat(ana.creadoEn?.toString()).isEqualTo("2026-11-20T18:00:00Z")
+        assertThat(ana.cobrando).isFalse()
+        val otra = pagina.tarjetasPorAbrir[1]
+        assertThat(otra.nombre).isNull()
+        assertThat(otra.total).isEqualTo(BigDecimal("0.10"))
+        assertThat(otra.cobrando).isTrue()
+        assertThat(pagina.tarjetasPorAbrir).hasSize(2) // sin cuenta no se puede abrir: se descarta, la lista sigue
+        assertThat(pagina.comandasPorImprimir.map { it.orderId to it.folio }).containsExactly("co9" to "W9")
+        assertThat(pagina.porEntregar.map { it.marca }).containsExactly(
+            MarcaDeCierre.DEVOLVIENDO, MarcaDeCierre.DEVUELTO, MarcaDeCierre.NO_LO_RECOGIO, null,
+        ).inOrder()
+    }
+
+    @Test
+    fun `Ruling 45 la cabecera de aviso de tarjetas va solo si el vigia la pide - paginar nunca`() = runTest {
+        server.enqueue(json(respuesta))
+        server.enqueue(json(respuesta))
+        server.enqueue(json(respuesta))
+
+        repo.listar("v1", puedeCobrar = true, avisaTarjetas = true).getOrThrow()
+        repo.listar("v1", puedeCobrar = true).getOrThrow()
+        repo.cargarMas("v1", SeccionDeFolios.POR_ENTREGAR, "c1").getOrThrow()
+
+        assertThat(server.takeRequest().getHeader("x-online-orders-card-alert")).isEqualTo("1")
+        assertThat(server.takeRequest().getHeader("x-online-orders-card-alert")).isNull()
+        assertThat(server.takeRequest().getHeader("x-online-orders-card-alert")).isNull()
+    }
+
+    @Test
+    fun `abrir un pagado en linea manda abrirPagadoEnLinea true y aceptar sigue con el cuerpo vacio`() = runTest {
+        server.enqueue(json("""{"success":true,"data":{"status":"ACCEPTED"}}"""))
+        server.enqueue(json("""{"success":true,"data":{}}"""))
+
+        repo.aceptar("v1", "co1", abrirPagadoEnLinea = true).getOrThrow()
+        repo.aceptar("v1", "cord1").getOrThrow()
+
+        val abrir = server.takeRequest()
+        assertThat(abrir.path).isEqualTo("/api/v1/tpv/venues/v1/online-orders/co1/accept")
+        assertThat(abrir.body.readUtf8()).isEqualTo("""{"abrirPagadoEnLinea":true}""")
+        assertThat(server.takeRequest().body.readUtf8()).isEqualTo("{}")
+    }
+
+    @Test
+    fun `Ruling 37 el reclamo de la comanda dice que esta caja imprime POSIBLE REPETIDA y lee posibleRepetida`() = runTest {
+        server.enqueue(json("""{"success":true,"data":{"claimed":true,"posibleRepetida":true}}"""))
+        server.enqueue(json("""{"success":true,"data":{"claimed":true}}"""))
+        server.enqueue(json("""{"success":true,"data":{"claimed":false}}"""))
+
+        assertThat(repo.reclamarImpresion("v1", "co9").getOrThrow()).isEqualTo(ReclamoDeComanda(reclamado = true, posibleRepetida = true))
+        assertThat(repo.reclamarImpresion("v1", "co9").getOrThrow()).isEqualTo(ReclamoDeComanda(reclamado = true, posibleRepetida = false))
+        assertThat(repo.reclamarImpresion("v1", "co9").getOrThrow()).isEqualTo(ReclamoDeComanda(reclamado = false, posibleRepetida = false))
+
+        repeat(3) {
+            val claim = server.takeRequest()
+            assertThat(claim.getHeader("x-online-orders-card-alert")).isEqualTo("1")
+            assertThat(claim.getHeader("x-device-id")).isEqualTo("AVQD-N86-001")
+        }
+    }
+
+    @Test
+    fun `lee un pedido por su propio camino`() = runTest {
+        server.enqueue(
+            json(
+                """{"success":true,"data":{"orderId":"co9","orderNumber":"W9","status":"COMPLETED","customerName":"Ana","total":69,"remaining":0,
+                  "needsPrint":true,"notPickedUpAt":"2026-11-21T10:00:05.000Z","items":[{"name":"Latte","quantity":2,"modifiers":[{"name":"Avena","quantity":1}]}]}}""",
+            ),
+        )
+        server.enqueue(json("""{"success":true,"data":null}"""))
+
+        val pedido = repo.leerPedido("v1", "co9").getOrThrow()
+
+        assertThat(server.takeRequest().path).isEqualTo("/api/v1/tpv/venues/v1/online-orders/co9")
+        assertThat(pedido.folio).isEqualTo("W9")
+        assertThat(pedido.necesitaImprimir).isTrue()
+        assertThat(pedido.productos.single().cantidad).isEqualTo(2)
+        assertThat(pedido.productos.single().extras.single().nombre).isEqualTo("Avena")
+        assertThat(pedido.marca).isEqualTo(MarcaDeCierre.NO_LO_RECOGIO)
+        // Sin pedido en la respuesta: falla (nunca un pedido vacío que se imprima).
+        assertThat(repo.leerPedido("v1", "co9").isFailure).isTrue()
+    }
+
+    @Test
+    fun `Ruling 36 un 409 ORDER_STATE_CHANGED trae el estado real y su marca de cierre`() = runTest {
+        val noLoRecogio = "Este pedido se cerró como «No lo recogió» al terminar el día: no se marca entregado. No se aplicó nada."
+        server.enqueue(
+            MockResponse().setResponseCode(409).setHeader("Content-Type", "application/json").setBody(
+                """{"success":false,"code":"ORDER_STATE_CHANGED","status":"COMPLETED","notPickedUpAt":"2026-11-21T10:00:05.000Z","error":"$noLoRecogio"}""",
+            ),
+        )
+        server.enqueue(
+            MockResponse().setResponseCode(409).setHeader("Content-Type", "application/json").setBody(
+                """{"success":false,"code":"ORDER_STATE_CHANGED","status":"READY","error":"El pedido ya cambió de estado."}""",
+            ),
+        )
+
+        val marcado = repo.entregado("v1", "co9").exceptionOrNull() as PedidoYaCambio
+        val sinMarca = repo.aceptar("v1", "co9", abrirPagadoEnLinea = true).exceptionOrNull() as PedidoYaCambio
+
+        assertThat(marcado.estado).isEqualTo("COMPLETED")
+        assertThat(marcado.marca).isEqualTo(MarcaDeCierre.NO_LO_RECOGIO)
+        assertThat(marcado.message).isEqualTo(noLoRecogio)
+        assertThat(sinMarca.estado).isEqualTo("READY")
+        assertThat(sinMarca.marca).isNull()
+    }
+
+    // endregion
 }

@@ -3,11 +3,14 @@ package com.jaac.avoqado_tpv.core.presentation.screens
 import com.jaac.avoqado_tpv.features.giftcards.data.SolicitudDeSaldo
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ConteoDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
+import com.jaac.avoqado_tpv.features.onlineorders.domain.TarjetaPorAbrir
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.math.BigDecimal
 
 class RecuadroPorPagarTest {
     private fun estado(
@@ -147,6 +150,68 @@ class RecuadroPorPagarTest {
             avisoDeSaldoSinConfirmar(EstadoDeFolios(sinConexion = true), listOf(guardada(folio = null, monto = "134.50"))),
         )
     }
+
+    // region D661 — pagados con tarjeta en línea por abrir (Ruling 19)
+
+    private fun tarjeta(id: String, cobrando: Boolean = false) =
+        TarjetaPorAbrir(id, "W$id", "Ana", BigDecimal("250.50"), null, cobrando)
+
+    /** Una lista leída en vivo a las 1_000 (hora de este aparato). */
+    private fun conTarjetas(vararg t: TarjetaPorAbrir, porPagar: Int = 0, porEntregar: Int = 0) =
+        estado(porPagar = porPagar, porEntregar = porEntregar).copy(tarjetasPorAbrir = t.toList(), actualizadoEnMs = 1_000L)
+
+    @Test fun `D661 con pagados en linea por abrir el recuadro los cuenta y lo dice abajo`() {
+        val r = recuadroPorPagar(conTarjetas(tarjeta("t1"), porPagar = 2, porEntregar = 1), true, true, null, ahoraMs = 2_000L)!!
+        assertTrue(r.habilitado)
+        assertEquals("3", r.badge)
+        assertEquals("1 pagado en línea", r.subtitulo)
+        assertFalse(r.subtituloEsAviso)
+
+        // Los que otra caja está cobrando no cuentan; dos que esperan sí.
+        val dos = recuadroPorPagar(conTarjetas(tarjeta("t1"), tarjeta("t2"), tarjeta("t3", cobrando = true)), true, true, null, 2_000L)!!
+        assertEquals("2", dos.badge)
+        assertEquals("2 pagados en línea", dos.subtitulo)
+
+        // Sin turno: el motivo arriba (como hoy) y abajo por qué suena.
+        val sinTurno = recuadroPorPagar(conTarjetas(tarjeta("t1")), false, true, "Abre la caja primero", 2_000L)!!
+        assertFalse(sinTurno.habilitado)
+        assertEquals("Abre la caja primero", sinTurno.badge)
+        assertEquals("1 pagado en línea", sinTurno.subtitulo)
+
+        // La tienda se apagó (sin showTile) pero queda uno por abrir: el recuadro sigue.
+        assertNotNull(recuadroPorPagar(conTarjetas(tarjeta("t1")).copy(showTile = false), true, true, null, 2_000L))
+    }
+
+    @Test fun `D661 sin red o con la copia vieja el recuadro no los cuenta`() {
+        val sinRed = recuadroPorPagar(conTarjetas(tarjeta("t1"), porPagar = 2).copy(sinConexion = true), true, true, null, 2_000L)!!
+        assertEquals("2", sinRed.badge)
+        assertEquals("Sin conexión", sinRed.subtitulo)
+        val vieja = recuadroPorPagar(conTarjetas(tarjeta("t1"), porPagar = 2), true, true, null, ahoraMs = 1_000L + 90_001L)!!
+        assertEquals("2", vieja.badge)
+        assertNull(vieja.subtitulo)
+        // Sin showTile y sin uno en vivo: no hay recuadro.
+        assertNull(recuadroPorPagar(conTarjetas(tarjeta("t1")).copy(showTile = false, sinConexion = true), true, true, null, 2_000L))
+    }
+
+    @Test fun `D661 el aviso de pagados en linea sale con una lectura en vivo y se esconde sin red, tras un 4xx o con la copia vieja`() {
+        assertEquals("Pedido pagado en línea · ábrelo para cobrar", avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")), 2_000L))
+        assertEquals(
+            "Pedido pagado en línea · ábrelo para cobrar (2 por abrir)",
+            avisoDePagadosEnLinea(conTarjetas(tarjeta("t1"), tarjeta("t2"), tarjeta("t3", cobrando = true)), 2_000L),
+        )
+        assertNull(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")).copy(sinConexion = true), 2_000L))
+        assertNull(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")).copy(desactualizado = true), 2_000L))
+        assertNull(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1")), 1_000L + 90_001L))
+        assertNull(avisoDePagadosEnLinea(conTarjetas(tarjeta("t1", cobrando = true)), 2_000L))
+        assertNull(avisoDePagadosEnLinea(conTarjetas(), 2_000L))
+        assertNull(avisoDePagadosEnLinea(EstadoDeFolios(tarjetasPorAbrir = listOf(tarjeta("t1"))), 2_000L)) // nunca leída
+    }
+
+    @Test fun `D661 el aviso sale en Mesas y en Cobrar`() {
+        assertEquals(setOf("tables", "checkout"), RUTAS_QUE_AVISAN_DE_PAGADOS_EN_LINEA)
+    }
+
+    // endregion
 
     @Test fun `D12 varias se nombran todas`() {
         assertEquals(

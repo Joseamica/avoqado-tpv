@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Spacer
@@ -257,6 +258,41 @@ private suspend fun ensureAngelPayRefundAccount(
             )
         },
     )
+}
+
+/**
+ * 🔔 D661 (Ruling 19): la banda de «Pedido pagado en línea · ábrelo para cobrar» con «Ver». Sale con la MISMA regla que el timbre
+ * (`tarjetasQueAvisan`: lectura en vivo, sin los que otra caja cobra), así que sin red o con la copia vieja no sale. Lleva su propio
+ * reloj (cada 15 s) para que una copia que envejece sin cambiar la quite sola, sin recomponer el resto de la navegación.
+ */
+@Composable
+private fun BandaDePagadosEnLinea(
+    estado: kotlinx.coroutines.flow.StateFlow<com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios>,
+    onVer: () -> Unit,
+) {
+    val folios by estado.collectAsStateWithLifecycle()
+    val ahoraMs by androidx.compose.runtime.produceState(System.currentTimeMillis()) {
+        while (true) {
+            delay(15_000)
+            value = System.currentTimeMillis()
+        }
+    }
+    val texto = com.jaac.avoqado_tpv.core.presentation.screens.avisoDePagadosEnLinea(folios, ahoraMs) ?: return
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onVer),
+    ) {
+        Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = texto,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+            )
+            TextButton(onClick = onVer) { Text(com.jaac.avoqado_tpv.features.onlineorders.presentation.TextosPorPagar.VER) }
+        }
+    }
 }
 
 /**
@@ -1073,6 +1109,13 @@ fun AppNavigation(
                         )
                     }
                 }
+            }
+        }
+
+        // 🔔 D661 (Ruling 19): mientras suena un pedido pagado en línea, Mesas y Cobrar lo dicen arriba y llevan a «Pedidos por pagar».
+        if (bannerRoute in com.jaac.avoqado_tpv.core.presentation.screens.RUTAS_QUE_AVISAN_DE_PAGADOS_EN_LINEA) {
+            BandaDePagadosEnLinea(vigiaDeFolios.estado) {
+                navController.navigate(NavRoute.PorPagar.route) { launchSingleTop = true }
             }
         }
 

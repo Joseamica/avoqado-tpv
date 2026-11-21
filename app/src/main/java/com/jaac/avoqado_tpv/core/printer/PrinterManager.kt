@@ -1669,6 +1669,9 @@ class PrinterManager @Inject constructor(
      * @param staffName Optional staff name who sent the ticket
      * @param cliente 🧾 Tienda híbrida: a quién se le entrega («Para: Ana»); null = no se imprime
      * @param notaDelPedido 🧾 Tienda híbrida: la nota del pedido entero («Nota: sin azúcar»); null = no se imprime
+     * @param posibleRepetida 🧾 Ruling 9: el reclamo se concedió sobre otro que venció sin confirmarse; arriba sale «POSIBLE REPETIDA»
+     * @param sigueVigente 🧾 D661 · Ruling 50: se pregunta ya con la impresora libre, justo antes del primer renglón; `false` = no sale
+     *   nada y regresa [ComandaNoEmpezada]. null = sin condición, como siempre.
      * @return Result.success if printed, Result.failure if error
      */
     fun printKitchenTicket(
@@ -1679,6 +1682,8 @@ class PrinterManager @Inject constructor(
         cliente: String? = null,
         notaDelPedido: String? = null,
         esComandaDeFolio: Boolean = false,
+        posibleRepetida: Boolean = false,
+        sigueVigente: (() -> Boolean)? = null,
     ): Result<Unit> {
         return synchronized(candado) { try {
             // Sólo la comanda automática acredita papel; las reimpresiones conservan las guardas del SDK.
@@ -1694,10 +1699,22 @@ class PrinterManager @Inject constructor(
                 return Result.failure(Exception("No hay productos para imprimir"))
             }
 
+            // 🧾 D661 · Ruling 50: lo de arriba pudo esperar (otra impresión tenía la impresora). Ya libre y antes del PRIMER renglón se
+            // pregunta si todavía toca; si no, no sale ni un renglón.
+            if (sigueVigente?.invoke() == false) return Result.failure(ComandaNoEmpezada())
+
             Timber.i("🖨️ [Printer] Printing kitchen ticket for order: $orderNumber")
 
             // Reset printer state
             printerInstance.init()
+
+            // 🧾 Ruling 9: la comanda pudo haber salido ya en otra caja (su reclamo venció sin confirmarse). Lo primero que lee la cocina.
+            if (posibleRepetida) {
+                printerInstance.printStr("********************************\n", null)
+                printerInstance.printStr("    *** POSIBLE REPETIDA ***\n", null)
+                printerInstance.printStr("      revisa si ya salió\n", null)
+                printerInstance.printStr("********************************\n", null)
+            }
 
             // ========================================
             // HEADER
@@ -2169,6 +2186,9 @@ class PrinterManager @Inject constructor(
         return status.isReady && status.hasPaper
     }
 }
+
+/** D661 · Ruling 50: quien pidió la comanda dijo, ya con la impresora libre, que ya no tocaba (su reclamo envejeció esperándola). */
+class ComandaNoEmpezada : Exception("La comanda no se empezó: su reclamo envejeció esperando la impresora")
 
 /**
  * Result of printer status check.

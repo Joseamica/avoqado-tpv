@@ -672,6 +672,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.0")
     implementation("androidx.lifecycle:lifecycle-livedata-ktx:2.9.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.0")
+    // D661 (Ruling 45): «¿la app está al frente?» (ProcessLifecycleOwner). Ya venía en el APK por transitividad, a la misma versión:
+    // declararla sólo la deja usar desde el código.
+    implementation("androidx.lifecycle:lifecycle-process:2.9.0")
 
     // Material Design
     implementation(libs.material)

@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.core.printer
 import com.angelpay.angelpaysdk.AngelPaySDK
 import com.jaac.avoqado_tpv.features.onlineorders.data.ComandaDeApoyo
 import com.jaac.avoqado_tpv.features.onlineorders.data.FoliosRepository
+import com.jaac.avoqado_tpv.features.onlineorders.data.ReclamoDeComanda
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.FolioProducto
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
@@ -49,7 +50,7 @@ class ComandaNexgoResultadoFinalTest {
         gateway.receiptPrinterFactory = { printer }
         manager = PrinterManager(mockk(relaxed = true), mockk(relaxed = true), javax.inject.Provider { gateway })
         PrinterManager::class.java.getDeclaredField("esHardwarePax").apply { isAccessible = true }.setBoolean(manager, false)
-        coEvery { folios.reclamarImpresion("v1", "ord-1") } returns Result.success(true)
+        coEvery { folios.reclamarImpresion("v1", "ord-1") } returns Result.success(ReclamoDeComanda(true))
         coEvery { folios.confirmarImpresion("v1", "ord-1") } returns Result.success(true)
     }
 
@@ -122,5 +123,51 @@ class ComandaNexgoResultadoFinalTest {
 
         verify(exactly = 0) { provider.get() }
         verify(exactly = 0) { AngelPaySDK.printTicket(any()) }
+    }
+
+    /** D661 · Ruling 9/37: el reclamo se concedió sobre otro que venció sin confirmarse: la cocina lo lee antes que nada. */
+    @Test fun `Ruling 9 una comanda posiblemente repetida dice POSIBLE REPETIDA arriba de todo`() {
+        val pax = PrinterManager(mockk(relaxed = true), mockk(relaxed = true), mockk())
+        val hardware = mockk<ImpresoraTermica>(relaxed = true)
+        every { hardware.start() } returns 0
+        val renglones = mutableListOf<String>()
+        every { hardware.printStr(capture(renglones), any()) } returns Unit
+        PrinterManager::class.java.getDeclaredField("esHardwarePax").apply { isAccessible = true }.setBoolean(pax, true)
+        PrinterManager::class.java.getDeclaredField("impresoraPax\$delegate").apply { isAccessible = true }.set(pax, lazyOf(hardware))
+
+        assertTrue(pax.printKitchenTicket("W5GZD", orderItems = listOf(mockk(relaxed = true)), esComandaDeFolio = true, posibleRepetida = true).isSuccess)
+        val marca = renglones.indexOfFirst { it.contains("POSIBLE REPETIDA") }
+        assertTrue("la marca sale: $renglones", marca >= 0)
+        assertTrue("antes del encabezado de la comanda", marca < renglones.indexOfFirst { it.contains("COMANDA DE COCINA") })
+        assertTrue(renglones.any { it.contains("revisa si ya salió") })
+
+        renglones.clear()
+        assertTrue(pax.printKitchenTicket("W5GZD", orderItems = listOf(mockk(relaxed = true)), esComandaDeFolio = true).isSuccess)
+        assertFalse("sin la marca, como siempre", renglones.any { it.contains("POSIBLE REPETIDA") })
+    }
+
+    /** D661 · Ruling 50: se pregunta ya con la impresora libre (dentro de su candado), antes del primer renglón; si ya no toca, nada. */
+    @Test fun `Ruling 50 si ya no toca al soltarse la impresora no sale ni un renglon`() {
+        val pax = PrinterManager(mockk(relaxed = true), mockk(relaxed = true), mockk())
+        val hardware = mockk<ImpresoraTermica>(relaxed = true)
+        every { hardware.start() } returns 0
+        val renglones = mutableListOf<String>()
+        every { hardware.printStr(capture(renglones), any()) } returns Unit
+        PrinterManager::class.java.getDeclaredField("esHardwarePax").apply { isAccessible = true }.setBoolean(pax, true)
+        PrinterManager::class.java.getDeclaredField("impresoraPax\$delegate").apply { isAccessible = true }.set(pax, lazyOf(hardware))
+        val candado = PrinterManager::class.java.getDeclaredField("candado").apply { isAccessible = true }.get(pax)!!
+        var conLaImpresoraLibre = false
+
+        val r = pax.printKitchenTicket(
+            "W5GZD", orderItems = listOf(mockk(relaxed = true)), esComandaDeFolio = true,
+            sigueVigente = { conLaImpresoraLibre = Thread.holdsLock(candado); false },
+        )
+        assertTrue("se pregunta después de esperar la impresora", conLaImpresoraLibre)
+        assertTrue("regresa ComandaNoEmpezada: ${r.exceptionOrNull()}", r.exceptionOrNull() is ComandaNoEmpezada)
+        assertTrue("ni un renglón: $renglones", renglones.isEmpty())
+        verify(exactly = 0) { hardware.start() }
+
+        assertTrue(pax.printKitchenTicket("W5GZD", orderItems = listOf(mockk(relaxed = true)), esComandaDeFolio = true, sigueVigente = { true }).isSuccess)
+        assertTrue("si todavía toca, sale como siempre", renglones.any { it.contains("COMANDA DE COCINA") })
     }
 }

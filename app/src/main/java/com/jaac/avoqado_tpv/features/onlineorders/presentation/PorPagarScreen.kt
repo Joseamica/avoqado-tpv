@@ -83,7 +83,9 @@ import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.Folio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.FolioModificador
 import com.jaac.avoqado_tpv.features.onlineorders.domain.FolioProducto
+import com.jaac.avoqado_tpv.features.onlineorders.domain.MarcaDeCierre
 import com.jaac.avoqado_tpv.features.onlineorders.domain.SeccionDeFolios
+import com.jaac.avoqado_tpv.features.onlineorders.domain.TarjetaPorAbrir
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.math.BigDecimal
@@ -137,6 +139,7 @@ fun PorPagarScreen(
         onReintentar = viewModel::reintentar,
         onCerrarAviso = viewModel::cerrarAviso,
         onToastMostrado = viewModel::toastMostrado,
+        onAbrirYCobrar = viewModel::abrirYCobrar,
     )
 }
 
@@ -158,6 +161,8 @@ internal fun PorPagarContenido(
     onReintentar: () -> Unit,
     onCerrarAviso: () -> Unit,
     onToastMostrado: () -> Unit,
+    /** D661: «Abrir y cobrar» un pagado en línea (lo cobra el SERVIDOR). */
+    onAbrirYCobrar: (TarjetaPorAbrir) -> Unit = {},
 ) {
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(ui.toast) {
@@ -188,7 +193,7 @@ internal fun PorPagarContenido(
             if (folio != null) {
                 FolioDetalle(folio, ui, ahora, zona, onCobrar, onUsarSaldo, onCancelar, onListo, onEntregado)
             } else {
-                Lista(ui, ahora, ahoraMs, zona, onBuscar, onAbrir, onListo, onEntregado, onCargarMas, onReintentar)
+                Lista(ui, ahora, ahoraMs, zona, onBuscar, onAbrir, onListo, onEntregado, onCargarMas, onReintentar, onAbrirYCobrar)
             }
         }
     }
@@ -219,6 +224,7 @@ private fun Lista(
     onEntregado: (Folio) -> Unit,
     onCargarMas: (SeccionDeFolios) -> Unit,
     onReintentar: () -> Unit,
+    onAbrirYCobrar: (TarjetaPorAbrir) -> Unit,
 ) {
     val e = ui.folios
     Column(Modifier.fillMaxSize()) {
@@ -233,9 +239,15 @@ private fun Lista(
         when {
             actualizado == null && !e.sinConexion && !e.desactualizado -> Cargando()
             actualizado == null -> NoSePudoCargar(onReintentar)
-            !ui.buscando && ui.porPagar.isEmpty() && ui.porEntregar.isEmpty() && e.nextCursors.isEmpty() ->
+            !ui.buscando && ui.porPagar.isEmpty() && ui.porEntregar.isEmpty() && e.nextCursors.isEmpty() && ui.tarjetasPorAbrir.isEmpty() ->
                 Vacio(TextosPorPagar.VACIO, TextosPorPagar.VACIO_AYUDA)
             else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 16.dp)) {
+                // D661: lo primero, lo que suena: pagados con tarjeta en línea que esperan que una caja los abra (abrir = cobrar).
+                if (ui.tarjetasPorAbrir.isNotEmpty()) {
+                    item { Encabezado(TextosPorPagar.SECCION_PAGADOS_EN_LINEA) }
+                    item { TextoDeSeccion(TextosPorPagar.PAGADO_EN_LINEA_AYUDA) }
+                    items(ui.tarjetasPorAbrir, key = { "t-" + it.orderId }) { FilaPagadoEnLinea(it, ui, zona, onAbrirYCobrar) }
+                }
                 val filaPorPagar: @Composable (Folio) -> Unit = {
                     FilaPorPagar(it, ahora, e.sinConexion, zona, marcaDeSaldo = marcaDeSaldo(ui, it.orderId), onAbrir = onAbrir)
                 }
@@ -335,11 +347,49 @@ private fun FilaPorEntregar(
     }
 }
 
+/**
+ * D661: un pedido pagado con tarjeta en línea que espera que una caja lo abra. El botón cobra (lo hace el SERVIDOR); sin red, sin
+ * permiso o si otra caja lo está cobrando, lo dice en vez de cobrar.
+ */
+@Composable
+private fun FilaPagadoEnLinea(t: TarjetaPorAbrir, ui: PorPagarUi, zona: ZoneId, onAbrirYCobrar: (TarjetaPorAbrir) -> Unit) {
+    val apagado = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(
+        Modifier
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                Text(t.folio, fontSize = 20.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.08.em)
+                Spacer(Modifier.width(8.dp))
+                Text(t.nombre.orEmpty(), fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Text(dinero(t.total), fontSize = 17.sp, fontWeight = FontWeight.Bold)
+        }
+        t.creadoEn?.let { Text(TextosPorPagar.pidioALas(hora(it, zona)), Modifier.padding(top = 4.dp), fontSize = 14.sp, color = apagado) }
+        val boton = botonDeAbrir(t, ui)
+        if (boton == null) {
+            Text(TextosPorPagar.PAGADOS_EN_LINEA_SIN_PERMISO, Modifier.padding(top = 10.dp), fontSize = 14.sp, color = apagado)
+        } else {
+            Button(
+                onClick = { onAbrirYCobrar(t) },
+                enabled = boton.activo,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.padding(top = 10.dp).fillMaxWidth().height(48.dp),
+            ) { Text(boton.texto, fontWeight = FontWeight.Bold) }
+        }
+    }
+}
+
 /** P6: la marca de un folio que ya está «Listo» (READY). Con los colores del tema, nunca en rojo: no es un error. */
 @Composable
-private fun MarcaListo(modifier: Modifier = Modifier) {
+private fun MarcaListo(modifier: Modifier = Modifier, texto: String = TextosPorPagar.LISTO) {
     Text(
-        TextosPorPagar.LISTO,
+        texto,
         modifier = modifier
             .clip(RoundedCornerShape(50))
             .background(MaterialTheme.colorScheme.secondaryContainer)
@@ -356,6 +406,11 @@ private fun MarcaListo(modifier: Modifier = Modifier) {
  */
 @Composable
 private fun AccionesDeEntrega(folio: Folio, ui: PorPagarUi, onListo: (Folio) -> Unit, onEntregado: (Folio) -> Unit, modifier: Modifier) {
+    // D661 (Ruling 36): «Devuelto», «Devolviendo…» o «No lo recogió»: se dice y no se entrega (ni «Listo» ni «Entregado»).
+    if (!sePuedeEntregar(folio)) {
+        folio.marca?.let { MarcaListo(modifier, texto = it.texto) }
+        return
+    }
     val sinConexion = ui.folios.sinConexion
     when {
         muestraListoYEntregado(ui.puedeEntregar, sinConexion) -> {
@@ -853,6 +908,22 @@ private fun PreviaFolioConPremio() = Previa(
         ),
     ).copy(puedeUsarSaldo = true),
 )
+
+/** D661: suena un pagado en línea (arriba, con «Abrir y cobrar»; otro lo cobra otra caja) y uno de «Por entregar» se está devolviendo. */
+@Preview(widthDp = 360, heightDp = 640)
+@Composable
+private fun PreviaPagadosEnLinea() {
+    val base = uiDePrueba()
+    Previa(
+        base.copy(
+            tarjetasPorAbrir = listOf(
+                TarjetaPorAbrir("t1", "W5GZD", "Ana N.", BigDecimal("250.50"), AHORA_PREVIA.minusSeconds(120), cobrando = false),
+                TarjetaPorAbrir("t2", "W6H2J", "Luis", BigDecimal("89.00"), AHORA_PREVIA.minusSeconds(60), cobrando = true),
+            ),
+            porEntregar = base.porEntregar.map { it.copy(marca = MarcaDeCierre.DEVOLVIENDO) },
+        ),
+    )
+}
 
 /** Sin red: «Saldo o tarjeta de regalo» en gris con «Necesita conexión». */
 @Preview(widthDp = 360, heightDp = 640)

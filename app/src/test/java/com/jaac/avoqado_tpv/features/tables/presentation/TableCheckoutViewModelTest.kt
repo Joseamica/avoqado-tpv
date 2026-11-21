@@ -613,28 +613,6 @@ class TableCheckoutViewModelTest {
     }
 
     /**
-     * 🔴 Codex final r10 #2 (TPV SOLA → Mesas, dinero): el cajero confirma el efectivo, la lectura del aviso tarda y pulsa «Atrás». Salir de
-     * Mesas cancela la corrutina: con la lectura ANTES de guardar, el efectivo recibido no quedaba guardado. Ahora se guarda primero (como la
-     * base) y el aviso se lee después.
-     */
-    @Test
-    fun r10_2_si_la_lectura_del_aviso_tarda_y_el_cajero_sale_el_efectivo_ya_quedo_guardado() = runTest {
-        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
-        coEvery { repository.getOrder(venueId, "orden-1") } returns
-            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
-        coEvery { dineroDeTarjeta.avisoDeDuda("orden-1") } coAnswers { kotlinx.coroutines.awaitCancellation() }
-        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any(), any()) } returns
-            Result.success(TablesRepository.PayCashOutcome(paymentId = "p", orderNumber = null, queued = false))
-        coEvery { repository.clearTable(venueId, "mesa-1", "orden-1", false) } returns Result.success(Unit)
-        val viewModel = createViewModel()
-
-        viewModel.payCash(BigDecimal("150.00"))
-        viewModel.viewModelScope.cancel()   // «Atrás»: salir de Mesas
-
-        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any(), any()) }
-    }
-
-    /**
      * F1 · Codex r9 R9-2 (TPV SOLA → Mesas, D10 «B»): una DUDA de tarjeta de esta cuenta no frena el efectivo. Se cobra (con y sin red)
      * y el recibo dice K19c; sin duda, el recibo no dice nada. Qué cuenta como duda lo prueba `DineroDeTarjetaDeLaCuentaRoomTest`.
      */

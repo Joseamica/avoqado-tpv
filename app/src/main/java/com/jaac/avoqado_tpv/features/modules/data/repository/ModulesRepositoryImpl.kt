@@ -36,15 +36,6 @@ class ModulesRepositoryImpl @Inject constructor(
     private val _modules = MutableStateFlow<List<VenueModule>>(emptyList())
     override val modules: StateFlow<List<VenueModule>> = _modules.asStateFlow()
 
-    /**
-     * Encargo 097e01 (Codex r1 #4): el logo ya no espera al SERVIDOR, así que la consulta del arranque puede seguir al
-     * fondo mientras el PIN pide la suya. Cada petición lleva su número; sólo se guarda una respuesta si ninguna petición
-     * MÁS NUEVA ya guardó la suya, y cerrar sesión ([clearCache]) descarta lo que siga en vuelo.
-     */
-    private val peticiones = java.util.concurrent.atomic.AtomicLong(0)
-    private var ultimaGuardada = 0L
-    private val candado = Any()
-
     init {
         // Load from persistent cache on init
         loadFromPersistentCache()
@@ -61,7 +52,12 @@ class ModulesRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun fetchAndCache(): Result<List<VenueModule>> = withContext(Dispatchers.IO) {
+    override suspend fun fetchAndCache(): Result<List<VenueModule>> = fetchAndCache(consulta = null)
+
+    /** Encargo 097e01: el logo de arranque pide los módulos por su cliente de tope corto (ApiDelArranque). */
+    override suspend fun fetchAndCache(
+        consulta: (suspend (venueId: String) -> retrofit2.Response<com.jaac.avoqado_tpv.features.modules.data.dto.ModulesApiResponse>)?
+    ): Result<List<VenueModule>> = withContext(Dispatchers.IO) {
         try {
             // Get venueId from activation (stored in SecureStorage)
             val venueId = secureStorage.getVenueId()
@@ -70,36 +66,18 @@ class ModulesRepositoryImpl @Inject constructor(
                 return@withContext Result.failure(Exception("Device not activated"))
             }
 
-            val estaPeticion = peticiones.incrementAndGet()
             Timber.d("📦 Fetching modules for venue: $venueId")
 
             // Pass venueId as header for semi-public endpoint (works before login)
-            val response = apiService.getModules(venueId)
+            val response = consulta?.invoke(venueId) ?: apiService.getModules(venueId)
 
             if (response.isSuccessful && response.body() != null) {
                 val moduleDtos = response.body()!!.modules
                 val modules = moduleDtos.map { it.toDomain() }
 
-                // Update both in-memory (StateFlow) and persistent cache — sólo si nadie más nuevo ya guardó y el aparato
-                // sigue en el MISMO negocio (097e01, Codex r2 #3: una baja del latido borra SecureStorage sin clearCache).
-                // Disco primero y luego memoria, bajo el candado que también toma la lectura del disco (Codex r2 #2).
-                val guardada = synchronized(candado) {
-                    if (estaPeticion <= ultimaGuardada || secureStorage.getVenueId() != venueId) false else {
-                        ultimaGuardada = estaPeticion
-                        secureStorage.saveModules(moduleDtos)
-                        _modules.value = modules
-                        // El latido borra sin este candado (Codex r3 #3): si la baja cayó a media escritura, se deshace.
-                        if (secureStorage.getVenueId() != venueId) {
-                            _modules.value = emptyList()
-                            secureStorage.clearCachedModules()
-                            false
-                        } else true
-                    }
-                }
-                if (!guardada) {
-                    Timber.w("📦 Respuesta vieja de módulos descartada: una petición más nueva, un cierre de sesión o un cambio de negocio ya mandó")
-                    return@withContext Result.success(_modules.value)
-                }
+                // Update both in-memory (StateFlow) and persistent cache
+                _modules.value = modules
+                secureStorage.saveModules(moduleDtos)
 
                 Timber.i("✅ Fetched and cached ${modules.size} modules: ${modules.map { it.moduleCode }}")
 
@@ -124,13 +102,10 @@ class ModulesRepositoryImpl @Inject constructor(
 
     override fun getCachedModules(): List<VenueModule> {
         val currentModules = _modules.value.ifEmpty {
-            // Try loading from persistent cache if in-memory is empty — bajo el candado de la escritura (097e01, Codex r2 #2):
-            // nunca se lee el disco a media escritura de una respuesta nueva.
+            // Try loading from persistent cache if in-memory is empty
             Timber.d("📦 getCachedModules: in-memory cache empty, loading from persistent")
-            synchronized(candado) {
-                if (_modules.value.isEmpty()) loadFromPersistentCache()
-                _modules.value
-            }
+            loadFromPersistentCache()
+            _modules.value
         }
         Timber.d("📦 getCachedModules: returning ${currentModules.size} modules: ${currentModules.map { it.moduleCode }}")
         return currentModules
@@ -157,12 +132,8 @@ class ModulesRepositoryImpl @Inject constructor(
     }
 
     override fun clearCache() {
-        synchronized(candado) {
-            // Lo que siga en vuelo ya no se guarda: la sesión que lo pidió se cerró (097e01).
-            ultimaGuardada = peticiones.get()
-            _modules.value = emptyList()
-            secureStorage.clearCachedModules()
-        }
+        _modules.value = emptyList()
+        secureStorage.clearCachedModules()
         Timber.d("📦 Module cache cleared")
     }
 

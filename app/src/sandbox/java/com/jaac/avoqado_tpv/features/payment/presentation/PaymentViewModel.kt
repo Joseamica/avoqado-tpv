@@ -7056,7 +7056,8 @@ class PaymentViewModel @Inject constructor(
                         // esta fila lleva el terminalPaymentRequestId del cobro que mandó la tablet.
                         runCatching { PaymentSyncScheduler.runNow(appContext) }
 
-                        val orderData = loadOrderData(orderIdForFlow)
+                        // 📴 El efectivo quedó EN COLA: con la franja de «sin servidor», la copia local (97042c, Codex r3 #3).
+                        val orderData = loadOrderData(orderIdForFlow, copiaLocalSiServidorMudo = true)
                         _state.value = PaymentState.Success(
                             authCode = "EFECTIVO",
                             amount = currentState.totalAmount,
@@ -9465,7 +9466,11 @@ class PaymentViewModel @Inject constructor(
         val discountAmount: java.math.BigDecimal = java.math.BigDecimal.ZERO  // 🆕 Discount for receipt printing
     )
 
-    private suspend fun loadOrderData(orderId: String?): OrderData? {
+    private suspend fun loadOrderData(
+        orderId: String?,
+        /** Sólo el efectivo que quedó EN COLA: con la franja, el GET sólo esperaría su plazo (~25 s) y el servidor aún no tiene ese pago. */
+        copiaLocalSiServidorMudo: Boolean = false,
+    ): OrderData? {
         if (orderId == null) {
             Timber.d("📦 [Order Data] Skipping load - Fast payment (no order)")
             return null
@@ -9474,7 +9479,7 @@ class PaymentViewModel @Inject constructor(
         Timber.d("📦 [Order Data] Loading data for order: $orderId")
         return try {
             val venueId = currentVenueId ?: authRepository.getVenueId()
-            val backendOrder = if (!venueId.isNullOrBlank()) {
+            val backendOrder = if (!venueId.isNullOrBlank() && !(copiaLocalSiServidorMudo && connectionStateManager.servidorMudo())) {
                 val result = orderRepository.getOrder(
                     venueId = venueId,
                     orderId = orderId

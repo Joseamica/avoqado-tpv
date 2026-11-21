@@ -21,6 +21,7 @@ import com.jaac.avoqado_tpv.features.referrals.domain.repository.ReferralValidat
 import com.jaac.avoqado_tpv.features.referrals.domain.usecase.CaptureReferralUseCase
 import com.jaac.avoqado_tpv.features.referrals.domain.usecase.ValidateReferralUseCase
 import com.jaac.avoqado_tpv.features.referrals.presentation.ReferralCaptureUiState
+import com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
@@ -64,6 +65,7 @@ class CheckoutViewModelReferralTest {
     private lateinit var activeCartState: ActiveCartState
     private lateinit var validateReferralUseCase: ValidateReferralUseCase
     private lateinit var captureReferralUseCase: CaptureReferralUseCase
+    private val conexion = ConnectionStateManager()
 
     private val savedCartsFlow = MutableStateFlow<List<SavedCart>>(emptyList())
     private val shortcutsFlow = MutableStateFlow<List<MosaicShortcut>>(emptyList())
@@ -115,7 +117,7 @@ class CheckoutViewModelReferralTest {
         productDao = mockk(relaxed = true) { coEvery { getAllProducts(any()) } returns emptyList() },
         productCategoryDao = mockk(relaxed = true) { coEvery { getAllCategories(any()) } returns emptyList() },
         catalogoGuardado = mockk { coEvery { refrescar(any()) } coAnswers { productRepository.getProducts(firstArg()) } },
-        connectionStateManager = ConnectionStateManager(),
+        connectionStateManager = conexion,
         ventaSinRed = com.jaac.avoqado_tpv.features.checkout.VentaSinRedEnMemoria(),
         impresoraDeVentaGuardada = mockk(relaxed = true),
         pendingPaymentDao = mockk(relaxed = true) {
@@ -452,6 +454,44 @@ class CheckoutViewModelReferralTest {
             )
         }
 
+        viewModel.viewModelScope.cancel()
+    }
+
+    private suspend fun importesConReferidoValido(viewModel: CheckoutViewModel) {
+        viewModel.selectCustomer(fakeCustomer())
+        viewModel.addCustomAmount("Servicio", 10_000)
+        coEvery { validateReferralUseCase(any(), any(), any()) } returns Result.success(
+            ReferralValidationResult.Valid(referrerName = "Ana", discountPercent = 10, referrerCustomerId = "c-2"),
+        )
+        coEvery { captureReferralUseCase(any(), any(), any(), any(), any()) } returns Result.success("ref_1")
+        viewModel.onReferralCodeChange("ANA-2026")
+        viewModel.validateReferralCode()
+        assertTrue(viewModel.referralValidation.value is ReferralCaptureUiState.Valid)
+    }
+
+    @Test
+    fun `P1 sólo importes con referido válido y servidor - Fast captura el referido como hoy`() = runTest {
+        val viewModel = createViewModel()
+        importesConReferidoValido(viewModel)
+
+        val payload = viewModel.prepareForPayment().getOrThrow()
+
+        assertTrue("Se esperaba Fast y salió $payload", payload is PaymentNavigationPayload.Fast)
+        coVerify(exactly = 1) { captureReferralUseCase(any(), "ANA-2026", "c-1", any(), null) }
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 sólo importes con referido válido y la franja de sin servidor - Fast sin esperar la captura`() = runTest {
+        // Encargo 97042c (Codex r2 #7 / r3 #4): la captura esperaba ~25 s contra el servidor mudo y fallaba igual.
+        val viewModel = createViewModel()
+        importesConReferidoValido(viewModel)
+        conexion.setServerConnected(false)
+
+        val payload = viewModel.prepareForPayment().getOrThrow()
+
+        assertTrue("Se esperaba Fast y salió $payload", payload is PaymentNavigationPayload.Fast)
+        coVerify(exactly = 0) { captureReferralUseCase(any(), any(), any(), any(), any()) }
         viewModel.viewModelScope.cancel()
     }
 

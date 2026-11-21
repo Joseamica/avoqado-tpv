@@ -21,9 +21,20 @@ permissions:
 
 jobs:
   verificar:
-    name: Tests + compilación
+    name: ${{ matrix.nombre }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # 🔴 D12 (21-nov): Nexgo (N86 / AngelPay) va en su propio runner, en paralelo. Antes sólo se probaba sandbox (PAX /
+    # Blumon) y una prueba roja en Nexgo vivió una semana en `main` sin que nadie la viera (nació el 13-nov en
+    # `6bfa913a`, arreglada en el PR #112). En paralelo no alarga el CI; el motor propio y el APK siguen sólo en sandbox.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variante: Sandbox
+            nombre: Tests + compilación
+          - variante: Nexgo
+            nombre: Tests Nexgo (AngelPay)
 
     steps:
       - uses: actions/checkout@v4
@@ -93,8 +104,9 @@ jobs:
       # 220 tests"). Además compila contra lib_services-1.6.1.2-SANDBOX.aar; el
       # flavor production usa el .aar VIEJO (1.2.0.0-PROD), con menos superficie
       # — probarlo ahí habría dado falsos negativos en código que sí es correcto.
+      # Nexgo corre el mismo src/test contra su AAR de AngelPay y `ENABLE_PAX_SDK=false` (otro carril de cobro).
       - name: Tests unitarios
-        run: ./gradlew testSandboxDebugUnitTest
+        run: ./gradlew test${{ matrix.variante }}DebugUnitTest
         env:
           JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
 
@@ -112,11 +124,13 @@ jobs:
       # El motor propio de cobro (`:cobropropio`) no tiene sabores: `testSandboxDebugUnitTest` no lo corre.
       # Va aparte, con su propio guardia, para que un verde de :app no esconda que aquí no corrió nada.
       - name: Tests del motor propio
+        if: matrix.variante == 'Sandbox'
         run: ./gradlew :cobropropio:testDebugUnitTest
         env:
           JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
 
       - name: Comprobar que SÍ corrieron tests del motor propio
+        if: matrix.variante == 'Sandbox'
         run: |
           xml=$(find cobropropio/build/test-results -name '*.xml' 2>/dev/null)
           total=$(echo "$xml" | xargs grep -ho ' tests="[0-9]*"' 2>/dev/null | tr -dc '0-9\n' | paste -sd+ - | bc)
@@ -130,6 +144,7 @@ jobs:
 
       # Las pruebas regeneran el esquema de Room de la libreta: si difiere del commiteado, se cambió la tabla sin su esquema.
       - name: Esquema de Room del motor propio sin cambios
+        if: matrix.variante == 'Sandbox'
         run: |
           git diff --exit-code cobropropio/schemas
           nuevos=$(git ls-files --others --exclude-standard cobropropio/schemas)
@@ -138,13 +153,14 @@ jobs:
       # sandbox: "el 90% del tiempo" según la tabla de Build Variants del propio
       # CLAUDE.md — la compilación más representativa del día a día.
       - name: Compilar (debug)
+        if: matrix.variante == 'Sandbox'
         run: ./gradlew assembleSandboxDebug
 
       - name: Reporte de tests (sólo si algo falló)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: reporte-tests
+          name: reporte-tests-${{ matrix.variante }}
           # Ola final, 6ª parte: también el módulo cobropropio (reporte HTML y los XML con el mensaje de cada falla).
           path: |
             app/build/reports/tests/

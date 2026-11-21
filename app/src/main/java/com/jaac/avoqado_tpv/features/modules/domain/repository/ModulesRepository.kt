@@ -36,6 +36,14 @@ interface ModulesRepository {
     suspend fun fetchAndCache(): Result<List<VenueModule>>
 
     /**
+     * Igual que [fetchAndCache], pero haciendo la pregunta con [consulta] (encargo 097e01: el logo de arranque usa su
+     * cliente de tope corto). Por omisión, el camino de siempre.
+     */
+    suspend fun fetchAndCache(
+        consulta: (suspend (venueId: String) -> retrofit2.Response<com.jaac.avoqado_tpv.features.modules.data.dto.ModulesApiResponse>)?
+    ): Result<List<VenueModule>> = fetchAndCache()
+
+    /**
      * Get all cached modules.
      * Returns empty list if no modules are cached.
      *

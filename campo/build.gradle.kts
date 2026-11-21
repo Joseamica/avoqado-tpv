@@ -25,8 +25,8 @@ android {
         applicationId = "com.jaac.avoqado_tpv.campo"
         minSdk = 27
         targetSdk = 34
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.5.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Celulares modernos. :app conserva "armeabi" porque el SDK de Blumon lo exige.
         ndk {

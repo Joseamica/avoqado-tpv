@@ -35,7 +35,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
 
-enum class EstadoFila { POR_DECIDIR, ACTUALIZANDO, POR_SUBIR, EN_CUSTODIA, VENDIDA, EN_REVISION, REVISAR, CORRECCION_POR_SUBIR }
+enum class EstadoFila { POR_DECIDIR, ACTUALIZANDO, POR_SUBIR, EN_CUSTODIA, VENDIDA, EN_REVISION, REVISAR, CORRECCION_POR_SUBIR, RECHAZADA, VENTA_POR_SUBIR }
 
 data class FilaSim(val sim: SimEnCopia, val estado: EstadoFila, val nota: String? = null)
 
@@ -47,11 +47,20 @@ data class EstadoMisSims(
     val enCustodia: List<FilaSim> = emptyList(),
     val vendidas: List<FilaSim> = emptyList(),
     val sinCopia: Boolean = true,
+    /** Cuándo se bajó la lista del SERVIDOR: sin señal, «Mis ventas» la enseña tal como estaba a esa hora (Codex r3). */
+    val bajadaAt: Long? = null,
     val actualizando: Boolean = false,
     val ocupado: Boolean = false,
     val corrigiendo: Correccion? = null,
     val error: String? = null,
-)
+) {
+    // «Mis ventas» (Isaac, 20-nov): lo que el promotor corrige, lo que se vendió (también «En revisión») y lo perdido.
+    val porRevisar get() = vendidas.filter { it.estado == EstadoFila.REVISAR || it.estado == EstadoFila.CORRECCION_POR_SUBIR }
+    val rechazadas get() = vendidas.filter { it.estado == EstadoFila.RECHAZADA }
+    // Codex r1: la vendida en el celular que aún no sube no es «exitosa» (el SERVIDOR todavía puede rechazarla).
+    val ventasPorSubir get() = vendidas.filter { it.estado == EstadoFila.VENTA_POR_SUBIR }
+    val exitosas get() = vendidas.filter { it.estado == EstadoFila.VENDIDA || it.estado == EstadoFila.EN_REVISION }
+}
 
 @HiltViewModel
 class MisSimsViewModel @Inject constructor(
@@ -267,13 +276,27 @@ class MisSimsViewModel @Inject constructor(
         val sinVersionNueva = aDecidirAhora.filter { (serie, r) -> porSerie[serie]?.custodyVersion == r.version }
         if (sinVersionNueva.values.map { it.pieza.id }.filter { refrescadas.add(it) }.isNotEmpty()) bajar(avisar = false)
 
+        // Codex r2: una venta del celular se acomoda por la COLA (lo que de verdad falta subir), no por la marca de la copia,
+        // que se queda atrás si la app muere entre guardar y marcar, o si la venta se rechaza o se quita.
+        val ventasEnCola = cola.filter { it.tipo == TipoPieza.VENTA }
+            .mapNotNull { p -> campo(p.cuerpoJson, "serialNumber")?.let { normalizarSerie(it) to p } }.toMap()
+
         val filas = c?.sims.orEmpty().mapNotNull { s ->
             val serie = normalizarSerie(s.serialNumber)
+            val venta = ventasEnCola[serie]?.takeIf { s.custodyState != "SOLD" }
             when {
-                s.custodyState == "SOLD" || s.localmente == MarcaLocal.VENDIDA_EN_EL_CELULAR -> when (s.verificationStatus) {
+                // AVISO = el SERVIDOR ya la recibió (2xx): está vendida aunque la copia no lo sepa todavía.
+                venta?.estado == EstadoPieza.AVISO -> FilaSim(s, EstadoFila.VENDIDA)
+                venta?.estado == EstadoPieza.RECHAZADA -> FilaSim(s, EstadoFila.VENTA_POR_SUBIR, NO_SUBIO)
+                venta != null -> FilaSim(s, EstadoFila.VENTA_POR_SUBIR, "Por subir")
+                // Sin venta viva pero con la marca: ya subió y la copia no se ha vuelto a bajar.
+                s.custodyState != "SOLD" && s.localmente == MarcaLocal.VENDIDA_EN_EL_CELULAR -> FilaSim(s, EstadoFila.VENDIDA)
+                s.custodyState == "SOLD" -> when (s.verificationStatus) {
                     "FAILED" -> if (s.verificationId in corrigiendo) FilaSim(s, EstadoFila.CORRECCION_POR_SUBIR, "Corrección por subir")
                     else FilaSim(s, EstadoFila.REVISAR, motivos(s))
                     "PENDING" -> FilaSim(s, EstadoFila.EN_REVISION, "En revisión")
+                    // Terminal: la venta se perdió (no se pudo vincular o portar) y no se corrige. Antes salía «Vendida».
+                    "REJECTED" -> FilaSim(s, EstadoFila.RECHAZADA, motivos(s, siNoHay = "Tu supervisor la rechazó"))
                     else -> FilaSim(s, EstadoFila.VENDIDA)
                 }
                 s.custodyState == "PROMOTER_PENDING" -> when {
@@ -288,13 +311,14 @@ class MisSimsViewModel @Inject constructor(
                 else -> null
             }
         }
-        val vendidas = setOf(EstadoFila.VENDIDA, EstadoFila.EN_REVISION, EstadoFila.REVISAR, EstadoFila.CORRECCION_POR_SUBIR)
+        val vendidas = setOf(EstadoFila.VENDIDA, EstadoFila.EN_REVISION, EstadoFila.REVISAR, EstadoFila.CORRECCION_POR_SUBIR, EstadoFila.RECHAZADA, EstadoFila.VENTA_POR_SUBIR)
         _estado.update { e ->
             e.copy(
                 porAceptar = filas.filter { it.sim.custodyState == "PROMOTER_PENDING" && it.estado !in vendidas },
                 enCustodia = filas.filter { it.estado == EstadoFila.EN_CUSTODIA },
                 vendidas = filas.filter { it.estado in vendidas },
                 sinCopia = c == null,
+                bajadaAt = c?.bajadaAt,
             )
         }
     }
@@ -320,10 +344,12 @@ class MisSimsViewModel @Inject constructor(
             "OTHER" to "Otro motivo",
         )
 
-        fun motivos(s: SimEnCopia) = (s.rejectionReasons.map { MOTIVOS[it] ?: it } + listOfNotNull(s.reviewNotes?.takeIf { it.isNotBlank() }))
-            .joinToString(" · ").ifEmpty { "Tu supervisor pidió corregir la evidencia" }
+        fun motivos(s: SimEnCopia, siNoHay: String = "Tu supervisor pidió corregir la evidencia") =
+            (s.rejectionReasons.map { MOTIVOS[it] ?: it } + listOfNotNull(s.reviewNotes?.takeIf { it.isNotBlank() }))
+                .joinToString(" · ").ifEmpty { siNoHay }
 
         const val REASIGNADA = "Te volvieron a asignar esta SIM: vuelve a decidir"
+        const val NO_SUBIO = "No se pudo subir: revísala en «Ventas pendientes por subir»"
 
         /** Series de las filas `fallidas` (B12) con `ASIGNACION_CAMBIO`. */
         fun filasReasignadas(datos: String?): Set<String> = runCatching {

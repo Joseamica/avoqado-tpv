@@ -54,6 +54,10 @@ internal interface LibretaDao {
     @Query("SELECT rowid FROM intentos WHERE (procesoId != :proceso OR attemptId NOT IN (:vivos)) AND NOT ($CERRADA) ORDER BY rowid")
     fun rowidsPorRecuperar(proceso: String, vivos: List<String>): List<Long>
 
+    /** Para `Libreta.salud()`: los avisos `PENDIENTE` y todo lo que no está [CERRADA] (también un valor desconocido). */
+    @Query("SELECT rowid FROM intentos WHERE reporte = 'PENDIENTE' OR NOT ($CERRADA) ORDER BY rowid")
+    fun rowidsConTrabajoAbierto(): List<Long>
+
     @Query("SELECT * FROM intentos WHERE rowid = :rowid")
     fun porRowid(rowid: Long): IntentoEntity?
 

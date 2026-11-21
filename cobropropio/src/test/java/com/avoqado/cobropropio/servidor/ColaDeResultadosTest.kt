@@ -305,5 +305,9 @@ class ColaDeResultadosTest {
         db.openHelper.writableDatabase.execSQL("UPDATE intentos SET reverso = 'NO_CONCLUYENTE' WHERE attemptId = ?", arrayOf(id.valor))
         assertTrue(runBlocking { cola.entregarPendientes() }.isEmpty())
         assertTrue(servidor.reportados.isEmpty())
+        db.openHelper.readableDatabase.query("SELECT reporte FROM intentos WHERE attemptId = ?", arrayOf(id.valor)).use {
+            assertTrue(it.moveToFirst())
+            assertEquals("el aviso sigue pendiente", "PENDIENTE", it.getString(0))
+        }
     }
 }

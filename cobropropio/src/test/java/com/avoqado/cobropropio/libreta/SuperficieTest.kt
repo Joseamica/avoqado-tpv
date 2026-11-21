@@ -20,7 +20,7 @@ class SuperficieTest {
         c.declaredMethods.filter { Modifier.isPublic(it.modifiers) && !it.isSynthetic && '$' !in it.name }.map { it.name.substringBefore('-') }.toSet()
 
     @Test fun `la libreta y la cola solo dejan leer por fuera del motor`() {
-        assertEquals(setOf("buscar", "pendientesDeReporte"), publicas(Libreta::class.java))
+        assertEquals(setOf("buscar", "pendientesDeReporte", "salud"), publicas(Libreta::class.java))
         assertEquals(emptySet<String>(), publicas(ColaDeResultados::class.java))
     }
 

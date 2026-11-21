@@ -52,6 +52,18 @@ data class DatosDelEnvio(
 )
 
 /**
+ * Lo que la app manda alarmar (otro bloque). `reportePendienteMasViejo` es la hora observada del banco (pared), no la de la cola.
+ * Un aviso sin hora nunca se entrega (`ResultadoDelReverso.deLaFila` da null): va aparte en `reportesSinHora`.
+ * `filasIlegibles` cuenta las que tienen trabajo abierto (en negativo, Codex r1 #6) y que Room no lee o no pasan la validación.
+ */
+data class SaludDeLaLibreta(
+    val reportesPendientes: Int,
+    val reportePendienteMasViejo: Instant?,
+    val reportesSinHora: Int,
+    val filasIlegibles: Int,
+)
+
+/**
  * La libreta durable del cobro propio. Cada método de escritura es UNA transacción: o queda todo o no queda nada, también
  * si el proceso muere a la mitad. Las transiciones son CAS sobre la fila (el estado esperado se vuelve a leer DENTRO de la
  * transacción). Nunca guarda PAN, banda, tags EMV ni llaves: cada escritura revisa la forma de los campos permitidos y
@@ -62,7 +74,7 @@ data class DatosDelEnvio(
  * les cierra el envío.
  *
  * r2 familia A: la única entrada pública es [abrir] (una por archivo en el proceso), y por fuera del módulo sólo se lee
- * ([buscar], [pendientesDeReporte]). Toda escritura, el constructor y [cerrar] son `internal`: ninguna fila cambia sin pasar
+ * ([buscar], [pendientesDeReporte], [salud]). Toda escritura, el constructor y [cerrar] son `internal`: ninguna fila cambia sin pasar
  * por el motor, y nadie cierra ni reabre la libreta debajo de un motor vivo.
  */
 class Libreta internal constructor(
@@ -381,6 +393,27 @@ class Libreta internal constructor(
      * sin tocarla; `salud()` la cuenta (I3).
      */
     fun buscar(id: AttemptId): IntentoEntity? = fila(id)
+
+    /**
+     * Los números para alarmar ([SaludDeLaLibreta]). Síncrona y de sólo lectura: no cambia ninguna fila. Lee la base: llámala
+     * fuera del hilo principal. Cuenta como ilegible todo lo que [legible] salta, sea cual sea la causa.
+     */
+    fun salud(): SaludDeLaLibreta {
+        // Codex r2: un solo recorrido, leyendo cada fila una vez (`rowidsConTrabajoAbierto` ya incluye los `PENDIENTE`).
+        var pendientes = 0
+        var sinHora = 0
+        var ilegibles = 0
+        var masViejo: Instant? = null
+        for (rowid in dao.rowidsConTrabajoAbierto()) {
+            val f = legible(rowid)
+            if (f == null) { ilegibles++; continue }
+            if (f.reporte != EstadoDelReporte.PENDIENTE) continue
+            pendientes++
+            val hora = f.horaObservadaIso?.let { runCatching { Instant.parse(it) }.getOrNull() }
+            if (hora == null) sinHora++ else if (masViejo == null || hora < masViejo) masViejo = hora
+        }
+        return SaludDeLaLibreta(pendientes, masViejo, sinHora, ilegibles)
+    }
 
     /**
      * En UNA transacción, para las filas de OTROS procesos (ya muertos) y las de ESTE proceso sin intento vivo en [vivos]

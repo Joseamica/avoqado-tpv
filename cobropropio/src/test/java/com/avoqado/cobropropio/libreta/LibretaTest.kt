@@ -15,6 +15,7 @@ import com.avoqado.cobropropio.dominio.Origen
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -868,10 +869,69 @@ class LibretaTest {
         l.db.openHelper.writableDatabase.execSQL(
             "UPDATE intentos SET operationNumber = 99999999999 WHERE attemptId = ?", arrayOf(v.attemptId), // fuera de 1..9_999_999_999
         )
+        val antes = cruda(l, v.attemptId)
+        reloj += 1 // una escritura cambiaría `actualizadoEnMs`
         assertThrows(FilaIlegible::class.java) { l.buscar(v.id()) }
-        assertThrows(FilaIlegible::class.java) { l.transicionar(v.id(), EstadoDelIntento.APROBADO) { it } }
+        assertThrows(FilaIlegible::class.java) { l.transicionar(v.id(), EstadoDelIntento.APROBADO) { it.copy(estado = EstadoDelIntento.NO_SE) } }
         assertThrows(FilaIlegible::class.java) { l.vetarPorCorte(v) }
-        assertTrue(l.pendientesDeReporte().isEmpty())
+        assertEquals("la fila ilegible no se toca", antes, cruda(l, v.attemptId))
+    }
+
+    /** La fila tal como está en la tabla, columna por columna, sin pasar por Room ni por la validación. */
+    private fun cruda(l: Libreta, id: String): List<String?> =
+        l.db.openHelper.readableDatabase.query("SELECT * FROM intentos WHERE attemptId = ?", arrayOf(id)).use { c ->
+            assertTrue(c.moveToFirst())
+            (0 until c.columnCount).map { c.getString(it) }
+        }
+
+    /** I3: una cancelación HERMANA que Room lee pero no pasa la validación hace tronar las dos revisiones que las recorren. */
+    @Test fun `una cancelacion hermana que no pasa la validacion hace tronar anotar y enviar la cancelacion`() {
+        val l = libreta()
+        val original = aprobada(l)
+        val c = cancelacionDe(original)
+        assertEquals(ResultadoDeAnotarCancelacion.Anotada, l.anotarCancelacion(c, original.ambito()))
+        // Sin la validación, esta hermana cerrada no vetaría nada y `c` saldría al banco.
+        insertarDirecto(
+            l,
+            cancelacionDe(original).copy(attemptId = ID_DE_36, estado = EstadoDelIntento.NO_SALIO, motivoNoSalio = MotivoNoSalio.OTRA_TARJETA),
+        )
+        val antes = cruda(l, c.attemptId)
+        reloj += 1
+        assertThrows(FilaIlegible::class.java) { l.marcarCancelacionEnviada(c.id(), reloj, datos(huellaLectura = "c".repeat(64))) }
+        val otra = cancelacionDe(original)
+        assertThrows(FilaIlegible::class.java) { l.anotarCancelacion(otra, original.ambito()) }
+        assertEquals(antes, cruda(l, c.attemptId))
+        l.db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM intentos WHERE attemptId = ?", arrayOf(otra.attemptId)).use {
+            assertTrue(it.moveToFirst())
+            assertEquals("la transacción que tronó no deja fila", 0, it.getInt(0))
+        }
+    }
+
+    @Test fun `la salud cuenta avisos pendientes, el mas viejo, los sin hora y las filas ilegibles`() {
+        val l = libreta()
+        assertEquals(SaludDeLaLibreta(0, null, 0, 0), l.salud())
+        val viejo = pared
+        val a = reclamada(l)
+        assertTrue(l.cerrarVuelta(a.id(), ClaseDelReverso.Confirmado(viejo), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
+        pared = viejo.plusSeconds(60)
+        val b = reclamada(l)
+        assertTrue(l.cerrarVuelta(b.id(), ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
+        val c = reclamada(l)
+        assertTrue(l.cerrarVuelta(c.id(), ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
+        val sql = l.db.openHelper.writableDatabase
+        sql.execSQL("UPDATE intentos SET horaObservadaIso = NULL WHERE attemptId = ?", arrayOf(c.attemptId))
+        // Las tres ilegibles: enum desconocido, id de 36, y un reverso abierto (RECLAMADO) de una fila NO_SE con valor desconocido.
+        val enumRaro = enviada(l)
+        sql.execSQL("UPDATE intentos SET marca = 'DISCOVER' WHERE attemptId = ?", arrayOf(enumRaro.attemptId))
+        val idViejo = enviada(l)
+        sql.execSQL("UPDATE intentos SET attemptId = ? WHERE attemptId = ?", arrayOf(ID_DE_36, idViejo.attemptId))
+        val reversoRaro = reclamada(l)
+        assertNotNull(l.transicionar(reversoRaro.id(), EstadoDelIntento.ENVIADO) { it.copy(estado = EstadoDelIntento.NO_SE) })
+        sql.execSQL("UPDATE intentos SET reverso = 'DESCONOCIDO' WHERE attemptId = ?", arrayOf(reversoRaro.attemptId))
+        assertEquals(
+            SaludDeLaLibreta(reportesPendientes = 3, reportePendienteMasViejo = viejo, reportesSinHora = 1, filasIlegibles = 3),
+            l.salud(),
+        )
     }
 
     /** Codex r4 #3: Room pone el valor crudo en su mensaje; el lector lanza un error de mensaje fijo, sin la excepción original. */

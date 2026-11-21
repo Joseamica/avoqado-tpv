@@ -1,6 +1,7 @@
 package com.jaac.avoqado_campo.cola
 
 import com.jaac.avoqado_campo.BuildConfig
+import com.jaac.avoqado_campo.checada.turnoVigente
 import com.jaac.avoqado_campo.identidad.HoraDeCampo
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.identidad.RelojAnclado
@@ -171,7 +172,9 @@ class Encolador(
         val d = gsonCola.fromJson(a.cuerpoJson, Apartada::class.java)
         val hora = HoraDeCampo(d.ocurrioAt, d.origenHora, a.creadaAt)
         val foto = fotosDe(a.fotosJson).singleOrNull()
-        val t = turnoPara(a.tipo, staffId, a.venueId)
+        // Codex r1 #4: se decide con la hora del TOQUE (guardada al apartar), no con la de ahora: una salida apartada antes del
+        // corte que se completa después (Android mató la app esperando el GPS) sigue siendo la salida de ese turno.
+        val t = turnoPara(a.tipo, staffId, a.venueId, aLaHora = hora.epochMs)
         val entrada = a.tipo == TipoPieza.ENTRADA
         val llaveEntrada = if (!entrada && t!!.timeEntryId == null) t.llaveEntrada else null
         val cuerpo = CuerpoChecada(
@@ -220,14 +223,22 @@ class Encolador(
         return n
     }
 
-    /** ENTRADA: no debe haber turno abierto de [staffId] (null). SALIDA: su turno abierto, de esa sucursal. Si no, lanza. */
-    private suspend fun turnoPara(tipo: String, staffId: String, venueId: String): TurnoLocal? {
+    /** La hora de ahora con el mismo reloj de las checadas (anclado al servidor si se puede). */
+    fun ahoraMs(): Long = reloj.ahora().epochMs
+
+    /**
+     * ENTRADA: no debe haber turno VIVO de [staffId] (null). SALIDA: su turno vivo, de esa sucursal. Si no, lanza. D3: un turno
+     * de un día ya terminado no cuenta como abierto («salida olvidada»: el SERVIDOR lo cierra solo); la entrada nueva lo
+     * reemplaza en el celular.
+     */
+    private suspend fun turnoPara(tipo: String, staffId: String, venueId: String, aLaHora: Long = ahoraMs()): TurnoLocal? {
         val t = dao.turnoAhora()
+        val vivo = t != null && turnoVigente(t, aLaHora)
         if (tipo == TipoPieza.ENTRADA) {
-            check(t == null || !t.abierto || t.staffId != staffId) { "Ya hay un turno abierto" }
+            check(t == null || !vivo || t.staffId != staffId) { "Ya hay un turno abierto" }
             return null
         }
-        check(t != null && t.staffId == staffId && t.abierto) { "No hay turno abierto" }
+        check(t != null && t.staffId == staffId && vivo) { "No hay turno abierto" }
         require(venueId == t.venueId) { "La entrada abierta es de otra sucursal" }
         return t
     }

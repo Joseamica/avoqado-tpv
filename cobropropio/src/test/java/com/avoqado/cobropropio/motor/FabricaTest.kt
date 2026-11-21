@@ -93,6 +93,17 @@ class FabricaTest {
         crear(ambiente = Ambiente.PRODUCCION, pinner = pinesDe("api.ejemplo.invalid")) // las fallidas no armaron un motor
     }
 
+    /** Revisión de la tarea 6: una identidad sin forma truena sin tomar el dueño; el reintento correcto arma el motor. */
+    @Test fun `una identidad sin forma no toma el dueno de la libreta`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            crearMotorDeCobro(
+                context, identidad.copy(posId = "X"), lector, red, CredencialDelCliente("usuario-de-prueba", "clave-de-prueba"),
+                "https://api.ejemplo.invalid/", jwt, null, SecretKeySpec(ByteArray(32) { 5 }, "HmacSHA256"),
+            )
+        }
+        crear()
+    }
+
     @Test fun `en sandbox acepta http y sin pines`() {
         crear(url = "http://127.0.0.1:3000/", pinner = null)
     }

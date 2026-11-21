@@ -115,10 +115,6 @@ class MotorDeCobro(
     /** Sólo las pruebas lo cambian, para que el tiempo virtual espere a la libreta. */
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
-    init {
-        libreta.tomarDueno()
-    }
-
     /** Sólo las pruebas lo usan: corre en `recuperar` justo antes de esperar a Room (R7-3). */
     internal var antesDeRecuperar: suspend () -> Unit = {}
 
@@ -133,6 +129,12 @@ class MotorDeCobro(
     internal var antesDeVetar: suspend (AttemptId) -> Unit = {}
 
     private val armado = ArmadoDelMensaje(identidad)
+
+    init {
+        // Lo ÚLTIMO que puede tronar al construir (revisión de la tarea 6): va después de lo que valida (el `require` de
+        // [armado]) y antes del aviso de [fondo]; un constructor que truena deja el dueño de la libreta como estaba.
+        libreta.tomarDueno()
+    }
 
     /** Regla M: cada intento que este proceso corrió, vivo o lápida ([Registro.retirado]). `internal` sólo para las pruebas. */
     internal val intentos = ConcurrentHashMap<AttemptId, Registro>()

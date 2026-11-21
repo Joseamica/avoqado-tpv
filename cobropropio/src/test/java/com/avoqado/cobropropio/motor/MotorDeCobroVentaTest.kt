@@ -1616,12 +1616,29 @@ class MotorDeCobroVentaTest {
             assertSame(a, Libreta.abrir(context, nombre))
             motorSobre(a)
             assertThrows(IllegalStateException::class.java) { motorSobre(Libreta.abrir(context, nombre)) }
+            // El segundo que tronó no soltó el dueño del primero: un tercero también truena.
+            assertThrows(IllegalStateException::class.java) { motorSobre(a) }
         } finally {
             a.cerrar()
         }
         val otra = Libreta.abrir(context, nombre) // cerrada, ya no se reusa
         assertNotSame(a, otra)
         otra.cerrar()
+    }
+
+    /** Revisión de la tarea 6: un constructor que truena (identidad sin forma) deja el dueño de la libreta como estaba. */
+    @Test fun `un motor que no se arma no toma el dueno de la libreta`() = prueba {
+        val l = Libreta.abrir(context, "sin-forma-${UUID.randomUUID()}.db")
+        fun motorCon(id: Identidad) = MotorDeCobro(
+            id, lector, red, blumon, servidor, l, ColaDeResultados(l, servidor, io), huella,
+            CatalogoDeRechazos.BLUMON, Relojes(), fondo, ahora, { pared }, io,
+        )
+        try {
+            assertThrows(IllegalArgumentException::class.java) { motorCon(identidad.copy(posId = "X")) }
+            motorCon(identidad)
+        } finally {
+            l.cerrar()
+        }
     }
 
     /** R1-5 (a): REVERSADA y la escritura de `cerrarVuelta` truena: el `catch` cierra la fila en el mejor esfuerzo. */

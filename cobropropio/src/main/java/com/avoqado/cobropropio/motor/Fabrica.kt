@@ -45,7 +45,8 @@ fun crearMotorDeCobro(
     pinDelServidor: CertificatePinner?,
     llaveDeHuellas: SecretKey,
 ): MotorDeCobro {
-    // Todo lo inválido truena ANTES de abrir la libreta: una llamada fallida no toma su dueño.
+    // Lo inválido del SERVIDOR truena ANTES de abrir la libreta; una identidad sin forma truena en el constructor del motor, que
+    // así no toma el dueño. Una llamada fallida nunca deja la libreta tomada.
     if (identidad.ambiente == Ambiente.PRODUCCION) require(urlDelServidor.startsWith("https://")) { "SERVIDOR sin https en producción" }
     if (pinDelServidor != null) {
         require(urlDelServidor.startsWith("https://")) { "pines del SERVIDOR sin https" }

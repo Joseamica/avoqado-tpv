@@ -1195,7 +1195,12 @@ fun AppNavigation(
             estado = vigiaDeFolios.estado,
             ruta = bannerRoute,
             cobro = paymentStateProvider,
-            onVer = { navController.navigate(NavRoute.PorPagar.route) { launchSingleTop = true } },
+            // Ronda 4: desde el cobro con tarjeta sale primero al Inicio, como toda salida del cobro; la venta en curso se lee al tocar.
+            onVer = {
+                navController.verPedidosPorPagar(
+                    ventaEnCurso = paymentStateProvider.isChargeAttemptActive() || paymentStateProvider.isCharging(),
+                )
+            },
             onEntendido = vigiaDeFolios::descartarComandasSinSalir,
         )
 

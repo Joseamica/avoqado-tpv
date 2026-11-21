@@ -22,6 +22,8 @@ import com.avoqado.cobropropio.dominio.Red
 import com.avoqado.cobropropio.dominio.ResultadoDeLectura
 import com.avoqado.cobropropio.dominio.SolicitudDeVenta
 import com.avoqado.cobropropio.fixtures.LecturasDePrueba
+import com.avoqado.cobropropio.fixtures.arrancarEnIpv4
+import com.avoqado.cobropropio.fixtures.baseLiteral
 import com.avoqado.cobropropio.libreta.EstadoDelIntento
 import com.avoqado.cobropropio.libreta.Libreta
 import com.avoqado.cobropropio.libreta.LibretaDatabase
@@ -128,8 +130,8 @@ class CarreraDelPermisoTest {
                 else -> MockResponse().setResponseCode(500)
             }
         }
-        server.start()
-        val servidor = ReversoDelServidorHttp(server.url("/").toString(), object : CredencialDelServidor {
+        server.arrancarEnIpv4()
+        val servidor = ReversoDelServidorHttp(server.baseLiteral(), object : CredencialDelServidor {
             override fun vigente() = "jwt"
             override suspend fun renovar(rechazado: String, espera: Duration): String? = null
         })
@@ -165,8 +167,8 @@ class CarreraDelPermisoTest {
             esperaSesion = 5_000, esperaLectura = 5_000, esperaRespuesta = 300, peorCasoCajera = 8_000, esperaPermiso = 3_000,
             esperaReverso = 1_000, pausaEntreReversos = 200, techoDelReverso = 9_000, esperaLibreta = esperaLibreta,
         )
-        server.start()
-        val servidor = ReversoDelServidorHttp(server.url("/").toString(), object : CredencialDelServidor {
+        server.arrancarEnIpv4()
+        val servidor = ReversoDelServidorHttp(server.baseLiteral(), object : CredencialDelServidor {
             override fun vigente() = "jwt"
             override suspend fun renovar(rechazado: String, espera: Duration): String? = null
         })

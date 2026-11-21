@@ -7,6 +7,8 @@ import com.avoqado.cobropropio.dominio.Ambiente
 import com.avoqado.cobropropio.dominio.AttemptId
 import com.avoqado.cobropropio.dominio.Operacion
 import com.avoqado.cobropropio.dominio.Origen
+import com.avoqado.cobropropio.fixtures.arrancarEnIpv4
+import com.avoqado.cobropropio.fixtures.baseLiteral
 import com.avoqado.cobropropio.libreta.Arbitraje
 import com.avoqado.cobropropio.libreta.DatosDelEnvio
 import com.avoqado.cobropropio.libreta.EstadoDelIntento
@@ -202,14 +204,14 @@ class ColaDeResultadosTest {
 
     @Test fun `401 en resultado deja pendiente y la siguiente vuelta entrega`() {
         // Con el HTTP real: el token vencido de la terminal nunca deja un REVERSADA confirmado sin llegar al SERVIDOR.
-        val web = MockWebServer().apply { start() }
+        val web = MockWebServer().apply { arrancarEnIpv4() }
         try {
             val credencial = object : CredencialDelServidor {
                 var jwt = "jwt-vencido"
                 override fun vigente() = jwt
                 override suspend fun renovar(rechazado: String, espera: kotlin.time.Duration) = "jwt-nuevo".also { jwt = it }
             }
-            val colaHttp = ColaDeResultados(libreta, ReversoDelServidorHttp(web.url("/").toString(), credencial))
+            val colaHttp = ColaDeResultados(libreta, ReversoDelServidorHttp(web.baseLiteral(), credencial))
             val id = conReporte()
             web.enqueue(MockResponse().setResponseCode(401).setBody("""{"message":"Unauthorized"}"""))
             assertEquals(mapOf(id to AcuseDelResultado.Reintentar), runBlocking { colaHttp.entregarPendientes() })

@@ -4,6 +4,8 @@ import com.avoqado.cobropropio.dominio.Ambiente
 import com.avoqado.cobropropio.dominio.AttemptId
 import com.avoqado.cobropropio.dominio.Operacion
 import com.avoqado.cobropropio.dominio.Origen
+import com.avoqado.cobropropio.fixtures.arrancarEnIpv4
+import com.avoqado.cobropropio.fixtures.baseLiteral
 import com.avoqado.cobropropio.libreta.EstadoDelReporte
 import com.avoqado.cobropropio.libreta.EstadoDelReversoEnServidor
 import com.avoqado.cobropropio.libreta.IntentoEntity
@@ -33,7 +35,7 @@ import kotlin.time.Duration.Companion.seconds
 /** Una prueba por fila de CON §2.1 y §2.2, con los JSON reales del SERVIDOR (`responderErrorDelReverso`: detalles al mismo nivel). */
 class ReversoDelServidorHttpTest {
 
-    private val server = MockWebServer().apply { start() }
+    private val server = MockWebServer().apply { arrancarEnIpv4() }
 
     /** La credencial falsa: el JWT vigente y lo que contesta `renovar` (cuenta las renovaciones). */
     private class CredencialFalsa(var jwt: String? = "jwt-1", var nuevo: suspend () -> String? = { "jwt-2" }) : CredencialDelServidor {
@@ -46,7 +48,7 @@ class ReversoDelServidorHttpTest {
     }
 
     private val credencial = CredencialFalsa()
-    private val servidor = ReversoDelServidorHttp(server.url("/").toString(), credencial)
+    private val servidor = ReversoDelServidorHttp(server.baseLiteral(), credencial)
     private val id = AttemptId("0f8fad5bd9cb469fa165b0867728950e")
     private val venue = "cm3x9k2ab0001qz8f7h6d5s4t"
 
@@ -217,7 +219,7 @@ class ReversoDelServidorHttpTest {
             override fun vigente(): String? = throw IllegalStateException("almacén de llaves caído")
             override suspend fun renovar(rechazado: String, espera: Duration): String? = null
         }
-        val conRota = ReversoDelServidorHttp(server.url("/").toString(), rota)
+        val conRota = ReversoDelServidorHttp(server.baseLiteral(), rota)
         assertEquals(PermisoDeReverso.SinCredencial, runBlocking { conRota.pedirPermiso(venue, id, 2.seconds) })
         assertEquals(AcuseDelResultado.Reintentar, runBlocking { conRota.reportarResultado(venue, id, confirmado) })
         assertEquals(0, server.requestCount)
@@ -245,7 +247,7 @@ class ReversoDelServidorHttpTest {
 
     /** R4-4: una entrega de `/resultado` lenta tiene plazo total; el barrido no se queda esperándola. */
     @Test(timeout = 20_000) fun `resultado con el cuerpo goteando vence en su plazo total`() {
-        val rapido = ReversoDelServidorHttp(server.url("/").toString(), credencial, esperaDelResultado = 1.seconds)
+        val rapido = ReversoDelServidorHttp(server.baseLiteral(), credencial, esperaDelResultado = 1.seconds)
         server.enqueue(
             MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
                 .setBody("""{"success":true,"attemptId":"${id.valor}","estado":"reversed","eventLogId":"cevt1"}""")
@@ -335,10 +337,10 @@ class ReversoDelServidorHttpTest {
         assertNull(c.cache)
         assertFalse(c.followRedirects || c.followSslRedirects || c.retryOnConnectionFailure)
         assertTrue(c.dispatcher.maxRequestsPerHost >= 64)
-        assertSame(EventListener.NONE, c.eventListenerFactory.create(c.newCall(Request.Builder().url(server.url("/")).build())))
+        assertSame(EventListener.NONE, c.eventListenerFactory.create(c.newCall(Request.Builder().url(server.baseLiteral()).build())))
         assertTrue(c.certificatePinner.pins.isEmpty())
         val conPinning = CertificatePinner.Builder().add("api.avoqado.io", "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").build()
-        assertEquals(conPinning.pins, ReversoDelServidorHttp(server.url("/").toString(), credencial, conPinning).cliente.certificatePinner.pins)
+        assertEquals(conPinning.pins, ReversoDelServidorHttp(server.baseLiteral(), credencial, conPinning).cliente.certificatePinner.pins)
     }
 
     /** v5-9: nada de lo que llega del SERVIDOR (ids, paymentId, autorización, códigos) sale en un `toString()`. */

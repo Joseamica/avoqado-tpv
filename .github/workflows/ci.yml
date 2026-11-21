@@ -145,5 +145,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: reporte-tests
-          path: app/build/reports/tests/
+          # Ola final, 6ª parte: también el módulo cobropropio (reporte HTML y los XML con el mensaje de cada falla).
+          path: |
+            app/build/reports/tests/
+            cobropropio/build/reports/tests/
+            cobropropio/build/test-results/
           retention-days: 7

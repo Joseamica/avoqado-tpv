@@ -37,6 +37,8 @@ import com.avoqado.cobropropio.dominio.SolicitudDeCancelacion
 import com.avoqado.cobropropio.dominio.SolicitudDeVenta
 import com.avoqado.cobropropio.fixtures.LecturasDePrueba
 import com.avoqado.cobropropio.fixtures.LecturasDePrueba.con
+import com.avoqado.cobropropio.fixtures.arrancarEnIpv4
+import com.avoqado.cobropropio.fixtures.baseLiteral
 import com.avoqado.cobropropio.libreta.EstadoDelIntento
 import com.avoqado.cobropropio.libreta.EstadoDelReporte
 import com.avoqado.cobropropio.libreta.EstadoDelReverso
@@ -730,7 +732,7 @@ class PuntaAPuntaTest {
         }
         private val servidorHttp = MockWebServer().apply {
             dispatcher = servidorSim
-            start(LOCALHOST, 0)
+            arrancarEnIpv4() // 6ª parte: por la dirección literal, no por `localhost` (ver fixtures/Local.kt)
         }
         private val endpoints = Endpoints("https://localhost:${blumonHttp.port}/oauth/token", "https://localhost:${blumonHttp.port}/")
         private val archivo = File(carpeta.root, "${UUID.randomUUID()}.db")
@@ -753,7 +755,7 @@ class PuntaAPuntaTest {
                 override fun lookup(hostname: String) = listOf(LOCALHOST)
             })
             val espia = Espia(ClienteBlumon(endpoints, envio, CREDENCIAL, identidad, SecureRandom())) { t, x -> salidas += t to x }
-            private val servidor = ReversoDelServidorHttp(servidorHttp.url("/").toString(), JWT)
+            private val servidor = ReversoDelServidorHttp(servidorHttp.baseLiteral(), JWT)
             val lector = LectorDePrueba { t, x -> salidas += t to x }
 
             /** Corren DENTRO de la transacción de esa operación de la libreta, antes del commit. */

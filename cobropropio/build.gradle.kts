@@ -25,6 +25,11 @@ tasks.withType<Test>().configureEach {
         outputs.upToDateWhen { false }
         outputs.cacheIf { false }
     }
+    // Ola final, 6ª parte: si una prueba truena, el log del CI dice por qué (el mensaje del assert y su pila completa).
+    testLogging {
+        events(org.gradle.api.tasks.testing.logging.TestLogEvent.FAILED)
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+    }
 }
 
 dependencies {

@@ -331,6 +331,10 @@ class ChecadaViewModelTest {
         coEvery { ubicacion.leer(any()) } coAnswers { espera.await() }
         coEvery { copia.borrar() } just runs
         vm.marcarEntrada()
+        // D5 (20-nov): apartarChecada guarda en el hilo de Room; sin esta espera, con el CI cargado el borrado llegaba ANTES de que
+        // existiera la APARTADA, no la veía y borraba (falló 1 vez en campo-release.yml, línea del QUEDA_ALGO). El caso que se
+        // prueba es «la checada YA espera el GPS cuando llega el borrado», así que se espera a que esté guardada, como las vecinas.
+        runBlocking { withTimeout(5_000) { dao.pendientesDeVer().first { l -> l.any { it.estado == EstadoPieza.APARTADA } } } }
         // Mientras espera el GPS llega un latido DESVINCULADO: la navegación cambia a la gracia (la pantalla se va) y la persona
         // toca «Activar con un código nuevo».
         vm.viewModelScope.cancel()

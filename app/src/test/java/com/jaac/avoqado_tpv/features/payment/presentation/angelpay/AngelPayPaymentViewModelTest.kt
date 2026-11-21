@@ -2645,8 +2645,17 @@ class AngelPayPaymentViewModelTest {
             vm.startCashPayment()
             runCurrent()
 
+            // D12 (21-nov): sin plazo de reloj. El registro corre en Dispatchers.IO (hilo real) y, en efectivo, el aviso
+            // al POS sale DESPUÉS del encolado: el `coVerify(timeout = 2000)` de antes podía vencer por carga, o ver el
+            // encolado y revisar el aviso antes de que saliera. Se espera a que la pantalla quede resuelta, que el
+            // ViewModel publica sólo cuando `handleRecordFailure` ya encoló y avisó.
+            vm.state.first {
+                it is AngelPayPaymentState.Queued || it is AngelPayPaymentState.Success ||
+                    it is AngelPayPaymentState.Error || it is AngelPayPaymentState.Cancelled
+            }
+
             // Charge NOT dropped: recovered venue/staff → context built → record fails → enqueued.
-            coVerify(timeout = 2000) {
+            coVerify {
                 paymentQueueRepository.enqueue(
                     match { it.referenceNumber.startsWith("CASH-") && it.idempotencyKey != null },
                 )

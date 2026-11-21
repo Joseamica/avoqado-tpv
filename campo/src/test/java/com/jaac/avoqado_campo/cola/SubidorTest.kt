@@ -429,6 +429,12 @@ class SubidorTest {
         assertEquals(Desenlace.AVISO, l.desenlace)
         assertEquals("S2", json(l.datosJson)["faltan"].asJsonArray.single().asString)
 
+        // Codex misventas r1 #1: aceptada en parte en la gracia, las fallidas vienen ya filtradas en `fallidas` (envioDeCampo.ts).
+        val enParte = """{"resuelto":"APLICADO","resultado":{"summary":{"total":2,"succeeded":1,"failed":1},"fallidas":[{"serialNumber":"B","status":"error","code":"X"}]}}"""
+        val p = desenlaceDe(TipoPieza.CUSTODIA_ACEPTAR, enParte)
+        assertEquals(Desenlace.AVISO, p.desenlace)
+        assertEquals("B", json(p.datosJson)["fallidas"].asJsonArray.single().asJsonObject["serialNumber"].asString)
+
         val gracia = """{"aplicadoEnGracia":true,"success":true,"verificationId":"v","outcome":"APPLIED","photoOutcome":"APPLIED","linkingNumberOutcome":"DISABLED"}"""
         assertEquals(Desenlace.AVISO, desenlaceDe(TipoPieza.EVIDENCIA, gracia, pidioNumero = true).desenlace)
 

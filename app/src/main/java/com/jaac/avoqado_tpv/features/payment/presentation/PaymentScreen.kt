@@ -935,11 +935,19 @@ fun PaymentScreen(
                                     onClearTableAndReturnToFloorPlan(clearedTableId)
                                 },
                                 onContinuePayment = {
-                                    currentState.orderId?.let { orderIdValue ->
+                                    if (CobroRemotoDelPos.esCobroDelPos(paymentSource)) {
+                                        // D34: el resto de un cobro del POS lo cobra el POS; la terminal regresa a donde estaba
+                                        // (antes abría «Órdenes» con el pedido, que ya no existe e invitaba a cobrarlo aquí).
                                         viewModel.resetPayment()
-                                        onNavigateToOrder(orderIdValue, tableId)
+                                        onNavigateBack()
+                                    } else {
+                                        currentState.orderId?.let { orderIdValue ->
+                                            viewModel.resetPayment()
+                                            onNavigateToOrder(orderIdValue, tableId)
+                                        }
                                     }
                                 },
+                                restoLoCobraElPos = CobroRemotoDelPos.esCobroDelPos(paymentSource),
                                 onNavigateToPayLaterOrders = {
                                     viewModel.resetPayment()
                                     onNavigateToPayLaterOrders()
@@ -1678,6 +1686,7 @@ private fun PaymentSuccessContent(
     onNewFastPayment: () -> Unit,  // 🆕 Navigate to new fast payment (for fast payments)
     onClearTableAndReturnToFloorPlan: (String) -> Unit = {},  // 🆕 Clear table and return to floor plan
     onContinuePayment: () -> Unit = {},  // ⭐ NEW: Continue paying remaining balance
+    restoLoCobraElPos: Boolean = false,  // D34: abono de un cobro del POS; lo que falta se cobra desde el POS
     onNavigateToPayLaterOrders: () -> Unit = {},  // 💳 Navigate to pay-later orders list
     onSendReceipt: (email: String) -> Unit = {},  // 📧 Send receipt by email
     onSendReceiptWhatsApp: (phone: String) -> Unit = {},  // 💬 Send receipt by WhatsApp
@@ -1844,7 +1853,7 @@ private fun PaymentSuccessContent(
                                     modifier = Modifier.height(48.dp)
                                 ) {
                                     Text(
-                                        text = "Continuar pagando $${String.format(java.util.Locale.US, "%.2f", remainingBalance)}"
+                                        text = textoDelBotonDeLoQueFalta(remainingBalance, restoLoCobraElPos)
                                     )
                                 }
                             }
@@ -3556,4 +3565,13 @@ private fun ProofOfSalePlaceholder(
             }
         }
     }
+}
+
+/**
+ * D34: el botón de un cobro que dejó saldo. En la terminal dice «Continuar pagando $X» y abre la cuenta; en un abono que mandó
+ * el POS no hay cuenta que abrir aquí (el pedido es del POS): regresa a donde estaba la terminal y lo dice.
+ */
+internal fun textoDelBotonDeLoQueFalta(restante: java.math.BigDecimal?, restoLoCobraElPos: Boolean): String {
+    val importe = String.format(java.util.Locale.US, "%.2f", restante ?: java.math.BigDecimal.ZERO)
+    return if (restoLoCobraElPos) "Listo · faltan $$importe en el POS" else "Continuar pagando $$importe"
 }

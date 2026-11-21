@@ -84,7 +84,7 @@ fun PendientesScreen(vm: PendientesViewModel, onRegresar: () -> Unit, onMisSims:
 @Composable
 fun PendientesContenido(filas: List<FilaPendiente>, e: EstadoPendientes, onRegresar: () -> Unit, onAccion: (Long, Accion) -> Unit) {
     val (atender, porSubir) = filas.partition { it.problema }
-    PantallaCampo("Mis pendientes", onRegresar = onRegresar) {
+    PantallaCampo("Ventas pendientes por subir", onRegresar = onRegresar) {
         e.error?.let { Recuadro(it, Tono.AVISO) }
         if (filas.isEmpty()) {
             Column(Modifier.fillMaxWidth().padding(top = 32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -72,6 +72,13 @@ abstract class PiezaDao {
     )
     abstract suspend fun conSimsPorSubir(): List<Pieza>
 
+    /** D1: ventas y custodias, también las terminadas (se guardan 7 días): lo que el celular hizo con cada SIM y cómo acabó. */
+    @Query("SELECT * FROM piezas WHERE tipo IN ('VENTA','CUSTODIA_ACEPTAR','CUSTODIA_RECHAZAR') ORDER BY id")
+    abstract fun conSims(): Flow<List<Pieza>>
+
+    @Query("SELECT * FROM piezas WHERE tipo IN ('VENTA','CUSTODIA_ACEPTAR','CUSTODIA_RECHAZAR') ORDER BY id")
+    abstract suspend fun conSimsAhora(): List<Pieza>
+
     /** Hijos que todavía pueden subir (los AVISO ya los aceptó el SERVIDOR y no se tocan). */
     @Query("SELECT * FROM piezas WHERE dependeDe = :llave AND estado IN ('PENDIENTE','RETENIDA','RECHAZADA') ORDER BY id")
     abstract suspend fun hijosPorSubir(llave: String): List<Pieza>

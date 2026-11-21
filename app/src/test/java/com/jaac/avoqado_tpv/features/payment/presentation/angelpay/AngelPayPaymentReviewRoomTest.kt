@@ -202,8 +202,30 @@ class AngelPayPaymentReviewRoomTest {
 
     @After
     fun tearDown() {
+        esperarALosViewModelsDeLaPrueba()
         Dispatchers.resetMain()
         unmockkAll()
+    }
+
+    /** Cada ViewModel que crea [createViewModel], para que [tearDown] espere a que termine antes de soltar Main. */
+    private val viewModelsDeLaPrueba = java.util.Collections.synchronizedList(mutableListOf<AngelPayPaymentViewModel>())
+
+    /**
+     * D35 (CI 44808891911): al cerrar `viewModelScope` (el `finally` de cada prueba), lo que el ViewModel tenía a medias en un
+     * hilo real (Room, `Dispatchers.IO`) termina un poco después y, al terminar, avisa a su dueño en `Dispatchers.Main`. Si ese
+     * aviso cae justo cuando este @After devuelve Main (`resetMain`) y el @Before de la prueba siguiente lo cambia (`setMain`),
+     * `TestMainDispatcher` pregunta «¿hay que despachar?» a uno y despacha en otro: `UnconfinedTestDispatcher.dispatch` truena y
+     * el `CompletionHandlerException` le cae a la prueba de al lado. Por eso se espera a que TERMINEN con Main todavía puesto.
+     * Tope de 10 s para no colgar la suite: si alguno sigue, se avisa y Main se suelta como antes.
+     */
+    private fun esperarALosViewModelsDeLaPrueba() {
+        val trabajos = synchronized(viewModelsDeLaPrueba) {
+            viewModelsDeLaPrueba.map { it.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!! }.also { viewModelsDeLaPrueba.clear() }
+        }
+        val terminaron = kotlinx.coroutines.runBlocking {
+            kotlinx.coroutines.withTimeoutOrNull(10_000) { trabajos.forEach { it.cancelAndJoin() } } != null
+        }
+        if (!terminaron) System.err.println("⚠️ D35: un ViewModel de la prueba siguió trabajando 10 s después de cerrarla")
     }
 
     private fun createViewModel(
@@ -252,7 +274,7 @@ class AngelPayPaymentReviewRoomTest {
         pendingPaymentDao = mockk(relaxed = true),
         subirVentaGuardadaUseCase = mockk(relaxed = true),
         impresoraDeVentaGuardada = mockk(relaxed = true),
-    )
+    ).also { viewModelsDeLaPrueba += it }
     }
 
     /** Los casos SDK positivos pasan por la selección real, sin acreditar otros escenarios desde setup. */

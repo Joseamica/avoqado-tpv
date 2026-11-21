@@ -177,7 +177,7 @@ class ArgumentosDelCobroSeLeenUnaVezTest {
     /**
      * 🧾 Tienda híbrida (P3, 6-nov-2026): el cobro de un folio lleva su comanda en `"folio"`. Se congela con los demás
      * argumentos, la leen las DOS pantallas de cobro (PAX y Nexgo) y `clearPaymentArgs` la quita: un cobro rápido nuevo no puede
-     * nacer como el folio de otro. Y un folio nunca vuelve a «Órdenes» (`Menu`), que deja imprimir su comanda sin pagar.
+     * nacer como el folio de otro. Y un folio nunca vuelve al Inicio sin pasar por sus folios («Órdenes», que dejaba imprimir su comanda sin pagar, ya no existe: D34).
      */
     @Test
     fun `P3 la llave folio se congela, la leen las dos pantallas de cobro y clearPaymentArgs la quita`() {
@@ -195,8 +195,8 @@ class ArgumentosDelCobroSeLeenUnaVezTest {
         )
         val alPedido = cuerpoDe("NavRoute.Payment.route").substringAfter("onNavigateToOrder = {")
         assertTrue(
-            "En la ruta Blumon, volver «al pedido» de un folio debe regresar a la lista de folios antes que a «Órdenes».",
-            alPedido.indexOf("volverALosFolios(") in 0 until alPedido.indexOf("NavRoute.Menu.createRoute("),
+            "En la ruta Blumon, volver «al pedido» de un folio debe regresar a la lista de folios antes que al Inicio (D34).",
+            alPedido.indexOf("volverALosFolios(") in 0 until alPedido.indexOf("popAlInicio("),
         )
     }
 

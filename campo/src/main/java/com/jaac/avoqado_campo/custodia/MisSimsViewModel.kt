@@ -18,6 +18,8 @@ import com.jaac.avoqado_campo.cola.simsDeCustodia
 import com.jaac.avoqado_campo.cola.TipoPieza
 import com.jaac.avoqado_campo.cola.normalizarSerie
 import com.jaac.avoqado_campo.copia.Copia
+import com.jaac.avoqado_campo.copia.LoDelCelular
+import com.jaac.avoqado_campo.copia.loDelCelular
 import com.jaac.avoqado_campo.copia.MarcaLocal
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.copia.SimEnCopia
@@ -35,7 +37,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
 
-enum class EstadoFila { POR_DECIDIR, ACTUALIZANDO, POR_SUBIR, EN_CUSTODIA, VENDIDA, EN_REVISION, REVISAR, CORRECCION_POR_SUBIR }
+enum class EstadoFila { POR_DECIDIR, ACTUALIZANDO, POR_SUBIR, EN_CUSTODIA, VENDIDA, EN_REVISION, REVISAR, CORRECCION_POR_SUBIR, RECHAZADA, VENTA_POR_SUBIR }
 
 data class FilaSim(val sim: SimEnCopia, val estado: EstadoFila, val nota: String? = null)
 
@@ -47,11 +49,20 @@ data class EstadoMisSims(
     val enCustodia: List<FilaSim> = emptyList(),
     val vendidas: List<FilaSim> = emptyList(),
     val sinCopia: Boolean = true,
+    /** Cuándo se bajó la lista del SERVIDOR: sin señal, «Mis ventas» la enseña tal como estaba a esa hora (Codex r3). */
+    val bajadaAt: Long? = null,
     val actualizando: Boolean = false,
     val ocupado: Boolean = false,
     val corrigiendo: Correccion? = null,
     val error: String? = null,
-)
+) {
+    // «Mis ventas» (Isaac, 20-nov): lo que el promotor corrige, lo que se vendió (también «En revisión») y lo perdido.
+    val porRevisar get() = vendidas.filter { it.estado == EstadoFila.REVISAR || it.estado == EstadoFila.CORRECCION_POR_SUBIR }
+    val rechazadas get() = vendidas.filter { it.estado == EstadoFila.RECHAZADA }
+    // Codex r1: la vendida en el celular que aún no sube no es «exitosa» (el SERVIDOR todavía puede rechazarla).
+    val ventasPorSubir get() = vendidas.filter { it.estado == EstadoFila.VENTA_POR_SUBIR }
+    val exitosas get() = vendidas.filter { it.estado == EstadoFila.VENDIDA || it.estado == EstadoFila.EN_REVISION }
+}
 
 @HiltViewModel
 class MisSimsViewModel @Inject constructor(
@@ -69,11 +80,13 @@ class MisSimsViewModel @Inject constructor(
     private val recienCorregidas = mutableSetOf<String>()
     private val refrescadas = mutableSetOf<Long>()
     private var aDecidir: Map<String, Reasignada> = emptyMap()
-    private var ultimo: Pair<Copia?, List<Pieza>> = null to emptyList()
+    private var ultimo: Triple<Copia?, List<Pieza>, List<Pieza>> = Triple(null, emptyList(), emptyList())
 
     init {
         viewModelScope.launch { copia.leer(); bajar(avisar = false) }
-        viewModelScope.launch { combine(copia.copia, dao.pendientesDeVer()) { a, b -> a to b }.collect { (c, cola) -> derivar(c, cola) } }
+        viewModelScope.launch {
+            combine(copia.copia, dao.pendientesDeVer(), dao.conSims()) { a, b, d -> Triple(a, b, d) }.collect { (c, cola, conSims) -> derivar(c, cola, conSims) }
+        }
     }
 
     /** El botón «Actualizar»: si no baja nada (sin red o el SERVIDOR no contesta) lo dice; al abrir la pantalla no se avisa. */
@@ -232,10 +245,11 @@ class MisSimsViewModel @Inject constructor(
         if (!_estado.value.ocupado) _estado.value.corrigiendo?.foto?.let { File(it).delete() }
     }
 
-    private fun derivarOtraVez() = derivar(ultimo.first, ultimo.second)
+    private fun derivarOtraVez() = derivar(ultimo.first, ultimo.second, ultimo.third)
 
-    private fun derivar(c: Copia?, cola: List<Pieza>) {
-        ultimo = c to cola
+    /** [cola]: lo que se ve en pendientes (sin lo terminado). [conSims]: ventas y custodias, también terminadas (D1). */
+    private fun derivar(c: Copia?, cola: List<Pieza>, conSims: List<Pieza>) {
+        ultimo = Triple(c, cola, conSims)
         val porSerie = c?.sims.orEmpty().associateBy { normalizarSerie(it.serialNumber) }
         val enCola = mutableSetOf<String>()
         val aDecidirAhora = mutableMapOf<String, Reasignada>()
@@ -267,37 +281,54 @@ class MisSimsViewModel @Inject constructor(
         val sinVersionNueva = aDecidirAhora.filter { (serie, r) -> porSerie[serie]?.custodyVersion == r.version }
         if (sinVersionNueva.values.map { it.pieza.id }.filter { refrescadas.add(it) }.isNotEmpty()) bajar(avisar = false)
 
+        // D1 (Codex r3): cada SIM por lo último que hizo ESTE celular y cómo acabó, contra lo que ya traía la lista al bajarla
+        // (la misma regla que el escáner y el Inicio). La venta de una SIM que ya no está en la lista también sale (caso 4).
+        val lo = c?.let { loDelCelular(it, conSims) }.orEmpty()
         val filas = c?.sims.orEmpty().mapNotNull { s ->
             val serie = normalizarSerie(s.serialNumber)
+            val l = lo[serie]?.takeIf { s.custodyState != "SOLD" }
             when {
-                s.custodyState == "SOLD" || s.localmente == MarcaLocal.VENDIDA_EN_EL_CELULAR -> when (s.verificationStatus) {
+                l != null && l.esVenta -> filaDeVenta(s, l)
+                s.custodyState == "SOLD" -> when (s.verificationStatus) {
                     "FAILED" -> if (s.verificationId in corrigiendo) FilaSim(s, EstadoFila.CORRECCION_POR_SUBIR, "Corrección por subir")
                     else FilaSim(s, EstadoFila.REVISAR, motivos(s))
                     "PENDING" -> FilaSim(s, EstadoFila.EN_REVISION, "En revisión")
+                    // Terminal: la venta se perdió (no se pudo vincular o portar) y no se corrige. Antes salía «Vendida».
+                    "REJECTED" -> FilaSim(s, EstadoFila.RECHAZADA, motivos(s, siNoHay = "Tu supervisor la rechazó"))
                     else -> FilaSim(s, EstadoFila.VENDIDA)
                 }
+                l == LoDelCelular.RECHAZADA -> null // la regresó y el SERVIDOR ya lo confirmó: ya no es suya
+                l == LoDelCelular.ACEPTADA || s.custodyState == "PROMOTER_HELD" -> FilaSim(s, EstadoFila.EN_CUSTODIA)
                 s.custodyState == "PROMOTER_PENDING" -> when {
                     serie in enCola -> FilaSim(s, EstadoFila.POR_SUBIR, "Por subir")
                     serie in sinVersionNueva -> FilaSim(s, EstadoFila.ACTUALIZANDO, "Te volvieron a asignar esta SIM · Actualizando…")
                     serie in aDecidirAhora -> FilaSim(s, EstadoFila.POR_DECIDIR, REASIGNADA)
-                    s.localmente == MarcaLocal.ACEPTADA_EN_EL_CELULAR || s.localmente == MarcaLocal.RECHAZADA_EN_EL_CELULAR ->
-                        FilaSim(s, EstadoFila.POR_SUBIR, "Por subir")
+                    l == LoDelCelular.ACEPTADA_POR_SUBIR || l == LoDelCelular.RECHAZADA_POR_SUBIR -> FilaSim(s, EstadoFila.POR_SUBIR, "Por subir")
                     else -> FilaSim(s, EstadoFila.POR_DECIDIR)
                 }
-                s.custodyState == "PROMOTER_HELD" -> FilaSim(s, EstadoFila.EN_CUSTODIA)
                 else -> null
             }
-        }
-        val vendidas = setOf(EstadoFila.VENDIDA, EstadoFila.EN_REVISION, EstadoFila.REVISAR, EstadoFila.CORRECCION_POR_SUBIR)
+        } + lo.filter { (serie, l) -> l.esVenta && serie !in porSerie }.map { (serie, l) -> filaDeVenta(simFueraDeLaLista(serie), l) }
+        val vendidas = setOf(EstadoFila.VENDIDA, EstadoFila.EN_REVISION, EstadoFila.REVISAR, EstadoFila.CORRECCION_POR_SUBIR, EstadoFila.RECHAZADA, EstadoFila.VENTA_POR_SUBIR)
         _estado.update { e ->
             e.copy(
-                porAceptar = filas.filter { it.sim.custodyState == "PROMOTER_PENDING" && it.estado !in vendidas },
+                porAceptar = filas.filter { it.estado == EstadoFila.POR_DECIDIR || it.estado == EstadoFila.ACTUALIZANDO || it.estado == EstadoFila.POR_SUBIR },
                 enCustodia = filas.filter { it.estado == EstadoFila.EN_CUSTODIA },
                 vendidas = filas.filter { it.estado in vendidas },
                 sinCopia = c == null,
+                bajadaAt = c?.bajadaAt,
             )
         }
     }
+
+    private fun filaDeVenta(s: SimEnCopia, l: LoDelCelular) = when (l) {
+        LoDelCelular.VENDIDA -> FilaSim(s, EstadoFila.VENDIDA)
+        LoDelCelular.VENTA_NO_SUBIO -> FilaSim(s, EstadoFila.VENTA_POR_SUBIR, NO_SUBIO)
+        else -> FilaSim(s, EstadoFila.VENTA_POR_SUBIR, "Por subir")
+    }
+
+    /** Caso 4: la venta de una SIM que la lista ya no trae (la reasignaron); sólo se sabe su serie. */
+    private fun simFueraDeLaLista(serie: String) = SimEnCopia(serie, "", 0, "", null, null, null, null, null, emptyList(), null)
 
     /** Una custodia que el SERVIDOR no aplicó porque reasignaron la SIM; [version] es la que se mandó. */
     private class Reasignada(val pieza: Pieza, val version: Int)
@@ -320,10 +351,12 @@ class MisSimsViewModel @Inject constructor(
             "OTHER" to "Otro motivo",
         )
 
-        fun motivos(s: SimEnCopia) = (s.rejectionReasons.map { MOTIVOS[it] ?: it } + listOfNotNull(s.reviewNotes?.takeIf { it.isNotBlank() }))
-            .joinToString(" · ").ifEmpty { "Tu supervisor pidió corregir la evidencia" }
+        fun motivos(s: SimEnCopia, siNoHay: String = "Tu supervisor pidió corregir la evidencia") =
+            (s.rejectionReasons.map { MOTIVOS[it] ?: it } + listOfNotNull(s.reviewNotes?.takeIf { it.isNotBlank() }))
+                .joinToString(" · ").ifEmpty { siNoHay }
 
         const val REASIGNADA = "Te volvieron a asignar esta SIM: vuelve a decidir"
+        const val NO_SUBIO = "No se pudo subir: revísala en «Ventas pendientes por subir»"
 
         /** Series de las filas `fallidas` (B12) con `ASIGNACION_CAMBIO`. */
         fun filasReasignadas(datos: String?): Set<String> = runCatching {

@@ -205,7 +205,7 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     kioskDefaultMerchantId = kioskDefaultMerchantId,
     // Home screen buttons default to enabled
     showQuickPayment = showQuickPayment ?: true,
-    showOrderManagement = showOrderManagement ?: true,
+    showOrderManagement = showOrderManagement ?: false, // LEGACY sin efecto (D34): «Órdenes» ya no existe
     showCheckout = showCheckout ?: true,
     showReports = showReports ?: true,
     showPayments = showPayments ?: true,

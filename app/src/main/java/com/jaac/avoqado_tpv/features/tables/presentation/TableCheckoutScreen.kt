@@ -1119,11 +1119,6 @@ private fun CashReceiptDialog(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
-                // F1 · Codex r9 R9-2: el efectivo se cobró; la tarjeta de esta cuenta sigue por confirmar (K19c). Va en el recibo que la
-                // cajera ya cierra: cero toques de más.
-                receipt.avisoDeTarjeta?.let {
-                    Text(it, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.error)
-                }
                 Spacer(Modifier.height(Spacing.Space2))
                 when {
                     receipt.queued -> Text(

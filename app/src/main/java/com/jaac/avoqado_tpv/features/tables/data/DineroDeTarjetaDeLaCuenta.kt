@@ -1,6 +1,5 @@
 package com.jaac.avoqado_tpv.features.tables.data
 
-import com.jaac.avoqado_tpv.core.remotepayment.AvisoDeCobrosPendientes
 import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -47,12 +46,4 @@ class DineroDeTarjetaDeLaCuenta @Inject constructor(
             "SUBIENDO" -> TARJETA_SUBIENDOSE
             else -> TARJETA_REGISTRANDOSE // 'LIBRETA' (o algo que no se conoce: falla cerrado)
         }
-
-    /**
-     * F1 · Codex r9 R9-2 (TPV SOLA → Mesas): K19c si un cobro con tarjeta de esta cuenta frena su tarjeta (su duda `INDETERMINADO` o la
-     * marca viva del historial, con el techo y la firma de siempre). NO frena el efectivo (D10 «B»): el recibo lo avisa. El dinero
-     * conocido no llega aquí: [motivo] ya frenó el efectivo con su propio texto.
-     */
-    suspend fun avisoDeDuda(orderId: String): String? =
-        if (libreta.tarjetaFrenadaDeLaCuenta(orderId)) AvisoDeCobrosPendientes.cobroPorConfirmar() else null
 }

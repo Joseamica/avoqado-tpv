@@ -23,14 +23,6 @@ object AvisoDeCobrosPendientes {
     /** Cuántas obligaciones se nombran con su importe antes de contar el resto. */
     private const val MAXIMO_ENUMERADO = 3
 
-    /**
-     * 🔴 K19c del catálogo de F1 (`docs/audit/2026-11-17-f1-pantallas/diseno.md`), UNA sola fuente: la barrera de la TARJETA
-     * ([barreraDeLaLibreta], con [detalle] = importe y antigüedad, más su cola «NO se inició otro cobro») y el aviso del EFECTIVO de
-     * Mesas (F1 · Codex r9 R9-2, sin detalle ni cola: el efectivo SÍ se cobra, D10 «B»).
-     */
-    fun cobroPorConfirmar(detalle: String? = null): String =
-        "Esta cuenta tiene un cobro por confirmar${detalle?.let { " ($it)" }.orEmpty()}. Avísale al gerente."
-
 
     /** null = no hay nada que avisar. La lista viene de la más reciente a la más vieja. */
     fun texto(todas: List<ObligacionPendiente>, ahoraMillis: Long): String? {
@@ -162,9 +154,10 @@ object AvisoDeCobrosPendientes {
             "Esta venta ya se cobró ($apartaLaVenta): Avoqado lo registró. NO se inició otro cobro. " +
                 "Toca «Entendido» en el aviso de arriba."
         // La venta primero: es la más específica y la que de verdad puede cobrarse dos veces.
-        // F1 (17-nov, K19c): otra tarjeta de esta cuenta espera al gerente; el cajero no decide. Codex r9 R9-2: el texto del catálogo,
-        // de la misma fuente que el aviso del efectivo de Mesas ([cobroPorConfirmar]), con el importe y la cola de la tarjeta.
-        apartaLaVenta != null -> cobroPorConfirmar(apartaLaVenta) + " NO se inició otro cobro."
+        // F1 (17-nov, K19c): otra tarjeta de esta cuenta espera al gerente; el cajero no decide.
+        apartaLaVenta != null ->
+            "Esta cuenta tiene un cobro con tarjeta por confirmar ($apartaLaVenta). NO se inició otro cobro. " +
+                "No la repitas: avísale al gerente."
         // El aparato ya sólo lo aparta un cobro CORRIENDO en este proceso (founder, 25-sep), nunca uno «por reconocer».
         apartaElAparato != null ->
             "Hay otro cobro en curso en esta terminal ($apartaElAparato). NO se inició este cobro. " +

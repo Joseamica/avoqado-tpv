@@ -138,8 +138,6 @@ data class CashReceiptSummary(
     val autofacturaAvailable: Boolean,
     val queued: Boolean,
     val isSettlingPayment: Boolean,
-    /** F1 · Codex r9 R9-2: K19c si al cobrar esta cuenta tenía un cobro con tarjeta por confirmar (el efectivo se cobró igual, D10 «B»). */
-    val avisoDeTarjeta: String? = null,
 )
 
 data class TableCheckoutState(
@@ -998,8 +996,6 @@ class TableCheckoutViewModel @Inject constructor(
                 if (cambio == SALISTE_DE_LA_CUENTA) releerAlTerminarElCobro = false else alTerminarElCobro()
                 return@launch
             }
-            // F1 · Codex r9 R9-2 (D10 «B»): una DUDA de tarjeta de esta cuenta no frena el efectivo; el recibo la avisa (K19c).
-            val avisoDeTarjeta = dineroDeTarjeta.avisoDeDuda(session.orderId)
             repository.payCash(
                 venueId = vId,
                 orderId = session.orderId,
@@ -1033,7 +1029,6 @@ class TableCheckoutViewModel @Inject constructor(
                                 autofacturaAvailable = outcome.autofacturaAvailable,
                                 queued = outcome.queued,
                                 isSettlingPayment = willSettle,
-                                avisoDeTarjeta = avisoDeTarjeta,
                             ),
                         )
                     }

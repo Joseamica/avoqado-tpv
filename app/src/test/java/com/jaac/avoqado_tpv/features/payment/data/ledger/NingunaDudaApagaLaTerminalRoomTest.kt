@@ -131,7 +131,7 @@ class NingunaDudaApagaLaTerminalRoomTest {
                 libreta.openAttempt("b-$procesador", "venue", procesador, 100, 0, "ORDER", orden7))
             assertEquals("a-$procesador", libreta.retencionDeLaVenta("orden-7")?.attemptId)
             assertTrue("[$procesador] la barrera lo dice como cobro por confirmar",
-                libreta.motivoDeLaBarrera("orden-7", "b-$procesador").contains("cobro por confirmar"))
+                libreta.motivoDeLaBarrera("orden-7", "b-$procesador").contains("cobro con tarjeta por confirmar"))
             assertTrue("[$procesador] otra cuenta, mismo importe, sí entra",
                 libreta.openAttempt("c-$procesador", "venue", procesador, 100, 0, "ORDER", orden8))
             libreta.markDiscardedBeforeCharge("c-$procesador", "fin de la prueba")

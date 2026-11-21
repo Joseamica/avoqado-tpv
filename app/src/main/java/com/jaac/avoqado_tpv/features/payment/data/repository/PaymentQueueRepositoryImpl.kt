@@ -111,9 +111,13 @@ class PaymentQueueRepositoryImpl @Inject constructor(
                 entity.splitType == existing.splitType && entity.paidProductIds == existing.paidProductIds &&
                 entity.equalPartsPartySize == existing.equalPartsPartySize &&
                 entity.equalPartsPayedFor == existing.equalPartsPayedFor)
+            // Efectivo con la MISMA llave y el mismo dinero ya SUCCESS = esta misma venta, que el worker subió entre el `release`
+            // de la pantalla y este encolado (encargo 97042c, Codex r1 #8). Está registrada: no es un error ni pide «Reintentar».
+            val yaRegistrada = isCash && sameIdentity && sameCashPayload &&
+                existing?.syncStatus == PendingPaymentEntity.SYNC_STATUS_SUCCESS
             val stillQueued = sameIdentity && sameCashPayload &&
                 (existing?.syncStatus == PendingPaymentEntity.SYNC_STATUS_PENDING ||
-                    existing?.syncStatus == PendingPaymentEntity.SYNC_STATUS_SYNCING)
+                    existing?.syncStatus == PendingPaymentEntity.SYNC_STATUS_SYNCING) || yaRegistrada
 
             if (stillQueued) {
                 Timber.w("⚠️ [Payment Queue] Pago ya encolado | ref=${payment.referenceNumber}")

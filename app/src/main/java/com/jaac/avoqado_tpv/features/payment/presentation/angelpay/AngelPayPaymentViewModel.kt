@@ -2840,7 +2840,14 @@ class AngelPayPaymentViewModel @Inject constructor(
         }
         if (!repetida) {
             val token = checkNotNull(guardada.getOrThrow().claimToken)
-            when (val resultado = subirVentaGuardadaUseCase(fila.toQueuedPayment())) {
+            // 📴 Con la franja de «sin servidor» no se sube aquí: la venta ya está guardada y la cola la manda (encargo 97042c: antes
+            // esperaba ~25 s sin respuesta en cada venta). Sin intento no se suma intento; se despierta a la cola como siempre.
+            val resultado = if (connectionStateManager.servidorMudo()) null else subirVentaGuardadaUseCase(fila.toQueuedPayment())
+            when (resultado) {
+                null -> {
+                    paymentQueueRepository.release(fila.id, token, fila.retryCount, "Sin conexión con el servidor: se manda sola al volver")
+                    runCatching { PaymentSyncScheduler.runNow(appContext) }
+                }
                 SyncOutcome.Synced -> paymentQueueRepository.markSynced(fila.id, token)
                 is SyncOutcome.Permanent -> paymentQueueRepository.markPermanentlyFailed(fila.id, token, resultado.reason)
                 SyncOutcome.Retryable -> {

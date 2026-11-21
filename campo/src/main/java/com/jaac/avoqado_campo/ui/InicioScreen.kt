@@ -57,11 +57,12 @@ data class DatosDeInicio(
     val turnoAbierto: Boolean, val gps: ResultadoGps?,
     val version: VersionNueva? = null, val obligatoria: Boolean = false, val paso: PasoDeActualizacion = PasoDeActualizacion.Quieto,
     val sucursal: String? = null, val entradaAt: Long? = null, val enCustodia: Int? = null, val articulo: String = "SIM",
+    val porRevisar: Int = 0,
 )
 
 class AccionesDeInicio(
     val vender: () -> Unit, val sims: () -> Unit, val checar: () -> Unit, val pendientes: () -> Unit, val ayuda: () -> Unit,
-    val entrar: () -> Unit, val actualizar: () -> Unit = {},
+    val entrar: () -> Unit, val actualizar: () -> Unit = {}, val ventas: () -> Unit = {},
 )
 
 /** El GPS del turno corre o debería correr: sólo entonces el Inicio avisa de él y de la batería (H-A1). */
@@ -77,6 +78,10 @@ internal fun horaDeEntrada(t: TurnoLocal?, staffId: String?): Long? =
 /** Las que cuenta «En tu custodia» de «Mis SIMs»: suyas y aceptadas, sin las que ya se vendieron en el celular. */
 internal fun cuantasEnCustodia(c: Copia?, venueId: String?): Int? =
     c?.takeIf { it.venueId == venueId }?.sims?.count { it.custodyState == "PROMOTER_HELD" && it.localmente != MarcaLocal.VENDIDA_EN_EL_CELULAR }
+
+/** Las ventas que el supervisor regresó para corregir (las «Por revisar» de «Mis ventas»). */
+internal fun cuantasPorRevisar(c: Copia?, venueId: String?): Int =
+    c?.takeIf { it.venueId == venueId }?.sims?.count { it.custodyState == "SOLD" && it.verificationStatus == "FAILED" } ?: 0
 
 @Composable
 fun InicioScreen(d: DatosDeInicio, a: AccionesDeInicio) {
@@ -109,11 +114,10 @@ fun InicioScreen(d: DatosDeInicio, a: AccionesDeInicio) {
                 val detalle = if (d.turnoAbierto) d.entradaAt?.let { t -> "Entraste ${horaCorta(t)}" } ?: "Turno abierto" else "Sin turno abierto"
                 Mosaico(if (d.turnoAbierto) "Checar salida" else "Checar entrada", detalle, a.checar, it)
             },
-            {
-                val detalle = if (d.pendientes == 0) "Todo subido" else "por subir o revisar"
-                Mosaico("Mis pendientes", detalle, a.pendientes, it, insignia = d.pendientes.takeIf { n -> n > 0 })
-            },
+            { Mosaico("Mis ventas", if (d.porRevisar > 0) "${d.porRevisar} por revisar" else null, a.ventas, it, insignia = d.porRevisar.takeIf { n -> n > 0 }) },
         )
+        val detalle = if (d.pendientes == 0) "Todo subido" else "por subir o revisar"
+        Mosaico("Ventas pendientes por subir", detalle, a.pendientes, Modifier.fillMaxWidth(), insignia = d.pendientes.takeIf { n -> n > 0 })
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             TextButton(a.ayuda, Modifier.heightIn(min = 48.dp)) { Text("Ayuda", color = ColoresCampo.Gris700, fontWeight = FontWeight.SemiBold) }
         }
@@ -184,7 +188,7 @@ fun PantallaDeGracia(
                 style = MaterialTheme.typography.titleMedium,
             )
         }
-        BotonSecundario("Mis pendientes ($pendientes)", onPendientes)
+        BotonSecundario("Ventas pendientes por subir ($pendientes)", onPendientes)
         if (puedeActivarDeNuevo) {
             BotonPrincipal("Activar con un código nuevo", {
                 trabajando = true
@@ -192,7 +196,7 @@ fun PantallaDeGracia(
                     try {
                         mensaje = when (borrarSinTronar(onActivarDeNuevo)) {
                             ResultadoDelBorrado.BORRADO -> null
-                            ResultadoDelBorrado.QUEDA_ALGO -> "Todavía queda algo por subir. Revisa «Mis pendientes»."
+                            ResultadoDelBorrado.QUEDA_ALGO -> "Todavía queda algo por subir. Revisa «Ventas pendientes por subir»."
                             ResultadoDelBorrado.ESPERA -> ESPERA_UN_MOMENTO
                             null -> NO_SE_PUDO_TERMINAR
                         }
@@ -219,7 +223,7 @@ fun PantallaDesconocido(porSubir: Int, onPendientes: () -> Unit, onBorrar: suspe
     var mensaje by remember { mutableStateOf<String?>(null) }
     PantallaCampo("Avoqado Campo") {
         Recuadro("Este celular ya no está registrado. Avísale a tu supervisor.", Tono.AVISO)
-        BotonSecundario("Mis pendientes", onPendientes)
+        BotonSecundario("Ventas pendientes por subir", onPendientes)
         BotonSecundario("Borrar este celular y activarlo de nuevo", { confirmar = true; mensaje = null }, enabled = !trabajando)
         mensaje?.let { Recuadro(it, Tono.AVISO) }
     }

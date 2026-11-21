@@ -59,7 +59,7 @@ data class EstadoVenta(
     val falta: String?
         get() = when {
             sim == null -> "Escanea una SIM."
-            precio == null -> "Escribe el importe que cobraste (mayor que $0, hasta 2 decimales)."
+            precio == null -> "Escribe el importe que cobraste (pon 0 si fue sin costo; hasta 2 decimales)."
             else -> slots.firstNotNullOfOrNull { s ->
                 val nombre = if (s == Slot.VINCULACION) "vinculación" else "portabilidad"
                 when {
@@ -134,11 +134,11 @@ class VentaViewModel @Inject constructor(
 
     fun alEscribirNumero(slot: Slot, n: String) = cambiar { copy(numeros = numeros + (slot to n.filter(Char::isDigit).take(10))) }
 
-    /** Sólo con precio LIBRE (B7): importe mayor que 0 con hasta 2 decimales. */
+    /** Sólo con precio LIBRE (B7): importe de 0 o más con hasta 2 decimales; 0 = sin costo, como «Regalar» de la PAX. */
     fun alEscribirPrecio(texto: String) = cambiar {
         if (tipoDePrecio != TipoDePrecio.LIBRE) return@cambiar this
         val t = texto.trim()
-        val p = t.takeIf { IMPORTE.matches(it) }?.toBigDecimal()?.takeIf { it.signum() > 0 }
+        val p = t.takeIf { IMPORTE.matches(it) }?.toBigDecimal()
         copy(precioEscrito = t, precio = p)
     }
 

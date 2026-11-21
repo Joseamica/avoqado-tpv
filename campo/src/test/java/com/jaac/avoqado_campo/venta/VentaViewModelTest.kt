@@ -173,11 +173,22 @@ class VentaViewModelTest {
         v.alEscanear(serie)
         assertEquals(TipoDePrecio.LIBRE, v.estado.value.tipoDePrecio)
         v.listaParaRegistrar().registrar()
-        listOf("0", "1.234", "abc").forEach { v.alEscribirPrecio(it); v.registrar() }
+        listOf("-1", "1.234", "abc", "").forEach { v.alEscribirPrecio(it); v.registrar() }
         coVerify(exactly = 0) { encolador.venta(any(), any()) }
         v.alEscribirPrecio("120.50")
         v.registrar()
         assertEquals(0, venta.captured.precio.compareTo(BigDecimal("120.50")))
+    }
+
+    // Isaac (PlayTelecom, 20-nov): sus ventas son sin costo y el celular exigía más de $0. La PAX deja «Regalar (Gratis)».
+    @Test fun `precio libre acepta una venta sin costo en 0`() {
+        val v = vm(copiaCon(sim(precio = null)))
+        v.alEscanear(serie)
+        v.listaParaRegistrar()
+        v.alEscribirPrecio("0")
+        assertNull(v.estado.value.falta)
+        v.registrar()
+        assertEquals(0, venta.captured.precio.compareTo(BigDecimal.ZERO))
     }
 
     @Test fun `sin la foto de vinculacion no registra`() {

@@ -88,6 +88,8 @@ fun filaDe(p: Pieza, yo: Identidad, hayRed: Boolean, llavesVivas: Set<String>, n
                 code == "YA_TIENE_ENTRADA" && deOtroDia -> "Tu entrada de otro día sigue abierta: pídele a tu supervisor que la cierre"
                 code == "YA_TIENE_ENTRADA" && !entradaDeAqui -> "Tu entrada abierta es de ${nombre(dato(p, "venueId"))}: marca la salida ahí"
                 code in DESCARTADOS && notaDelSupervisor != null -> "Tu supervisor no la aceptó: $notaDelSupervisor"
+                // Codex r2: una fila guardada por la 0.4.0 trae el texto viejo («Mis SIMs»); se lee el de hoy.
+                code == SubidorDeGracia.CORRECCION_SIN_SESION -> SubidorDeGracia.TEXTO_CORRECCION_SIN_SESION
                 else -> p.rechazoMensaje.siHay() ?: RESPALDO
             }
             val propia = when {
@@ -117,6 +119,16 @@ fun filaDe(p: Pieza, yo: Identidad, hayRed: Boolean, llavesVivas: Set<String>, n
     return FilaPendiente(p.id, titulo, texto, p.estado == EstadoPieza.RECHAZADA || p.estado == EstadoPieza.AVISO, botones)
 }
 
+/**
+ * Lo que se ve en «Ventas pendientes por subir» y cuenta el Inicio: una línea por venta (Isaac, 20-nov). La foto y el número
+ * que esperan a su venta viajan con ella; si la venta ya subió, o la foto necesita algo de la persona, la foto sí sale. No cambia
+ * la cola: lo que «queda por subir» para borrar o desvincular se sigue contando con todas las piezas.
+ */
+fun visiblesEnPendientes(lista: List<Pieza>): List<Pieza> {
+    val ventasVivas = lista.filter { it.tipo == TipoPieza.VENTA }.map { it.llave }.toSet()
+    return lista.filterNot { it.tipo == TipoPieza.EVIDENCIA && it.estado == EstadoPieza.PENDIENTE && it.dependeDe in ventasVivas }
+}
+
 @HiltViewModel
 class PendientesViewModel @Inject constructor(
     private val dao: PiezaDao,
@@ -128,7 +140,7 @@ class PendientesViewModel @Inject constructor(
 ) : ViewModel() {
     val filas: StateFlow<List<FilaPendiente>> = combine(dao.pendientesDeVer(), quienSoy.identidad, conectividad.cambios) { lista, yo, red ->
         val vivas = lista.map { it.llave }.toSet()
-        lista.map { p ->
+        visiblesEnPendientes(lista).map { p ->
             val nota = if (p.rechazoCode in DESCARTADOS && p.dependeDe != null) {
                 dao.porLlave(p.dependeDe)?.takeIf { it.estado == EstadoPieza.DESCARTADA && it.rechazoCode == null }?.rechazoMensaje.siHay()
             } else null

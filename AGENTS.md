@@ -1,5 +1,9 @@
 # AGENTS.md - Avoqado TPV Agent Roles
 
+## 🔴 «Órdenes» (Ordenar) es LEGACY
+
+«Órdenes» (Ordenar) es LEGACY y su tarjeta y pantallas ya se quitaron de la app (D34, PR #104, 20-nov; founder 25-sep, 20-oct y 20-nov: «para ordering se usa Mesas y Cobrar»). Lo que queda en `features/ordering` es compartido y SIGUE VIVO: modelos, repos y APIs (`Product`, `Customer`, `Discount`, `Order`, `OrderRepository`…) y `presentation/menu/ReglasDeOrdenes.kt`, que usan Cobrar (`features/checkout`) y el cobro. Lo único legacy que queda es la libreta de Órdenes (`OrderSyncCoordinator`/`DraftOrder`): sólo sube cuentas viejas guardadas sin red; no se le agregan funciones, no se prueba ni se le hacen proyectos. Mesas es `features/tables`.
+
 ## 🔴 Verificación pesada: por `avq-verify`, nunca a mano
 
 **Van SIEMPRE por el script, sin importar cuánto tarden:** `./gradlew` (cualquier tarea que

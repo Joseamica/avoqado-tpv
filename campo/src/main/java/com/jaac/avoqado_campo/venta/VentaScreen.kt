@@ -242,7 +242,7 @@ private fun VentaGuardada(e: EstadoVenta, a: AccionesDeVenta, obligatoria: Boole
         when (e.tipoDePrecio) {
             TipoDePrecio.DE_CAJA -> "${pesos(BigDecimal.ZERO)} de caja"
             null -> null
-            else -> e.precio?.let { "${pesos(it)} en efectivo" }
+            else -> e.precio?.let { if (it.signum() == 0) "Sin costo" else "${pesos(it)} en efectivo" }
         },
     ).joinToString(" · ")
     // «Regresar» quedó donde estaba «Registrar venta»: el segundo toque de un doble toque se saltaba esta confirmación y el
@@ -256,7 +256,7 @@ private fun VentaGuardada(e: EstadoVenta, a: AccionesDeVenta, obligatoria: Boole
             // D-2: la venta que ya estaba en curso se termina (ya pasó en la calle); otra nueva, no.
             BotonPrincipal("Vender otra", cuandoListo(a.otra), enabled = !obligatoria)
             if (obligatoria) Tenue(ACTUALIZA_PARA_SEGUIR)
-            BotonSecundario("Ver mis pendientes", cuandoListo(a.pendientes))
+            BotonSecundario("Ver ventas pendientes por subir", cuandoListo(a.pendientes))
             TextButton(cuandoListo(a.regresar), Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("Regresar", color = ColoresCampo.Gris700, fontWeight = FontWeight.SemiBold) }
         },
     ) {

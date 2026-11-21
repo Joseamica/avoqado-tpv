@@ -2,6 +2,7 @@ package com.jaac.avoqado_campo.custodia
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -37,13 +38,17 @@ import com.jaac.avoqado_campo.ui.Tenue
 import com.jaac.avoqado_campo.ui.TituloDeSeccion
 import com.jaac.avoqado_campo.ui.Tono
 import com.jaac.avoqado_campo.ui.enGrupos
+import com.jaac.avoqado_campo.ui.horaCorta
 import com.jaac.avoqado_campo.ui.tema.ColoresCampo
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
 import com.jaac.avoqado_campo.version.ACTUALIZA_PARA_SEGUIR
 
-/** «Mis SIMs»: aceptar o rechazar lo que te asignaron, lo que tienes y lo vendido (con «Revisar» si el supervisor lo pide). */
+/**
+ * «Mis SIMs»: aceptar o rechazar lo que te asignaron y lo que tienes. Con [ventas], la misma lista enseña «Mis ventas» (Isaac,
+ * 20-nov): por revisar (con «Corregir»), exitosas y rechazadas.
+ */
 @Composable
-fun MisSimsScreen(vm: MisSimsViewModel, obligatoria: Boolean, onRegresar: () -> Unit) {
+fun MisSimsScreen(vm: MisSimsViewModel, obligatoria: Boolean, onRegresar: () -> Unit, ventas: Boolean = false) {
     val estado by vm.estado.collectAsStateWithLifecycle()
     var camara by rememberSaveable { mutableStateOf(false) }
     val c = estado.corrigiendo
@@ -56,7 +61,7 @@ fun MisSimsScreen(vm: MisSimsViewModel, obligatoria: Boolean, onRegresar: () -> 
         else -> MisSimsContenido(
             estado,
             AccionesDeMisSims(vm::aceptar, vm::rechazar, vm::aceptarTodas, vm::empezarCorreccion, vm::actualizar, onRegresar),
-            obligatoria,
+            obligatoria, ventas,
         )
     }
 }
@@ -67,9 +72,9 @@ class AccionesDeMisSims(
 )
 
 @Composable
-fun MisSimsContenido(e: EstadoMisSims, a: AccionesDeMisSims, obligatoria: Boolean = false) {
+fun MisSimsContenido(e: EstadoMisSims, a: AccionesDeMisSims, obligatoria: Boolean = false, ventas: Boolean = false) {
     PantallaCampo(
-        "Mis SIMs", onRegresar = a.regresar,
+        if (ventas) "Mis ventas" else "Mis SIMs", onRegresar = a.regresar,
         derecha = {
             TextButton(a.actualizar, Modifier.heightIn(min = 48.dp), enabled = !e.actualizando) {
                 Text(if (e.actualizando) "Actualizando…" else "Actualizar", color = if (e.actualizando) ColoresCampo.Gris400 else ColoresCampo.VerdeTexto, fontWeight = FontWeight.Bold)
@@ -78,30 +83,46 @@ fun MisSimsContenido(e: EstadoMisSims, a: AccionesDeMisSims, obligatoria: Boolea
     ) {
         if (e.sinCopia) Recuadro("Todavía no están tus SIMs en el celular. Conéctate a internet una vez para bajarlas.", Tono.AVISO)
         e.error?.let { Recuadro(it, Tono.ERROR) }
-
-        // D-2: con una obligatoria pendiente no se acepta ni rechaza custodia nueva; lo demás sigue.
-        val decidir = !e.ocupado && !obligatoria
-        val porDecidir = e.porAceptar.count { it.estado == EstadoFila.POR_DECIDIR }
-        Seccion("Por aceptar", e.porAceptar, vacio = "No tienes SIMs por aceptar.") { f ->
-            if (f.estado == EstadoFila.POR_DECIDIR) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    BotonPrincipal("Aceptar", { a.aceptar(f.sim.serialNumber) }, Modifier.weight(1f), enabled = decidir)
-                    BotonSecundario("Rechazar", { a.rechazar(f.sim.serialNumber) }, Modifier.weight(1f), enabled = decidir)
+        if (ventas) {
+            // Codex r3 (parada): sin señal la lista puede ir atrasada; se dice de qué hora es en vez de fingir que está al día.
+            e.bajadaAt?.takeIf { it > 0 }?.let { Tenue("Así estaban tus ventas a las ${horaCorta(it)}. Con señal, toca «Actualizar».") }
+            if (e.ventasPorSubir.isNotEmpty()) {
+                Seccion("Por subir", e.ventasPorSubir, vacio = "") {}
+                Tenue("Todavía no llegan al servidor; las ves en «Ventas pendientes por subir».")
+            }
+            Seccion("Por revisar", e.porRevisar, vacio = "No tienes ventas por corregir.") { f ->
+                if (f.estado == EstadoFila.REVISAR) {
+                    BotonPrincipal("Corregir evidencia de vinculación", { a.corregir(f.sim.serialNumber, "Vinculacion") }, enabled = !e.ocupado)
+                    if ("REVIEW_PORTABILIDAD" in f.sim.rejectionReasons) {
+                        BotonSecundario("Corregir evidencia de portabilidad", { a.corregir(f.sim.serialNumber, "Portabilidad") }, enabled = !e.ocupado)
+                    }
                 }
             }
+            Seccion("Exitosas", e.exitosas, vacio = "Aquí salen las que vendas.") {}
+            Seccion("Rechazadas", e.rechazadas, vacio = "No tienes ventas rechazadas.") {}
+        } else {
+            ContenidoDeSims(e, a, obligatoria)
         }
-        if (obligatoria && porDecidir > 0) Recuadro(ACTUALIZA_PARA_SEGUIR, Tono.AVISO)
-        if (porDecidir > 1) BotonPrincipal("Aceptar todas", a.aceptarTodas, enabled = decidir)
-        Seccion("En tu custodia", e.enCustodia, vacio = "Todavía no tienes SIMs en tu custodia.") {}
-        Seccion("Vendidas", e.vendidas, vacio = "Aquí salen las que vendas.") { f ->
-            if (f.estado == EstadoFila.REVISAR) {
-                BotonPrincipal("Corregir evidencia de vinculación", { a.corregir(f.sim.serialNumber, "Vinculacion") }, enabled = !e.ocupado)
-                if ("REVIEW_PORTABILIDAD" in f.sim.rejectionReasons) {
-                    BotonSecundario("Corregir evidencia de portabilidad", { a.corregir(f.sim.serialNumber, "Portabilidad") }, enabled = !e.ocupado)
-                }
+    }
+}
+
+@Composable
+private fun ColumnScope.ContenidoDeSims(e: EstadoMisSims, a: AccionesDeMisSims, obligatoria: Boolean) {
+    Tenue("Lo que ya vendiste, y lo que te piden corregir, está en «Mis ventas».")
+    // D-2: con una obligatoria pendiente no se acepta ni rechaza custodia nueva; lo demás sigue.
+    val decidir = !e.ocupado && !obligatoria
+    val porDecidir = e.porAceptar.count { it.estado == EstadoFila.POR_DECIDIR }
+    Seccion("Por aceptar", e.porAceptar, vacio = "No tienes SIMs por aceptar.") { f ->
+        if (f.estado == EstadoFila.POR_DECIDIR) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                BotonPrincipal("Aceptar", { a.aceptar(f.sim.serialNumber) }, Modifier.weight(1f), enabled = decidir)
+                BotonSecundario("Rechazar", { a.rechazar(f.sim.serialNumber) }, Modifier.weight(1f), enabled = decidir)
             }
         }
     }
+    if (obligatoria && porDecidir > 0) Recuadro(ACTUALIZA_PARA_SEGUIR, Tono.AVISO)
+    if (porDecidir > 1) BotonPrincipal("Aceptar todas", a.aceptarTodas, enabled = decidir)
+    Seccion("En tu custodia", e.enCustodia, vacio = "Todavía no tienes SIMs en tu custodia.") {}
 }
 
 /** Una sección con su contador y sus SIMs en una sola tarjeta, separadas por una línea (como «Mis pendientes» del mockup). */
@@ -131,6 +152,8 @@ private fun Fila(f: FilaSim) {
         EstadoFila.VENDIDA -> "Vendida" to Tono.OK
         EstadoFila.EN_REVISION -> "En revisión" to Tono.INFO
         EstadoFila.REVISAR -> "Revisar" to Tono.ERROR
+        EstadoFila.RECHAZADA -> "Rechazada" to Tono.ERROR
+        EstadoFila.VENTA_POR_SUBIR -> "Por subir" to Tono.SIN_RED
         EstadoFila.CORRECCION_POR_SUBIR -> "Corrección por subir" to Tono.SIN_RED
         EstadoFila.POR_DECIDIR, EstadoFila.EN_CUSTODIA, EstadoFila.ACTUALIZANDO -> null to Tono.NEUTRO
     }
@@ -143,7 +166,7 @@ private fun Fila(f: FilaSim) {
     }
     // La nota que no es la misma que la pastilla: los motivos de «Revisar» o «Te volvieron a asignar…».
     f.nota?.takeIf { it != pastilla }?.let {
-        Text(it, color = if (f.estado == EstadoFila.REVISAR) ColoresCampo.RojoTinta else ColoresCampo.AmbarTinta, style = MaterialTheme.typography.bodyMedium)
+        Text(it, color = if (f.estado == EstadoFila.REVISAR || f.estado == EstadoFila.RECHAZADA) ColoresCampo.RojoTinta else ColoresCampo.AmbarTinta, style = MaterialTheme.typography.bodyMedium)
     }
 }
 

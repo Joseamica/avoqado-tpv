@@ -201,6 +201,48 @@ class MisSimsViewModelTest {
         assertEquals(EstadoFila.EN_REVISION, revision.estado)
     }
 
+    // Isaac (PlayTelecom, 20-nov): «Mis ventas» aparte de «Mis SIMs», por estado. La rechazada salía «Vendida» en verde.
+    @Test fun `mis ventas separa por revisar, exitosas y rechazadas`() {
+        ponerCopia(
+            sim("S1", "SOLD", verificacion = "FAILED"), sim("S2", "SOLD", verificacion = "COMPLETED"), sim("S3", "SOLD", verificacion = "PENDING"),
+            sim("S4", "SOLD"), sim("S5", "SOLD", verificacion = "REJECTED"), sim("S6", "PROMOTER_HELD"),
+        )
+        val e = vm().estado.value
+        assertEquals(listOf("S1"), e.porRevisar.map { it.sim.serialNumber })
+        assertEquals(listOf("S2", "S3", "S4"), e.exitosas.map { it.sim.serialNumber })
+        assertEquals(listOf("S5"), e.rechazadas.map { it.sim.serialNumber })
+        assertEquals(EstadoFila.RECHAZADA, e.rechazadas.single().estado)
+        assertTrue(e.rechazadas.single().nota!!.contains("Se ve borrosa"))
+        assertEquals(listOf("S6"), e.enCustodia.map { it.sim.serialNumber })
+    }
+
+    private fun venta(serie: String, estado: String, id: Long) = Pieza(
+        id = id, tipo = TipoPieza.VENTA, llave = "kv$id", staffId = "s1", venueId = "v1",
+        cuerpoJson = """{"llave":"kv$id","serialNumber":"$serie","precioVisto":0}""", estado = estado, creadaAt = 0, resumen = "",
+    )
+
+    // Codex r1 + r2: la venta del celular se acomoda por la COLA, no por la marca de la copia (que se queda atrás).
+    @Test fun `las ventas del celular se acomodan por la cola y no por la marca de la copia`() {
+        cola.value = listOf(
+            venta("S1", EstadoPieza.PENDIENTE, 11), // sin marca: la app murió entre guardar y marcar
+            venta("S3", EstadoPieza.RECHAZADA, 13), // el SERVIDOR la rechazó (p. ej. PRECIO_CAMBIO)
+            venta("S4", EstadoPieza.AVISO, 14), // ya llegó (2xx), la copia aún no lo sabe
+        )
+        val vendidaEnCelular = MarcaLocal.VENDIDA_EN_EL_CELULAR
+        ponerCopia(
+            sim("S1", "PROMOTER_HELD"), sim("S2", "PROMOTER_HELD").copy(localmente = vendidaEnCelular), // S2: ya subió
+            sim("S3", "PROMOTER_HELD").copy(localmente = vendidaEnCelular), sim("S4", "PROMOTER_HELD").copy(localmente = vendidaEnCelular),
+            sim("S5", "SOLD", verificacion = "COMPLETED"),
+        )
+        val e = vm().estado.value
+        assertEquals(listOf("S1", "S3"), e.ventasPorSubir.map { it.sim.serialNumber })
+        assertEquals("Por subir", e.ventasPorSubir[0].nota)
+        assertTrue(e.ventasPorSubir[1].nota!!.contains("No se pudo subir"))
+        assertEquals(listOf("S2", "S4", "S5"), e.exitosas.map { it.sim.serialNumber })
+        assertTrue(e.enCustodia.isEmpty())
+        assertEquals(0L, e.bajadaAt) // la hora de la lista viaja a la pantalla («Así estaban tus ventas a las…»)
+    }
+
     @Test fun `corregir evidencia encola una evidencia suelta con su pago y su verificacion`() {
         ponerCopia(sim("S1", "SOLD", verificacion = "FAILED"))
         val ev = slot<EvidenciaSueltaNueva>()

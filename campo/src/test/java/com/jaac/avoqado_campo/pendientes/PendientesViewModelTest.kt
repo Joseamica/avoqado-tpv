@@ -15,6 +15,7 @@ import com.jaac.avoqado_campo.cola.EvidenciaSueltaNueva
 import com.jaac.avoqado_campo.cola.Pieza
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.cola.SecuenciaDeCaptura
+import com.jaac.avoqado_campo.cola.SubidorDeGracia
 import com.jaac.avoqado_campo.cola.TipoPieza
 import com.jaac.avoqado_campo.cola.VentaNueva
 import com.jaac.avoqado_campo.cola.rechazar
@@ -220,6 +221,13 @@ class PendientesViewModelTest {
         assertEquals("SU_VENTA_SE_DESCARTO", ev.rechazoCode)
     }
 
+    // Codex r2: una fila guardada por la 0.4.0 trae «Mis SIMs»; se lee el texto de hoy, que manda a «Mis ventas».
+    @Test fun `la correccion sin sesion guardada antes manda a Mis ventas`() {
+        val vieja = pieza(TipoPieza.EVIDENCIA, EstadoPieza.RECHAZADA, SubidorDeGracia.CORRECCION_SIN_SESION, "…volver a salir en «Mis SIMs» como «Revisar»…")
+        assertEquals(SubidorDeGracia.TEXTO_CORRECCION_SIN_SESION, filaDe(vieja, yo(), true, emptySet()).texto)
+        assertTrue(SubidorDeGracia.TEXTO_CORRECCION_SIN_SESION.contains("«Mis ventas»"))
+    }
+
     @Test fun `quitar no toca lo que todavia puede subir`() = runBlocking {
         val llave = encolador.venta(quienSoy.generacion, VentaNueva("89521400002", BigDecimal("50"), false, "v1", emptyList(), "SIM 2"))
         val id = dao.porLlave(llave)!!.id
@@ -266,6 +274,23 @@ class PendientesViewModelTest {
         val evidencia = filaDe(pieza(TipoPieza.EVIDENCIA, EstadoPieza.PENDIENTE).copy(resumen = "Venta de SIM 8952140000000000401"), yo(), true, emptySet())
         assertEquals("Venta de SIM 8952140000000000401", venta.resumen)
         assertEquals("Foto y número · Venta de SIM 8952140000000000401", evidencia.resumen)
+    }
+
+    // Isaac (PlayTelecom, 20-nov): sin señal, la venta y su foto salían como dos renglones y parecía venta doble.
+    @Test fun `una venta sin subir sale en una sola linea aunque traiga sus fotos`() {
+        val venta = pieza(TipoPieza.VENTA, EstadoPieza.PENDIENTE).copy(id = 1, llave = "kv")
+        val foto1 = pieza(TipoPieza.EVIDENCIA, EstadoPieza.PENDIENTE).copy(id = 2, llave = "kf1", dependeDe = "kv")
+        val foto2 = pieza(TipoPieza.EVIDENCIA, EstadoPieza.PENDIENTE).copy(id = 3, llave = "kf2", dependeDe = "kv")
+        assertEquals(listOf(1L), visiblesEnPendientes(listOf(venta, foto1, foto2)).map { it.id })
+        // Su venta ya subió: la foto que sigue sola sí se ve (es lo único de esa venta que falta).
+        assertEquals(listOf(2L), visiblesEnPendientes(listOf(foto1)).map { it.id })
+        // Una foto que necesita algo de la persona no se esconde nunca.
+        val rechazada = foto1.copy(estado = EstadoPieza.RECHAZADA, rechazoCode = "FOTO_NO_SUBIO")
+        assertEquals(listOf(1L, 2L), visiblesEnPendientes(listOf(venta, rechazada)).map { it.id })
+        // La salida que espera a su entrada sí sale aparte: son dos checadas.
+        val entrada = pieza(TipoPieza.ENTRADA, EstadoPieza.PENDIENTE).copy(id = 4, llave = "ke")
+        val salida = pieza(TipoPieza.SALIDA, EstadoPieza.PENDIENTE).copy(id = 5, llave = "ks", dependeDe = "ke")
+        assertEquals(listOf(4L, 5L), visiblesEnPendientes(listOf(entrada, salida)).map { it.id })
     }
 
     @Test fun `los avisos se entienden y lo pendiente dice que espera`() {

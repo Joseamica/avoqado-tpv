@@ -8,6 +8,7 @@ import com.avoqado.cobropropio.libreta.EstadoDelReversoEnServidor
 import com.avoqado.cobropropio.libreta.IntentoEntity
 import com.avoqado.cobropropio.libreta.Libreta
 import com.avoqado.cobropropio.libreta.ResultadoParaReportar
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -66,7 +67,19 @@ class ColaDeResultados(
     /** Una vuelta por todas las obligaciones pendientes, en orden (r3 R3-09). */
     internal suspend fun entregarPendientes(): Map<AttemptId, AcuseDelResultado> {
         val ids = enLaLibreta { libreta.pendientesDeReporte() }.map { AttemptId(it.attemptId) }
-        return buildMap { for (id in ids) entregar(id).acuse?.let { put(id, it) } }
+        return buildMap {
+            for (id in ids) {
+                // I3: una fila no detiene a las demás; la que lanzó se queda PENDIENTE para la siguiente vuelta.
+                val acuse = try {
+                    entregar(id).acuse
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    null
+                }
+                acuse?.let { put(id, it) }
+            }
+        }
     }
 
     // V sólo sube (el permiso se acredita antes del primer POST de reverso, y el reporte nace después): leerlo antes es seguro.

@@ -73,6 +73,17 @@ class GuardasTest {
         ),
     )
 
+    /** Fase 3, bloque 1 (Codex r3 #3, vara 2): toda fila de la libreta se lee por UN punto validado; ninguna lectura cruda más. */
+    @Test fun `la libreta lee filas por un solo punto validado`() {
+        // `apariciones` ya salta comentarios: cuenta líneas de código, una por lectura cruda.
+        for (lectura in listOf("dao.buscar(", "dao.cancelacionesDe(", "dao.porRowid(")) {
+            assertEquals("lecturas crudas «$lectura»", listOf("libreta/Libreta.kt"), apariciones(Regex(Regex.escape(lectura))).map { it.first })
+        }
+        assertTrue("dao::buscar volvió", apariciones(Regex("""dao::buscar""")).isEmpty())
+        val fuera = apariciones(Regex("""\bdao\b""")).filterNot { it.first.startsWith("libreta/") }
+        assertTrue("el dao fuera de la libreta: $fuera", fuera.isEmpty())
+    }
+
     @Test fun `motor y libreta no tocan Gson`() {
         for (carpeta in listOf("motor", "libreta")) {
             val conGson = File(raiz, carpeta).walk().filter { it.extension == "kt" && "com.google.gson" in it.readText() }.toList()

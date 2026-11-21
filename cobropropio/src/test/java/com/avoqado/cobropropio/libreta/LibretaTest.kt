@@ -16,6 +16,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -116,6 +117,9 @@ class LibretaTest {
     }
 
     private val ksn = "FFFF9876543210E00000".hexABytes()
+
+    /** Un id con la forma vieja (el UUID de 36 con guiones): Room lo lee, `AttemptId` lo rechaza. */
+    private val ID_DE_36 = "0f8fad5b-d9cb-469f-a165-b0867728950e"
 
     // ---- anotar y la base ----
 
@@ -833,5 +837,61 @@ class LibretaTest {
         insertarDirecto(l, deOtraCaja)
         assertEquals(ResultadoDeEnviarCancelacion.OtroAmbito, l.marcarCancelacionEnviada(deOtraCaja.id(), reloj, datos(huellaLectura = "c".repeat(64))))
         assertEquals(EstadoDelIntento.ANOTADO, l.buscar(deOtraCaja.id())!!.estado)
+    }
+
+    // ---- I3: la fila ilegible (fase 3, bloque 1) ----
+
+    /** I3: una fila ilegible se salta y NO se toca; las demás se cierran como siempre. Nunca se traduce a un desenlace. */
+    @Test fun `una fila ilegible no detiene la recuperacion de las demas`() {
+        var l = libreta()
+        val enumRaro = enviada(l)
+        val idViejo = enviada(l)
+        val buena = enviada(l)
+        val sql = l.db.openHelper.writableDatabase
+        sql.execSQL("UPDATE intentos SET marca = 'DISCOVER' WHERE attemptId = ?", arrayOf(enumRaro.attemptId))
+        sql.execSQL("UPDATE intentos SET attemptId = ? WHERE attemptId = ?", arrayOf(ID_DE_36, idViejo.attemptId))
+        l = reabrir(l, proceso = UUID.randomUUID().toString())
+        assertEquals(listOf(buena.attemptId), l.recuperarAlArrancar { emptyList() }.map { it.valor })
+        assertEquals(EstadoDelIntento.NO_SE, l.buscar(buena.id())!!.estado)
+        for (id in listOf(enumRaro.attemptId, ID_DE_36)) {
+            l.db.openHelper.readableDatabase.query("SELECT estado FROM intentos WHERE attemptId = ?", arrayOf(id)).use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("la ilegible no se toca", "ENVIADO", c.getString(0))
+            }
+        }
+    }
+
+    /** Codex r3 #3 (vara 2): el punto único. Una fila que Room lee pero que no pasa la validación ni se entrega ni se escribe. */
+    @Test fun `una fila que no pasa la validacion no se lee ni se escribe`() {
+        val l = libreta()
+        val v = aprobada(l)
+        l.db.openHelper.writableDatabase.execSQL(
+            "UPDATE intentos SET operationNumber = 99999999999 WHERE attemptId = ?", arrayOf(v.attemptId), // fuera de 1..9_999_999_999
+        )
+        assertThrows(FilaIlegible::class.java) { l.buscar(v.id()) }
+        assertThrows(FilaIlegible::class.java) { l.transicionar(v.id(), EstadoDelIntento.APROBADO) { it } }
+        assertThrows(FilaIlegible::class.java) { l.vetarPorCorte(v) }
+        assertTrue(l.pendientesDeReporte().isEmpty())
+    }
+
+    /** Codex r4 #3: Room pone el valor crudo en su mensaje; el lector lanza un error de mensaje fijo, sin la excepción original. */
+    @Test fun `el error de una fila ilegible no trae el valor danado`() {
+        val l = libreta()
+        val v = enviada(l)
+        l.db.openHelper.writableDatabase.execSQL("UPDATE intentos SET marca = 'VALORDANADO' WHERE attemptId = ?", arrayOf(v.attemptId))
+        val e = assertThrows(FilaIlegible::class.java) { l.buscar(v.id()) }
+        assertEquals("fila ilegible", e.message)
+        assertNull(e.cause)
+        assertFalse(e.toString(), "VALORDANADO" in e.toString())
+    }
+
+    /** D3: la consulta del veto es SQL (no lee filas) y sólo cuenta el proceso actual. Pasa hoy: fija la decisión. */
+    @Test fun `una fila ilegible de otro proceso no veta la renovacion de llaves`() {
+        var l = libreta()
+        val v = enviada(l)
+        l.db.openHelper.writableDatabase.execSQL("UPDATE intentos SET marca = 'DISCOVER' WHERE attemptId = ?", arrayOf(v.attemptId))
+        val nuevo = UUID.randomUUID().toString()
+        l = reabrir(l, proceso = nuevo)
+        assertFalse(l.hayIntentosQuePuedenNecesitarReverso(nuevo, reloj, 45_000))
     }
 }

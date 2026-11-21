@@ -23,6 +23,12 @@ sealed interface Arbitraje {
     data object Comprometido : Arbitraje
 }
 
+/**
+ * I3: la fila de la libreta no se puede leer (Room no la convierte, o no pasa la validación de hoy). Mensaje FIJO y sin la
+ * excepción original como causa: Room pone el valor crudo en su mensaje (Codex r4 #3). Quien la recibe nunca da un desenlace.
+ */
+internal class FilaIlegible : IllegalStateException("fila ilegible")
+
 /** `FolioUsado`: ese id ya tenía fila (venta o cancelación) y no se tocó; se contesta desde ella (regla N). */
 enum class ResultadoDeAnotarCancelacion { Anotada, YaExiste, SinVentaAprobada, OtroAmbito, FolioUsado }
 
@@ -93,12 +99,12 @@ class Libreta internal constructor(
      */
     internal fun anotarCancelacion(i: IntentoEntity, ambito: String): ResultadoDeAnotarCancelacion = escribir("anotarCancelacion") {
         require(i.operacion == Operacion.CANCELACION && i.operacionOriginal != null) { "no es una cancelación" }
-        if (dao.buscar(i.attemptId) != null) return@escribir ResultadoDeAnotarCancelacion.FolioUsado
-        val o = dao.buscar(i.operacionOriginal)
+        if (fila(i.attemptId) != null) return@escribir ResultadoDeAnotarCancelacion.FolioUsado
+        val o = fila(i.operacionOriginal)
         val r = when {
             o == null || !esVentaAprobada(o) -> ResultadoDeAnotarCancelacion.SinVentaAprobada
             o.ambito() != ambito || i.ambito() != ambito || o.venueId != i.venueId -> ResultadoDeAnotarCancelacion.OtroAmbito
-            dao.cancelacionesDe(o.attemptId).any { it.estado in VETAN_OTRA_CANCELACION } -> ResultadoDeAnotarCancelacion.YaExiste
+            cancelacionesDe(o.attemptId).any { it.estado in VETAN_OTRA_CANCELACION } -> ResultadoDeAnotarCancelacion.YaExiste
             else -> ResultadoDeAnotarCancelacion.Anotada
         }
         // R14-5: el importe y el origen de la original sólo si es del MISMO venue y ámbito: nunca se le enseñan a otra sucursal.
@@ -120,13 +126,13 @@ class Libreta internal constructor(
     internal fun marcarCancelacionEnviada(id: AttemptId, t0: Long, datos: DatosDelEnvio): ResultadoDeEnviarCancelacion =
         escribir("marcarCancelacionEnviada") {
             val c = fila(id)
-            val o = c?.operacionOriginal?.let(dao::buscar)
+            val o = c?.operacionOriginal?.let { fila(it) }
             when {
                 c == null || c.operacion != Operacion.CANCELACION || c.estado != EstadoDelIntento.ANOTADO ||
                     c.cortarAntesDeSalir -> ResultadoDeEnviarCancelacion.YaNoAplica
                 o == null || !esVentaAprobada(o) -> ResultadoDeEnviarCancelacion.SinVentaAprobada
                 // Segundo candado: otra cancelación viva de la misma original (aunque haya entrado sin anotarCancelacion).
-                dao.cancelacionesDe(o.attemptId).any { it.attemptId != c.attemptId && it.estado in VETAN_OTRA_CANCELACION } ->
+                cancelacionesDe(o.attemptId).any { it.attemptId != c.attemptId && it.estado in VETAN_OTRA_CANCELACION } ->
                     ResultadoDeEnviarCancelacion.YaExiste
                 o.ambito() != c.ambito() || o.venueId != c.venueId -> ResultadoDeEnviarCancelacion.OtroAmbito
                 datos.huellaTarjeta == null || datos.huellaTarjeta != o.huellaTarjeta -> ResultadoDeEnviarCancelacion.OtraTarjeta
@@ -169,7 +175,7 @@ class Libreta internal constructor(
      * nunca sale. Cualquier otro estado ⇒ `false`, sin tocar nada. Un `anotar` que llega después pierde contra la fila.
      */
     internal fun vetarPorCorte(i: IntentoEntity): Boolean = escribir("vetarPorCorte") {
-        val f = dao.buscar(i.attemptId)
+        val f = fila(i.attemptId)
         when {
             f == null -> {
                 // T9: también una cancelación sin fila (sin original leída, con importe 0: nunca sale).
@@ -362,8 +368,18 @@ class Libreta internal constructor(
         }
     }
 
-    fun pendientesDeReporte(): List<IntentoEntity> = dao.pendientesDeReporte()
+    /**
+     * Los avisos `PENDIENTE` al SERVIDOR, en orden; cada fila se lee aparte, con [legible]. Una fila ilegible (Room no la lee,
+     * no pasa la validación de hoy o trae un valor desconocido que la deja abierta) nunca se entrega: [buscar] y las escrituras
+     * lanzan; los barridos la saltan sin tocarla; `salud()` la cuenta (I3).
+     */
+    fun pendientesDeReporte(): List<IntentoEntity> = dao.rowidsPendientesDeReporte().mapNotNull { legible(it) }
 
+    /**
+     * La fila de ese folio, validada, o null si no existe. Una fila ilegible (Room no la lee, no pasa la validación de hoy o
+     * trae un valor desconocido que la deja abierta) nunca se entrega: [buscar] y las escrituras lanzan; los barridos la saltan
+     * sin tocarla; `salud()` la cuenta (I3).
+     */
     fun buscar(id: AttemptId): IntentoEntity? = fila(id)
 
     /**
@@ -373,10 +389,13 @@ class Libreta internal constructor(
      * `NO_CONCLUYENTE` con `pudoEntrar`, sin reporte todavía ⇒ `pudoEntrar` y el aviso `PUDO_ENTRAR` con la hora del último
      * reclamo (r4 R4-08). No inventa una respuesta de Blumon. Regresa los ids que cambió. Sin valor por defecto (r2 R2-1): el
      * motor siempre pasa sus vivos; al arrancar, esa lista va vacía. La foto de [vivos] se toma DENTRO de la transacción
-     * (r7 C4): un intento que se registra después todavía no puede haber anotado su fila.
+     * (r7 C4): un intento que se registra después todavía no puede haber anotado su fila. Una fila ilegible (Room no la lee,
+     * no pasa la validación de hoy o trae un valor desconocido que la deja abierta) nunca se entrega: [buscar] y las escrituras
+     * lanzan; los barridos la saltan sin tocarla; `salud()` la cuenta (I3).
      */
     internal fun recuperarAlArrancar(vivos: () -> Collection<AttemptId>): List<AttemptId> = escribir("recuperarAlArrancar") {
-        dao.porRecuperar(procesoId, vivos().map { it.valor }).mapNotNull { f -> comoHuerfana(f)?.let { AttemptId(guardar(it).attemptId) } }
+        dao.rowidsPorRecuperar(procesoId, vivos().map { it.valor })
+            .mapNotNull { r -> legible(r)?.let(::comoHuerfana)?.let { AttemptId(guardar(it).attemptId) } }
     }
 
     /**
@@ -415,7 +434,38 @@ class Libreta internal constructor(
     private fun <T> escribir(operacion: String, bloque: () -> T): T =
         db.runInTransaction(Callable { bloque().also { antesDelCommit(operacion) } })
 
-    private fun fila(id: AttemptId): IntentoEntity? = dao.buscar(id.valor)
+    /**
+     * El único punto de lectura por folio; si la fila es ilegible (Room no la lee o no pasa [validar]) lanza [FilaIlegible], de
+     * mensaje fijo y sin la causa original, que puede traer el valor dañado. Una fila ilegible (Room no la lee, no pasa la
+     * validación de hoy o trae un valor desconocido que la deja abierta) nunca se entrega: [buscar] y las escrituras lanzan;
+     * los barridos la saltan sin tocarla; `salud()` la cuenta (I3).
+     */
+    private fun fila(id: String): IntentoEntity? = try {
+        dao.buscar(id)?.also(::validar)
+    } catch (e: Exception) {
+        throw FilaIlegible()
+    }
+
+    private fun fila(id: AttemptId): IntentoEntity? = fila(id.valor)
+
+    /** Las cancelaciones de [original], cada una validada como en [fila]: si una es ilegible, lanza [FilaIlegible]. */
+    private fun cancelacionesDe(original: String): List<IntentoEntity> = try {
+        dao.cancelacionesDe(original).onEach(::validar)
+    } catch (e: Exception) {
+        throw FilaIlegible()
+    }
+
+    /**
+     * La lectura por lote (los barridos y la salud): la fila de ese `rowid`, validada, o `null` si no existe o es ilegible. El
+     * folio se lee AQUÍ, dentro del aislamiento (Codex r1 #4). Una fila ilegible (Room no la lee, no pasa la validación de hoy
+     * o trae un valor desconocido que la deja abierta) nunca se entrega: [buscar] y las escrituras lanzan; los barridos la
+     * saltan sin tocarla; `salud()` la cuenta (I3).
+     */
+    private fun legible(rowid: Long): IntentoEntity? = try {
+        dao.porRowid(rowid)?.also(::validar)
+    } catch (e: Exception) {
+        null
+    }
 
     private fun filaQueExiste(id: AttemptId): IntentoEntity = requireNotNull(fila(id)) { "intento desconocido" }
 
@@ -469,6 +519,12 @@ class Libreta internal constructor(
         require(i.contadorUsado == null || i.contadorUsado in 1L..CONTADOR_MAXIMO) { "contador fuera de rango" }
         // r2 familia C: un importe parcial es menor que el pedido y mayor que cero; nunca se guarda un número sin cotejar.
         require(i.parcialImporteCentavos == null || i.parcialImporteCentavos in 1 until i.importeCentavos) { "parcialImporteCentavos fuera de rango" }
+        // Codex r4 #2, las dos reglas de dinero: el aviso «REVERSADA» al SERVIDOR exige el reverso confirmado, y «Aprobado» exige
+        // el folio bancario o el id de pago del SERVIDOR.
+        require(i.resultadoParaReportar != ResultadoParaReportar.CONFIRMADO || i.reverso == EstadoDelReverso.CONFIRMADO) {
+            "aviso confirmado sin reverso confirmado"
+        }
+        require(i.estado != EstadoDelIntento.APROBADO || i.operationNumber != null || i.paymentId != null) { "aprobado sin folio ni pago" }
     }
 
     private fun forma(valor: String?, r: Regex, campo: String) = require(valor == null || r.matches(valor)) { "$campo sin forma" }

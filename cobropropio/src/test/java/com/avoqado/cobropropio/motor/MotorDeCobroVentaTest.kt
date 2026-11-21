@@ -280,6 +280,11 @@ class MotorDeCobroVentaTest {
             assertTrue(libreta.anotar(entidad(s, posId)))
             if (cambio != null) assertNotNull(libreta.transicionar(s.id, EstadoDelIntento.ANOTADO, cambio))
         }
+
+        /** Deja la fila con [estado] y un folio bancario fuera de rango: Room la lee, `validar` no la pasa. */
+        fun danar(s: SolicitudDeVenta, estado: String) = db.openHelper.writableDatabase.execSQL(
+            "UPDATE intentos SET estado = ?, operationNumber = 99999999999 WHERE attemptId = ?", arrayOf(estado, s.id.valor),
+        )
     }
 
     private fun entidad(s: SolicitudDeVenta, posId: String = identidad.posId) = IntentoEntity(
@@ -2518,5 +2523,50 @@ class MotorDeCobroVentaTest {
         assertEquals(noSalio(MotivoNoSalio.INTERRUMPIDO), motor.intentos[s.id]?.actual)
         assertEquals(noSalio(MotivoNoSalio.INTERRUMPIDO), terminal(s))
         assertTrue(blumon.ventas.isEmpty())
+    }
+
+    // ---- I3: los caminos que leen una fila para publicar (fase 3, bloque 1; r1 #5, r2 #5, r3 #3) ----
+
+    /** 1 · La consulta directa de un folio. */
+    @Test fun `la consulta de una fila que no pasa la validacion da por confirmar`() = prueba {
+        val s = solicitud()
+        filaDirecta(s) { it.copy(estado = EstadoDelIntento.APROBADO, operationNumber = 1_234_567) }
+        danar(s, "APROBADO")
+        assertEquals(listOf<EventoDeCobro>(PorConfirmar(s.importeCentavos)), cobrar(s).map { it.first })
+        assertEquals(0, lector.lecturas)
+    }
+
+    /** 2 · La reconsulta de un intento que sigue en memoria (una lápida en duda): el refresco desde la fila no publica nada. */
+    @Test fun `la reconsulta en memoria de una fila que no pasa la validacion no publica un desenlace`() = prueba {
+        blumon.venta = SILENCIO
+        servidor.acuse = { delay(600_000); guardado(EstadoDelReversoEnServidor.REVERSED) } // el acuse se atora: queda en duda
+        val s = solicitud()
+        assertEquals(PorConfirmar(s.importeCentavos), terminal(s))
+        prueba.advanceTimeBy(1_000)
+        assertEquals(true, motor.intentos[s.id]?.retirado)
+        danar(s, "APROBADO")
+        assertEquals(listOf<EventoDeCobro>(PorConfirmar(s.importeCentavos)), cobrar(s).map { it.first }) // dispara el refresco
+        prueba.advanceTimeBy(1_000)
+        assertTrue(tardiasDe(s).none { it is Aprobado })
+        assertEquals(PorConfirmar(s.importeCentavos), motor.intentos[s.id]?.actual)
+    }
+
+    /** 3 · El acuse tardío (después de soltar a la cajera): la fila se daña mientras llega; nunca publica «No se cobró». */
+    @Test fun `el acuse tardio no publica no se cobro desde una fila que no pasa la validacion`() = prueba {
+        blumon.venta = SILENCIO
+        val s = solicitud()
+        servidor.acuse = { delay(31_000); danar(s, "NO_SE_COBRO"); AcuseDelResultado.Reintentar } // llega después de la cajera
+        assertEquals(PorConfirmar(s.importeCentavos), terminal(s))
+        prueba.advanceTimeBy(60_000)
+        assertFalse(NoSeCobro in tardiasDe(s))
+        assertEquals(PorConfirmar(s.importeCentavos), motor.intentos[s.id]?.actual)
+    }
+
+    /** 4 · Codex r4 #2, salida «evento»: una fila APROBADO sin folio bancario ni id de pago nunca da «Aprobado». */
+    @Test fun `un aprobado sin folio ni pago da por confirmar`() = prueba {
+        val s = solicitud()
+        filaDirecta(s) { it.copy(estado = EstadoDelIntento.APROBADO, operationNumber = 1_234_567) }
+        db.openHelper.writableDatabase.execSQL("UPDATE intentos SET operationNumber = NULL WHERE attemptId = ?", arrayOf(s.id.valor))
+        assertEquals(listOf<EventoDeCobro>(PorConfirmar(s.importeCentavos)), cobrar(s).map { it.first })
     }
 }

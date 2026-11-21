@@ -389,11 +389,63 @@ class CommandExecutorTest {
 
     private fun listos(vararg comandos: Pair<String, String>) =
         coEvery { mockHeartbeatRepository.commandsReady(any()) } returns com.jaac.avoqado_tpv.core.domain.models.Result.Success(
-            comandos.map { (id, tipo) -> com.jaac.avoqado_tpv.core.data.network.dto.PendingCommandDto(
-                commandId = id, correlationId = "corr-$id", type = tipo, payload = null, priority = "NORMAL",
-                requiresPin = false, expiresAt = null, requestedBy = "sa", requestedByName = null,
-                createdAt = Instant.now().toString(),
-            ) })
+            comandos.map { (id, tipo) -> dto(id, tipo, null) })
+
+    /** Como llega del servidor: el payload es JSON de verdad, así que sus números son `LazilyParsedNumber`. */
+    private fun dto(id: String, tipo: String, payloadJson: String?) = com.jaac.avoqado_tpv.core.data.network.dto.PendingCommandDto(
+        commandId = id, correlationId = "corr-$id", type = tipo,
+        payload = payloadJson?.let { com.google.gson.JsonParser.parseString(it).asJsonObject }, priority = "NORMAL",
+        requiresPin = false, expiresAt = null, requestedBy = "sa", requestedByName = null,
+        createdAt = Instant.now().toString(),
+    )
+
+    /**
+     * D665 r2: el comando que manda el admin para rescatarla (aquí MAINTENANCE_MODE) espera a Inicio y el SERVIDOR lo vuelve a
+     * entregar cada 60 s. Releído del almacén, `_deliveryProtocol: 2` vuelve como `Double` y el que llega es
+     * `LazilyParsedNumber`: comparar el payload por tipo de Java lanzaba «Command identity changed» y la app se cerraba en
+     * cada latido, antes de llegar al UNLOCK de la misma respuesta.
+     */
+    @Test
+    fun `P1 D665 bloqueada en el Login un comando que espera con números vuelve a llegar sin cerrar la app y el UNLOCK corre`() = runTest {
+        candadoPuesto(); acusesComoElRepositorio()
+        CommandExecutionWindow.setRoute("login")
+        val mant = dto("mant-9", "MAINTENANCE_MODE", """{"_deliveryProtocol":2,"reason":"rescate","intentos":3}""")
+        val unlock = dto("unlock-9", "UNLOCK", """{"_deliveryProtocol":2}""")
+        coEvery { mockHeartbeatRepository.commandsReady(any()) } returnsMany listOf(
+            com.jaac.avoqado_tpv.core.domain.models.Result.Success(listOf(mant)),
+            com.jaac.avoqado_tpv.core.domain.models.Result.Success(listOf(mant, unlock)),
+        )
+        commandExecutor.recoverPending()   // 1ª entrega: espera a Inicio
+        commandExecutor.recoverPending()   // 60 s después: la misma otra vez, y ahora con el UNLOCK
+        verify(exactly = 1) { mockLockScreenManager.unlock() }
+        acusoFinal("unlock-9"); sinAcuseFinal("mant-9")
+        verify(exactly = 0) { mockMaintenanceManager.enterMaintenance(any(), any()) }
+    }
+
+    /** La llaman `launch` sin captura (latido, eventos de pantalla): una bandeja ilegible no puede cerrar la app. */
+    @Test
+    fun `P1 D665 una bandeja ilegible no hace que la recuperación lance`() = runTest {
+        candadoPuesto(); listos("unlock-7" to "UNLOCK")
+        every { mockSecureStorage.getString(any(), any()) } returns "esto no es json"
+        CommandExecutionWindow.setRoute("login")
+        commandExecutor.recoverPending()   // no debe lanzar
+    }
+
+    /** La revisión de identidad se queda: un mismo id con OTRO contenido se rechaza, pero sin cerrar la app ni frenar al UNLOCK. */
+    @Test
+    fun `P1 D665 un comando que de verdad cambió de contenido se salta sin cerrar la app y el UNLOCK corre`() = runTest {
+        candadoPuesto(); acusesComoElRepositorio()
+        CommandExecutionWindow.setRoute("login")
+        coEvery { mockHeartbeatRepository.commandsReady(any()) } returnsMany listOf(
+            com.jaac.avoqado_tpv.core.domain.models.Result.Success(listOf(dto("mant-8", "MAINTENANCE_MODE", """{"reason":"uno"}"""))),
+            com.jaac.avoqado_tpv.core.domain.models.Result.Success(listOf(
+                dto("mant-8", "MAINTENANCE_MODE", """{"reason":"otro"}"""), dto("unlock-8", "UNLOCK", null))),
+        )
+        commandExecutor.recoverPending()
+        commandExecutor.recoverPending()
+        verify(exactly = 1) { mockLockScreenManager.unlock() }
+        acusoFinal("unlock-8"); sinAcuseFinal("mant-8")
+    }
 
     /** Como el repositorio real: un DEFERRED no sale a la red ni se confirma; lo demás sí. */
     private fun acusesComoElRepositorio() =

@@ -360,6 +360,8 @@ class ConnectionViewModelTest {
         // D665: los eventos de pantalla ya llaman `recoverPending` siempre; lo propio del latido es recordar SUS comandos.
         verify { commandExecutor.rememberCommands(match { it.any { c -> c.commandId == "cmd-123" } }) }
         coVerify { commandExecutor.recoverPending() }
+        // D665 r2: ese latido ya corrió la recuperación; no se repite el POST /commands/ready.
+        coVerify(exactly = 0) { commandExecutor.recoverPendingWhileLocked() }
         viewModel.viewModelScope.cancel()
     }
 

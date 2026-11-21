@@ -483,9 +483,11 @@ class ConnectionViewModel @Inject constructor(
                     if (!pendingCommands.isNullOrEmpty()) {
                         Timber.i("📥 [Connection] Received ${pendingCommands.size} pending command(s)")
                         processPendingCommands(pendingCommands)
+                    } else {
+                        // D665: con el candado puesto nada más despierta la recuperación (ni toques ni, fuera de Inicio,
+                        // socket). Si el latido ya trajo comandos, `processPendingCommands` ya la corrió: no se repite.
+                        viewModelScope.launch { commandExecutor.recoverPendingWhileLocked() }
                     }
-                    // D665: con el candado puesto nada más despierta la recuperación (ni toques ni, fuera de Inicio, socket).
-                    viewModelScope.launch { commandExecutor.recoverPendingWhileLocked() }
                 }
                 is Result.Error -> {
                     Timber.w("⚠️ [Connection] Heartbeat: backend unreachable: ${result.exception?.message}")

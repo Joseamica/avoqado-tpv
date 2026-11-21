@@ -39,7 +39,9 @@ import kotlin.coroutines.resume
  * Handles the command execution logic only - ACKs are handled by ConnectionViewModel.
  *
  * **Delivery**: Foreground, safe-screen and reconnect events trigger bounded recovery.
- * No command polling timer is added.
+ * No command polling timer, with ONE declared exception (D665): while the terminal is LOCKED, each successful heartbeat
+ * (~30 s) also triggers recovery (`POST /commands/ready`), because with the lock veil nobody changes screens and off Home
+ * there is no socket — it is the only way to rescue a locked terminal stuck on Login.
  *
  * **ACK Flow (HTTP via ConnectionViewModel)**:
  * ```
@@ -100,7 +102,7 @@ class CommandExecutor @Inject constructor(
                         if (command == null) {
                             if (repository.sendCommandAck(dto.commandId, serial, CommandResult.rejected("Comando no soportado por esta app"))
                                 !is com.jaac.avoqado_tpv.core.domain.models.Result.Success) acknowledged = false
-                        } else if (!commandInbox.remember(command)) acknowledged = false
+                        } else if (!recordar(command)) acknowledged = false
                     }
                 }
                 // Restore receipts, including an ACK lost before the previous process died.
@@ -115,6 +117,12 @@ class CommandExecutor @Inject constructor(
             } while (ready is com.jaac.avoqado_tpv.core.domain.models.Result.Success && ready.data.size == 10 &&
                 acknowledged && CommandExecutionWindow.isSafe())
 
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // D665 r2: la llaman `launch` sin captura (latido, eventos de pantalla, reconexión): un comando raro o una bandeja
+            // ilegible no puede cerrar la app; se reintenta en el siguiente despertar.
+            Timber.e(e, "❌ [$TAG] La recuperación de comandos falló; se reintenta en el siguiente evento")
         } finally { recoveryMutex.unlock() }
     }
 
@@ -132,7 +140,15 @@ class CommandExecutor @Inject constructor(
         else -> null
     }
 
-    fun rememberCommands(commands: List<TpvCommand>) { commands.forEach { commandInbox.remember(it) } }
+    fun rememberCommands(commands: List<TpvCommand>) { commands.forEach { recordar(it) } }
+
+    /** D665 r2: un comando cuyo contenido cambió con el mismo id se salta (y se registra) sin cerrar la app ni frenar a los demás. */
+    private fun recordar(command: TpvCommand): Boolean = try {
+        commandInbox.remember(command)
+    } catch (e: IllegalStateException) {
+        Timber.e(e, "⚠️ [$TAG] Comando ${command.commandId} (${command.type}) llegó con otro contenido; se ignora")
+        false
+    }
 
     companion object {
         private const val TAG = "CommandExecutor"

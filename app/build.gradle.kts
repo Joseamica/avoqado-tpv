@@ -868,3 +868,30 @@ val checkNoEmojiInTestNames by tasks.registering {
 }
 
 tasks.withType<Test>().configureEach { dependsOn(checkNoEmojiInTestNames) }
+
+// ⛔ TEMPORAL (F1-textos, nube 7ad23e): el CI del PR sólo corre sandbox; esto hace que su trabajo de pruebas corra la suite de Nexgo y
+// compile producción, uno tras otro. Se revierte en el commit siguiente. No se une.
+afterEvaluate {
+    tasks.named<Test>("testNexgoDebugUnitTest") {
+        ignoreFailures = true
+        doLast {
+            val xmls = fileTree(reports.junitXml.outputLocation) { include("**/*.xml") }.files
+            var total = 0; var fallas = 0; var omitidas = 0
+            xmls.forEach { f ->
+                val t = f.readText()
+                Regex("""<testsuite [^>]*tests="(\d+)"[^>]*skipped="(\d+)"[^>]*failures="(\d+)"""").find(t)?.let {
+                    total += it.groupValues[1].toInt(); omitidas += it.groupValues[2].toInt(); fallas += it.groupValues[3].toInt()
+                }
+                Regex("""<testcase name="([^"]+)" classname="([^"]+)"[^>]*>\s*<failure""").findAll(t).forEach {
+                    println("NEXGO-FALLA: ${it.groupValues[2]} > ${it.groupValues[1]}")
+                }
+            }
+            println("NEXGO-RESUMEN: total=$total fallas=$fallas omitidas=$omitidas")
+        }
+    }
+    tasks.named("compileProductionDebugKotlin") { mustRunAfter("testNexgoDebugUnitTest") }
+    tasks.named<Test>("testSandboxDebugUnitTest") {
+        setDependsOn(listOf("testNexgoDebugUnitTest", "compileProductionDebugKotlin"))
+        classpath = files(); testClassesDirs = files(); onlyIf { false }
+    }
+}

@@ -8,6 +8,7 @@ import com.jaac.avoqado_tpv.R
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.util.VenueTimeZone
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.ImpresionNoEmpezada
 import com.pax.dal.IDAL
 import com.pax.neptunelite.api.NeptuneLiteUser
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -1688,10 +1689,15 @@ class PrinterManager @Inject constructor(
         sigueVigente: (() -> Boolean)? = null,
     ): Result<Unit> {
         return synchronized(candado) { try {
+            // 🧾 D661 · Ruling 107: en la Nexgo la pregunta decisiva va DENTRO del gateway, justo antes de `startPrint`, ya preparada la
+            // impresora y cargados los renglones (la de abajo, antes de `start()`, no cubre esa espera).
+            var noEmpezo = false
             // Sólo la comanda automática acredita papel; las reimpresiones conservan las guardas del SDK.
             val printerInstance = (if (!esHardwarePax && esComandaDeFolio) {
                 ImpresoraAngelPay.paraEstaTerminal { ticket ->
-                    kotlinx.coroutines.runBlocking { angelPaySdkGateway.get().printTicket(ticket) }
+                    kotlinx.coroutines.runBlocking {
+                        angelPaySdkGateway.get().printTicket(ticket, sigueVigente = { sigueVigente?.invoke() != false })
+                    }.also { noEmpezo = it.exceptionOrNull() is ImpresionNoEmpezada }
                 }
             } else printer) ?: return Result.failure(
                 Exception(motivoSinImpresora)
@@ -1789,6 +1795,7 @@ class PrinterManager @Inject constructor(
 
             // Execute print
             val result = printerInstance.start()
+            if (noEmpezo) return Result.failure(ComandaNoEmpezada())
 
             if (result == 0) {
                 Timber.i("✅ [Printer] Kitchen ticket printed successfully")

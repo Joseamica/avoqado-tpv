@@ -4,6 +4,7 @@ import com.angelpay.angelpaysdk.AngelPaySDK
 import com.jaac.avoqado_tpv.features.onlineorders.data.ComandaDeApoyo
 import com.jaac.avoqado_tpv.features.onlineorders.data.FoliosRepository
 import com.jaac.avoqado_tpv.features.onlineorders.data.ReclamoDeComanda
+import com.jaac.avoqado_tpv.features.onlineorders.data.ResultadoDeComanda
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.FolioProducto
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
@@ -179,6 +180,49 @@ class ComandaNexgoResultadoFinalTest {
 
         assertTrue(pax.printKitchenTicket("W5GZD", orderItems = listOf(mockk(relaxed = true)), esComandaDeFolio = true, sigueVigente = { true }).isSuccess)
         verify(exactly = 1) { hardware.start() }
+    }
+
+    /**
+     * Ruling 107 (Codex r2). En la Nexgo el camino es: vigencia → preparar e iniciar la impresora → cargar los renglones → `startPrint`.
+     * Si esa espera cruza el reclamo (y el SERVIDOR ya admitió la devolución), la comanda no debe arrancar. Se detiene el gateway a media
+     * carga de renglones, el reloj pasa el reclamo y se suelta: cero `startPrint`, cero confirmaciones, y el desenlace de hoy.
+     */
+    @Test fun `Ruling 107 en la Nexgo la vigencia se decide justo antes de startPrint - un reclamo que vence cargando los renglones no sale`() {
+        every { printer.status } returns SdkResult.Success
+        every { printer.initPrinter() } returns SdkResult.Success
+        every { printer.startPrint(any(), any()) } answers {
+            secondArg<OnPrintListener>().onPrintResult(SdkResult.Success)
+            SdkResult.Success
+        }
+        val cargando = CountDownLatch(1)
+        val soltar = CountDownLatch(1)
+        val primera = java.util.concurrent.atomic.AtomicBoolean(true)
+        every { printer.appendPrnStr(any<String>(), any<Int>(), any<com.nexgo.oaf.apiv3.device.printer.AlignEnum>(), any<Boolean>()) } answers {
+            if (primera.getAndSet(false)) {
+                cargando.countDown()
+                soltar.await(5, TimeUnit.SECONDS)
+            }
+            SdkResult.Success
+        }
+        val reloj = java.util.concurrent.atomic.AtomicLong(0L)
+        val executor = Executors.newSingleThreadExecutor()
+        val pendiente = executor.submit<ResultadoDeComanda> {
+            runBlocking {
+                ComandaDeApoyo(folios, manager, kotlin.coroutines.EmptyCoroutineContext) { reloj.get() }
+                    .intentar("v1", folio, ComandaDeApoyo.EDAD_MAXIMA_DEL_RECLAMO_MS)
+            }
+        }
+        try {
+            assertTrue("la comanda llega a cargar renglones", cargando.await(5, TimeUnit.SECONDS))
+            reloj.set(ComandaDeApoyo.EDAD_MAXIMA_DEL_RECLAMO_MS) // el reclamo envejeció mientras se cargaban (y se devolvió el pedido)
+            soltar.countDown()
+            assertEquals(ResultadoDeComanda.RECLAMO_VENCIDO, pendiente.get(5, TimeUnit.SECONDS))
+            verify(exactly = 0) { printer.startPrint(any(), any()) }
+            coVerify(exactly = 0) { folios.confirmarImpresion(any(), any()) }
+        } finally {
+            soltar.countDown()
+            executor.shutdownNow()
+        }
     }
 
     /**

@@ -1597,8 +1597,9 @@ fun AppNavigation(
                                     conexionCompleta = connectionStateManager.isFullyConnected(),
                                 ),
                             )
-                        val lectorListo = soloEfectivo || try {
-                            awaitPaxPaymentReady(context, initializationManager, "Checkout payment")
+                        // D2: con soloEfectivo no se espera al lector (la misma expresión de siempre, dentro del try de D36).
+                        val lectorNoListo = try {
+                            !soloEfectivo && !awaitPaxPaymentReady(context, initializationManager, "Checkout payment")
                         } catch (salio: kotlinx.coroutines.CancellationException) {
                             // D36 (Codex r2 #5): la cajera salió de Cobrar mientras se esperaba el lector: la pantalla de cobro nunca
                             // abrió y la venta ya existe en el SERVIDOR. Corre fuera de esta corrutina (que ya se canceló).
@@ -1607,7 +1608,7 @@ fun AppNavigation(
                             }
                             throw salio
                         }
-                        if (!lectorListo) {
+                        if (lectorNoListo) {
                             // D36 (Codex r1 #10): la venta ya se creó en el SERVIDOR y la pantalla de cobro nunca abrió (el lector no
                             // estuvo listo): no hubo ningún intento posible. El carrito sigue en Cobrar; si vuelve a cobrar, nace otra.
                             if (payload is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Order) {

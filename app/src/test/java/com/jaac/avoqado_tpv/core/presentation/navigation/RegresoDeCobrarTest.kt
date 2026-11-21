@@ -63,12 +63,12 @@ class RegresoDeCobrarTest {
     @Test
     fun `D36 si el lector no se prepara o la cajera sale mientras se espera, la venta de Cobrar se retira (Codex r1 #10 y r2 #5)`() {
         val cobrar = navegacion.substring(navegacion.indexOf("composable(NavRoute.Checkout.route)")).substringBefore("navController.navigate(getPaymentRoute())")
-        val espera = cobrar.substringAfter("val lectorListo = soloEfectivo || try {").substringBefore("navController.currentBackStackEntry")
+        val espera = cobrar.substringAfter("val lectorNoListo = try {").substringBefore("navController.currentBackStackEntry")
         // La cajera sale de Cobrar mientras se espera el lector: la corrutina se cancela y se pide retirar antes de re-lanzar.
         val alSalir = espera.substringAfter("catch (salio: kotlinx.coroutines.CancellationException) {").substringBefore("throw salio")
         assertThat(alSalir).contains("retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), payload.orderId)")
         // El lector no quedó listo: tampoco hubo pantalla de cobro.
-        val noListo = espera.substringAfter("if (!lectorListo) {").substringBefore("return@launch")
+        val noListo = espera.substringAfter("if (lectorNoListo) {").substringBefore("return@launch")
         assertThat(noListo).contains("retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), payload.orderId)")
     }
 

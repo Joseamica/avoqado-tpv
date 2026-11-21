@@ -506,8 +506,8 @@ class RecordPaymentUseCaseTest {
     }
 
     @Test
-    fun `P1 sin internet no es la franja - intenta como siempre, falla al instante y va a la cola a las 2`() = runTest {
-        // Sin internet la petición no espera ningún plazo (no hay ruta ni DNS): conserva su camino, sólo con 2 fallas, no 5.
+    fun `P1 sin internet no es la franja - intenta como siempre, con sus 5 intentos`() = runTest {
+        // Sin internet la petición falla al instante (sin ruta ni DNS): conserva su camino de siempre.
         stubClaim(); stubRelease()
         conexion.setInternetConnected(false); conexion.setServerConnected(false)
         val sinDns = java.net.UnknownHostException("sin DNS")
@@ -516,13 +516,12 @@ class RecordPaymentUseCaseTest {
         val result = conFranja(cashContext, CardDetails.CASH, authorization, reference)
 
         assertThat(result.exceptionOrNull()).isSameInstanceAs(sinDns)
-        coVerify(exactly = 2) { fastRecorder.recordPayment(any(), any(), any(), any()) }
+        coVerify(exactly = 5) { fastRecorder.recordPayment(any(), any(), any(), any()) }
         coVerify(exactly = 1) { queue.release(7L, ownToken, any(), any()) }
     }
 
     @Test
-    fun `P1 un 503 entre dos plazos no adelanta la cola - cuentan sólo las fallas sin respuesta`() = runTest {
-        // Codex r1 #7: 503 → plazo → 200. El 503 SÍ es respuesta: sólo hay 1 falla sin respuesta y el 3.er intento registra.
+    fun `P2 sin la franja los reintentos de siempre siguen - 503, plazo y luego 200 registra en vivo`() = runTest {
         stubClaim()
         coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returnsMany listOf(
             Result.failure(BackendHttpException(503, "Servicio no disponible")),
@@ -563,21 +562,7 @@ class RecordPaymentUseCaseTest {
     }
 
     @Test
-    fun `P1 efectivo cuyo servidor no contesta va a la cola a los 2 intentos, no a los 5`() = runTest {
-        stubClaim(); stubRelease()
-        val plazo = java.net.SocketTimeoutException("timeout")
-        coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returns Result.failure(plazo)
-
-        val result = conFranja(cashContext, CardDetails.CASH, authorization, reference)
-
-        assertThat(result.exceptionOrNull()).isSameInstanceAs(plazo)
-        coVerify(exactly = 2) { fastRecorder.recordPayment(any(), any(), any(), any()) }
-        coVerify(exactly = 1) { queue.release(7L, ownToken, any(), any()) }
-        coVerify(exactly = 0) { queue.markSynced(any(), any()) }
-    }
-
-    @Test
-    fun `P1 efectivo que regresa en el segundo intento se registra en vivo`() = runTest {
+    fun `P2 efectivo que regresa en el segundo intento se registra en vivo`() = runTest {
         stubClaim()
         coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returnsMany listOf(
             Result.failure(java.io.InterruptedIOException("timeout")), Result.success(receipt),
@@ -590,7 +575,7 @@ class RecordPaymentUseCaseTest {
     }
 
     @Test
-    fun `P2 un servidor que SI contesta con 503 conserva sus 5 intentos en efectivo`() = runTest {
+    fun `P2 sin la franja un 503 conserva sus 5 intentos en efectivo`() = runTest {
         stubClaim(); stubRelease()
         coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returns Result.failure(BackendHttpException(503, "Servicio no disponible"))
 
@@ -600,7 +585,8 @@ class RecordPaymentUseCaseTest {
     }
 
     @Test
-    fun `P2 la tarjeta sin respuesta conserva sus 5 intentos`() = runTest {
+    fun `P2 la tarjeta con la franja sin respuesta conserva sus 5 intentos`() = runTest {
+        conexion.setServerConnected(false)
         coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returns Result.failure(java.net.SocketTimeoutException("timeout"))
 
         conFranja(cashContext.copy(merchantAccountId = "FULLTEST-merchant"), tarjeta, "auth", "ref-tarjeta")
@@ -608,15 +594,4 @@ class RecordPaymentUseCaseTest {
         coVerify(exactly = 5) { fastRecorder.recordPayment(any(), any(), any(), any()) }
     }
 
-    @Test
-    fun `nadieContesto distingue la red muda de una respuesta del servidor`() {
-        assertThat(RecordPaymentUseCase.nadieContesto(java.net.SocketTimeoutException("timeout"))).isTrue()
-        assertThat(RecordPaymentUseCase.nadieContesto(java.io.InterruptedIOException("timeout"))).isTrue()
-        assertThat(RecordPaymentUseCase.nadieContesto(java.net.ConnectException("refused"))).isTrue()
-        assertThat(RecordPaymentUseCase.nadieContesto(java.net.UnknownHostException("dns"))).isTrue()
-        assertThat(RecordPaymentUseCase.nadieContesto(java.net.NoRouteToHostException("ruta"))).isTrue()
-        assertThat(RecordPaymentUseCase.nadieContesto(IOException("unexpected end of stream"))).isFalse()
-        assertThat(RecordPaymentUseCase.nadieContesto(BackendHttpException(503, "x"))).isFalse()
-        assertThat(RecordPaymentUseCase.nadieContesto(null)).isFalse()
-    }
 }

@@ -128,20 +128,6 @@ class RecordPaymentUseCase @Inject constructor(
          * Se duplica exponencialmente en cada intento: 500ms → 1s → 2s → 4s
          */
         private const val INITIAL_RETRY_DELAY_MS = 500L
-
-        /**
-         * Efectivo en vivo cuyo servidor NO contesta (plazo vencido, sin conexión, sin DNS): a las 2 fallas SIN RESPUESTA
-         * (no a las 2 vueltas: un 503 sí es respuesta y no cuenta, Codex r1 #7) va a la cola.
-         * El 2.º cubre una conexión vieja de HTTP/2 que se atora (el reintento abre otra); el 3.º al 5.º nunca ayudaron:
-         * medido en la PAX con el SERVIDOR congelado, 5 × ~11 s = 58 s por venta (encargo 97042c). Un servidor que contesta
-         * (5xx, 401, 429…) sigue con sus 5 intentos.
-         */
-        private const val MAX_INTENTOS_SIN_RESPUESTA = 2
-
-        /** ¿Esta falla dice que NADIE contestó? (las mismas clases que `RendirseRapido.nadieContesto` de ANDROID). */
-        @VisibleForTesting
-        internal fun nadieContesto(error: Throwable?): Boolean = error is java.io.InterruptedIOException ||
-            error is java.net.ConnectException || error is java.net.UnknownHostException || error is java.net.NoRouteToHostException
     }
     /**
      * Graba el pago en el backend usando el recorder apropiado.
@@ -290,7 +276,6 @@ class RecordPaymentUseCase @Inject constructor(
             cardDetails = cardDetails,
             authorizationNumber = authorizationNumber,
             referenceNumber = referenceNumber,
-            rendirseSinRespuesta = cashClaim != null,
         )
         if (cashClaim != null) {
             val token = requireNotNull(cashClaim.claimToken)
@@ -363,11 +348,8 @@ class RecordPaymentUseCase @Inject constructor(
         cardDetails: CardDetails,
         authorizationNumber: String,
         referenceNumber: String,
-        /** Efectivo en vivo: si nadie contesta, a los [MAX_INTENTOS_SIN_RESPUESTA] va a la cola (ver ahí). */
-        rendirseSinRespuesta: Boolean = false,
     ): Result<PaymentReceipt> {
         var lastError: Exception? = null
-        var sinRespuesta = 0
 
         repeat(MAX_RETRIES) { attemptIndex ->
             val attemptNumber = attemptIndex + 1
@@ -408,12 +390,6 @@ class RecordPaymentUseCase @Inject constructor(
 
             if (!isRetriable) {
                 Timber.w("⚠️ Non-retriable error, stopping retries: ${exception?.message}")
-                return result
-            }
-
-            if (nadieContesto(exception)) sinRespuesta++
-            if (rendirseSinRespuesta && sinRespuesta >= MAX_INTENTOS_SIN_RESPUESTA) {
-                Timber.w("📴 Efectivo: el servidor no contestó $sinRespuesta veces; pasa a la cola sin más intentos: ${exception?.message}")
                 return result
             }
 

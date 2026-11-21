@@ -218,7 +218,7 @@ class CobroDeVentaLocalNexgoTest {
         assertThat(fila()!!.retryCount).isEqualTo(0) // sin intento no se suma intento
         coVerify(exactly = 0) { api.crearOrden(any(), any()) }
         coVerify(exactly = 0) { registrar(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any()) }
-        io.mockk.verify(exactly = 0) { PaymentSyncScheduler.runNow(any()) }
+        io.mockk.verify(exactly = 1) { PaymentSyncScheduler.runNow(any()) } // la cola la manda al volver
     }
 
     @Test fun `dos toques guardan y suben una sola fila`() = runTest {

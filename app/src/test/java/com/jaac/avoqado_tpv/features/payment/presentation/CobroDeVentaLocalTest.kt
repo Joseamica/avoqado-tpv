@@ -191,8 +191,7 @@ class CobroDeVentaLocalTest {
         coVerify(exactly = 0) { api.crearOrden(any(), any()) }
         coVerify(exactly = 0) { api.pagar(any(), any(), any()) }
         coVerify(exactly = 0) { registrar(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any()) }
-        // No se despierta a la cola contra el silencio (gastaría un intento): la despierta el aviso de reconexión.
-        verify(exactly = 0) { PaymentSyncScheduler.runNow(any()) }
+        verify(exactly = 1) { PaymentSyncScheduler.runNow(context) } // la cola la manda al volver
     }
 
     @Test fun `morir despues del insert no pierde la venta aunque no se llegue a pintar el exito`() = runTest {

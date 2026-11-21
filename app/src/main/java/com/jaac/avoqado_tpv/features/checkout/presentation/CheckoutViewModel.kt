@@ -1260,7 +1260,8 @@ class CheckoutViewModel @Inject constructor(
                 secureStorage.getVenueId()?.let { ventaSinRed.borrarCarrito(it) }
                 // No order is created here, but the referral can still be captured with no `intendedOrderId`. The qualifying-order
                 // webhook on the backend will pick it up via the customerId attached to the fast-payment Order shadow row.
-                capturarReferido(orderId = null)
+                // 📴 Con la franja de «sin servidor» no se espera la captura (~25 s y fallaba igual): como sin internet (97042c, Codex r2 #7).
+                if (hayServidor) capturarReferido(orderId = null)
                 Result.success(PaymentNavigationPayload.Fast(amountPesos))
             }
             CaminoDelCobro.EN_LINEA -> cobrarEnLinea(current, amountPesos)

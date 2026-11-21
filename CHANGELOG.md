@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+---
+
+## [2.22.3] - 2026-11-21
+
 ### **Added**
 - **Interno, sin efecto en la app:** módulo `cobropropio` (SDK propio de cobro, fase 2) con la venta, el reverso y la cancelación con la tarjeta hablando directo con Blumon, un simulador de Blumon y pruebas de punta a punta. No está conectado a la app (`:app` no depende de él): no cambia nada de lo que hace la terminal hoy.
 

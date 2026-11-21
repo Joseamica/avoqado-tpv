@@ -381,6 +381,63 @@ class SoloEfectivoSinRedTest {
         }
     }
 
+    // ── D36 (hz:e82938e1:D36): la pantalla recuerda si ALGUNA VEZ intentó cobrar (no se borra con un reset ni un error) ──
+
+    @Test
+    fun `D36 Blumon «Método de pago» sin tocar nada no es un intento de cobro (ni tras un reset)`() = runTest {
+        val viewModel = blumon()
+        try {
+            assertThat(viewModel.yaSeIntentoCobrar()).isFalse()
+            viewModel.submitAmountDirectToMerchant("100.00")
+            esperarMetodoDePago(viewModel)
+            assertThat(viewModel.yaSeIntentoCobrar()).isFalse()
+
+            viewModel.resetPayment()
+            assertThat(viewModel.yaSeIntentoCobrar()).isFalse()
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D36 Blumon tocar Efectivo es un intento de cobro y resetPayment no lo borra`() = runTest {
+        val viewModel = blumon()
+        try {
+            viewModel.setSoloEfectivo(true)
+            viewModel.submitAmountDirectToMerchant("100.00")
+            esperarMetodoDePago(viewModel)
+
+            viewModel.processCashPayment("100.00")
+            assertThat(viewModel.yaSeIntentoCobrar()).isTrue()
+
+            viewModel.resetPayment()
+            assertThat(viewModel.yaSeIntentoCobrar()).isTrue()
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D36 Blumon tocar Tarjeta que falla y regresar a Método de pago sigue contando como intento (Codex r1 #4)`() = runTest {
+        sinRed()
+        val viewModel = blumon()
+        try {
+            viewModel.setSocketPaymentSource("SOCKET", "req-d36")
+            viewModel.submitAmountDirectToMerchant("100.00")
+            esperarMetodoDePago(viewModel)
+
+            viewModel.startPayment("100.00")
+            esperarQue("el toque de Tarjeta sin red termina en Error") { viewModel.state.value is PaymentState.Error }
+            assertThat(viewModel.yaSeIntentoCobrar()).isTrue()
+
+            viewModel.returnToSelectingMerchantFromError((viewModel.state.value as PaymentState.Error).context)
+            viewModel.resetPayment()
+            assertThat(viewModel.yaSeIntentoCobrar()).isTrue()
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
     // ── Cobro que mandó el POS (SOCKET): no ofrece efectivo ⇒ se conservan los caminos Error de antes (reloj H.3) ──
 
     @Test
@@ -427,9 +484,9 @@ class SoloEfectivoSinRedTest {
     // Nexgo (AngelPay)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private fun nexgo(): AngelPayPaymentViewModel = AngelPayPaymentViewModel(
+    private fun nexgo(registrar: RecordPaymentUseCase = mockk(relaxed = true)): AngelPayPaymentViewModel = AngelPayPaymentViewModel(
         appContext = mockk(relaxed = true),
-        recordPaymentUseCase = mockk(relaxed = true),
+        recordPaymentUseCase = registrar,
         shiftRepository = mockk(relaxed = true),
         authRepository = mockk(relaxed = true) {
             every { getVenueId() } returns "venue-test-001"
@@ -563,6 +620,41 @@ class SoloEfectivoSinRedTest {
             esperarQue("la tarjeta de Nexgo se vuelve a encender al volver la red") {
                 (viewModel.state.value as? AngelPayPaymentState.SelectingMerchant)?.motivoSinTarjeta == null
             }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D36 Nexgo «Método de pago» sin tocar nada no es intento (aunque la llave del intento ya exista), Efectivo sí y no se borra`() =
+        runTest {
+            // El registro del efectivo con un doble de verdad (el relajado no devuelve un `Result` y truena al registrar).
+            val viewModel = nexgo(registrar = registrarPago)
+            try {
+                viewModel.initPayment(amount = "100.00", skipReview = true, soloEfectivo = true)
+                esperarMetodoDePago(viewModel)
+                assertThat(viewModel.yaSeIntentoCobrar()).isFalse()
+
+                viewModel.startCashPayment()
+                assertThat(viewModel.yaSeIntentoCobrar()).isTrue()
+
+                viewModel.resetPayment()
+                assertThat(viewModel.yaSeIntentoCobrar()).isTrue()
+            } finally {
+                viewModel.viewModelScope.cancel()
+            }
+        }
+
+    @Test
+    fun `D36 Nexgo tocar Tarjeta cuenta como intento aunque no llegue al procesador`() = runTest {
+        sinRed()
+        val viewModel = nexgo()
+        try {
+            viewModel.initPayment(amount = "100.00", skipReview = true)
+            esperarMetodoDePago(viewModel)
+
+            viewModel.startCardPayment()
+            assertThat(viewModel.yaSeIntentoCobrar()).isTrue()
         } finally {
             viewModel.viewModelScope.cancel()
         }

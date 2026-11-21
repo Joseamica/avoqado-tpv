@@ -335,6 +335,17 @@ interface PaymentAttemptDao {
         END""")
     suspend fun dineroDeTarjetaDeLaCuenta(venueId: String, orderId: String, orderJsonFragment: String, processToken: String): String?
 
+    /**
+     * D36 (encargo da7275): ¿esta terminal tiene CUALQUIER rastro de un intento de cobro de esta venta? Un intento de la libreta en
+     * cualquier estado (también PREPARANDO y DESCARTADA), un cobro en la cola (cualquier estado) o una operación de cripto. Sin filtro
+     * de venue a propósito: lo que se pregunta es «¿se tocó esta venta?», y ante la duda se contesta que sí. Una sola sentencia, una
+     * sola foto de la base (el traspaso libreta → cola no cae entre dos lecturas).
+     */
+    @Query("""SELECT EXISTS(SELECT 1 FROM payment_attempts WHERE instr(payment_context_json, :orderJsonFragment) > 0)
+        OR EXISTS(SELECT 1 FROM pending_payments WHERE order_id = :orderId)
+        OR EXISTS(SELECT 1 FROM local_crypto_operations WHERE instr(request_json, :orderJsonFragment) > 0)""")
+    suspend fun hayRastroDeCobroDeLaVenta(orderId: String, orderJsonFragment: String): Boolean
+
     @Query("""UPDATE payment_attempts SET lease_until = :leaseUntil, verify_attempts = verify_attempts + 1
         WHERE attempt_id = :attemptId AND venue_id = :venueId
         AND state IN ('HOST_RESPONDIO', 'AUTORIZADO', 'REGISTRO_FALLIDO')

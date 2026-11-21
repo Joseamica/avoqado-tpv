@@ -230,6 +230,12 @@ object NetworkModule {
         return retrofit.create(ApiService::class.java)
     }
 
+    /** D36: «atrás» antes de cobrar en «Cobrar» retira la venta que se creó al tocar «Cobrar» (`RetiroDeVentaSinCobro`). */
+    @Provides
+    @Singleton
+    fun provideRetiroDeVentaApi(retrofit: Retrofit): com.jaac.avoqado_tpv.features.checkout.data.RetiroDeVentaApi =
+        retrofit.create(com.jaac.avoqado_tpv.features.checkout.data.RetiroDeVentaApi::class.java)
+
     /**
      * TablesApiService — módulo Mesas (`features/tables/`, Plan C), SOLO `tpv/…`.
      *

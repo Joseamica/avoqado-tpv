@@ -73,12 +73,22 @@ class GuardasTest {
         ),
     )
 
-    /** Fase 3, bloque 1 (Codex r3 #3, vara 2): toda fila de la libreta se lee por UN punto validado; ninguna lectura cruda más. */
+    /**
+     * Fase 3, bloque 1 (Codex r3 #3, vara 2): toda fila de la libreta se lee por UN punto validado; ninguna lectura cruda más.
+     * Codex b1 r1 (C3): también por `db.dao()`, y el DAO no tiene otra forma de entregar la entidad que esas tres.
+     */
     @Test fun `la libreta lee filas por un solo punto validado`() {
-        // `apariciones` ya salta comentarios: cuenta líneas de código, una por lectura cruda.
-        for (lectura in listOf("dao.buscar(", "dao.cancelacionesDe(", "dao.porRowid(")) {
-            assertEquals("lecturas crudas «$lectura»", listOf("libreta/Libreta.kt"), apariciones(Regex(Regex.escape(lectura))).map { it.first })
+        // `apariciones` ya salta comentarios: cuenta líneas de código, una por lectura cruda (por `dao.` o por `dao().`).
+        for (lectura in listOf("buscar", "cancelacionesDe", "porRowid")) {
+            val cruda = Regex("""\bdao(?:\(\))?\.$lectura\(""")
+            assertEquals("lecturas crudas «$lectura»", listOf("libreta/Libreta.kt"), apariciones(cruda).map { it.first })
         }
+        // C3 (b): los métodos del DAO que devuelven la entidad (sola, anulable o en lista) son EXACTAMENTE esos tres.
+        val dao = Class.forName("com.avoqado.cobropropio.libreta.LibretaDao")
+        assertEquals(
+            setOf("buscar", "cancelacionesDe", "porRowid"),
+            dao.declaredMethods.filter { "libreta.IntentoEntity" in it.genericReturnType.typeName }.map { it.name }.toSet(),
+        )
         assertTrue("dao::buscar volvió", apariciones(Regex("""dao::buscar""")).isEmpty())
         val fuera = apariciones(Regex("""\bdao\b""")).filterNot { it.first.startsWith("libreta/") }
         assertTrue("el dao fuera de la libreta: $fuera", fuera.isEmpty())
@@ -95,8 +105,10 @@ class GuardasTest {
     @Test fun `cripto no guarda ganchos de prueba`() {
         val dukpt = File(raiz, "cripto/Dukpt.kt").readText()
         assertTrue("antesDeBorrar volvió", "antesDeBorrar" !in dukpt)
-        // Sólo miembros del objeto (4 espacios): las `var` locales de las funciones (8 espacios) no cuentan.
-        assertTrue("una variable mutable en Dukpt", Regex("""^ {4}(?:@\S+ )*(?:internal |private )?var """, RegexOption.MULTILINE).find(dukpt) == null)
+        // Sólo miembros del objeto (4 espacios): las `var` locales de las funciones (8 espacios) no cuentan. m5: con cualquier
+        // visibilidad, y también `lateinit`.
+        val mutable = Regex("""^ {4}(?:@\S+ )*(?:(?:internal|private|public|protected|lateinit) )*var """, RegexOption.MULTILINE)
+        assertTrue("una variable mutable en Dukpt", mutable.find(dukpt) == null)
     }
 
     /**
@@ -120,6 +132,12 @@ class GuardasTest {
             ).sortedBy { it.toString() },
             llamadas.sortedBy { it.toString() },
         )
+        // C5 (Codex b1 r1): y quien no lo nombra recibe el que borra: las cuatro lo declaran con `CEROS` por defecto.
+        val dukpt = File(raiz, "cripto/Dukpt.kt").readLines()
+        for (f in listOf("llaveDeTransaccion", "cifrarTrack2", "llaveDeDatos", "tdes")) {
+            val firma = dukpt.single { "fun $f(" in it }
+            assertTrue("$f: el borrador por defecto no es CEROS: $firma", "borrador: (ByteArray) -> Unit = CEROS)" in firma)
+        }
     }
 
     /**
@@ -137,7 +155,9 @@ class GuardasTest {
         val declaracion = Regex(
             """^(?:@.*?\s+)?public\b[^(=:{]*?\b(?:class|interface|object|fun|val|var|typealias)\s+(?:<[^>]*>\s*)?(?:\w+\.)?(\w+)""",
         )
-        val lineas = raiz.walk().filter { it.extension == "kt" }.flatMap { f -> f.readLines().map { f.relativeTo(raiz).path to it } }
+        // C3 (Codex b1 r1): «de primer nivel» es por profundidad, no por columna: una declaración con sangría fuera de toda llave
+        // y paréntesis también cuenta.
+        val lineas = raiz.walk().filter { it.extension == "kt" }.flatMap { f -> primerNivel(f).map { f.relativeTo(raiz).path to it } }
             .filter { publico.containsMatchIn(it.second) }.toList()
         val sinLeer = lineas.filter { declaracion.find(it.second) == null }
         assertTrue("líneas públicas que la guardia no sabe leer: $sinLeer", sinLeer.isEmpty())
@@ -153,6 +173,26 @@ class GuardasTest {
             ),
             publicas,
         )
+    }
+
+    /**
+     * Las líneas de [f] que empiezan fuera de toda llave y paréntesis, sin su sangría. Las líneas de comentario y lo que va
+     * después de ` // ` no cuentan para la profundidad. Si la cuenta se pierde (baja de cero, o el archivo no cierra en cero:
+     * p. ej. una llave suelta en una cadena), truena: la guardia no sabe leer ese archivo.
+     */
+    private fun primerNivel(f: File): List<String> {
+        var nivel = 0
+        val fuera = mutableListOf<String>()
+        for (linea in f.readLines()) {
+            val t = linea.trim()
+            if (nivel == 0) fuera += t
+            if (t.startsWith("*") || t.startsWith("/*") || t.startsWith("//")) continue
+            val codigo = linea.substringBefore(" // ")
+            nivel += codigo.count { it == '{' || it == '(' } - codigo.count { it == '}' || it == ')' }
+            assertTrue("${f.name}: la cuenta de llaves bajó de cero", nivel >= 0)
+        }
+        assertEquals("${f.name}: la cuenta de llaves no cierra", 0, nivel)
+        return fuera
     }
 
     /**

@@ -51,6 +51,8 @@ class SuperficieTest {
     /**
      * Revisión final, recomendación 5: los enums que guarda la libreta se AGREGAN, nunca se renombran ni se quitan (las filas
      * viejas traen el nombre viejo). Una constante nueva se agrega aquí, y desde ese momento también queda congelada.
+     * m7: si la constante nueva de `EstadoDelIntento`, `EstadoDelReverso` o `EstadoDelReporte` es terminal, va también en la
+     * lista `CERRADA` de `LibretaDao.kt`; si no, sus filas cuentan como trabajo abierto en los barridos y en `salud()`.
      */
     @Test fun `los enums que guarda la libreta solo se agregan`() {
         val congelados = mapOf(

@@ -474,7 +474,7 @@ class DeclaracionDesdeElAviso @Inject constructor(
     companion object {
         /** El tope de una vuelta del refresco. */
         const val TOPE_DEL_REFRESCO_MS = 5_000L
-        /** D20: cuántas dudas, las más recientes, se consultan al mostrarse «Por revisar». */
+        /** D20: cuántas vueltas seguidas da la rueda (en su mismo orden) al mostrarse «Por revisar». */
         const val BARRIDO_AL_MOSTRARSE = 10
         const val TEXTO_GENERICO = "Este cobro todavía no se puede declarar. Vuelve a consultar en un momento."
         /** F1 bloque 2 (R1): el texto exacto de una fila cuyo SDK puede regresar todavía. */

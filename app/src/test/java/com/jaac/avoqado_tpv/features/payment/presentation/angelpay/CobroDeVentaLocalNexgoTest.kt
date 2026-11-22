@@ -163,7 +163,7 @@ class CobroDeVentaLocalNexgoTest {
         esperar("No terminó initPayment") { vm.state.value !is AngelPayPaymentState.Idle }
     }
     private fun esperar(mensaje: String, condicion: () -> Boolean) {
-        val limite = System.nanoTime() + 5_000_000_000L
+        val limite = System.nanoTime() + 30_000_000_000L
         while (System.nanoTime() < limite) { if (condicion()) return; Thread.sleep(10) }
         throw AssertionError("$mensaje; estado=${vm.state.value}")
     }

@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+### **Changed**
+- **Interno, sin efecto en la app · `cobropropio`, bloque 1 de la fase 3 del SDK propio**: el módulo sigue sin conectarse (`:app` no depende de él).
+  - Prueba instrumentada del transporte sobre el TLS de Android (SNI, un POST completo por HTTP/1.1, una escritura después del plazo no llega); se corre en la PAX aparte.
+  - El observador de pruebas de DUKPT ya no vive en producción: la prueba inyecta su borrador.
+  - Prueba guardia: las constantes de los enums que guarda la libreta sólo se agregan.
+  - La libreta lee cada fila por un solo punto validado (con dos reglas de dinero: un aviso «reversada» exige el reverso confirmado y un «aprobado» exige folio o pago): una fila ilegible ya no detiene la recuperación ni los avisos al SERVIDOR y nunca se convierte en un desenlace; queda «por confirmar» (I3; Codex r1–r4).
+  - `Libreta.salud()`: cuántos avisos al SERVIDOR siguen pendientes, el más viejo, los que no traen hora y las filas ilegibles con trabajo abierto, para alarmar.
+  - Fábrica pública `crearMotorDeCobro`: fija Blumon, el transporte, la identidad, los relojes y la libreta de producción; el SERVIDOR exige https en producción y, si trae pines, https y que apliquen a su host.
+  - Un motor que no se arma (identidad sin forma) ya no deja tomada su libreta: el reintento correcto arma el motor.
+  - Superficie pública cerrada con `explicitApi()`: la app sólo ve 35 nombres (los puertos de Blumon, del transporte y del SERVIDOR ya no); una venta con importe fuera de rango no se construye.
+  - Ola de arreglos tras la revisión final y Codex r1 sobre el código: una cancelación que una cancelación hermana ilegible frena antes de anotar su fila suelta a la cajera con «por confirmar» y después deja su veto: el folio contesta «No salió» y nunca sale (ahora con su prueba del motor); la fábrica se prueba por lo que arma (endpoints e identidad de Blumon por ambiente, pines del SERVIDOR, y lo rechazado no abre la libreta); `pendientesDeReporte()` vuelve a revisar que cada aviso siga pendiente al leerlo; las guardias de lectura cruda, del DAO, de la superficie pública con sangría, del borrador de DUKPT y de las `var` se cierran; la prueba de `salud()` y la instrumentada del TLS (cabeceras y cuerpo leídos aparte) se endurecen.
+
 ---
 
 ## [2.22.3] - 2026-11-21

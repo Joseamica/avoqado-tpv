@@ -40,7 +40,7 @@ import kotlin.time.TimeSource
  *
  * @param pinner el de la app (`NetworkModule.provideCertificatePinner`), para que la fase 3 conserve el pinning.
  */
-class ReversoDelServidorHttp(
+internal class ReversoDelServidorHttp(
     baseUrl: String,
     private val credencial: CredencialDelServidor,
     pinner: CertificatePinner? = null,

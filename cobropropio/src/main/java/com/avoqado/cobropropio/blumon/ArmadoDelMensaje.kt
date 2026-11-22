@@ -14,10 +14,10 @@ import java.math.BigDecimal
 import java.security.MessageDigest
 
 /** Sin la bandera `sendReverse` Blumon contesta `RQ_005` (Blumon, 10-nov); el motivo es fijo. */
-const val MOTIVO_DEL_REVERSO = "cancelled"
+internal const val MOTIVO_DEL_REVERSO = "cancelled"
 
 /** La IPEK, la base KSN y el contador ya reservado en la libreta para ESTE mensaje. Sólo en RAM. */
-class MaterialDukpt(@get:JvmSynthetic internal val ipek: ByteArray, val ksnBase: ByteArray, val contador: Int) {
+internal class MaterialDukpt(@get:JvmSynthetic internal val ipek: ByteArray, val ksnBase: ByteArray, val contador: Int) {
     override fun toString() = "MaterialDukpt(oculto)"
 }
 
@@ -25,7 +25,7 @@ class MaterialDukpt(@get:JvmSynthetic internal val ipek: ByteArray, val ksnBase:
  * El cuerpo de Blumon, opaco: lleva el PAN y la banda, así que nadie del módulo lo lee. Sólo se escribe al cable
  * (`comoRequestBody`) o se convierte en su reverso.
  */
-class CuerpoDeBlumon private constructor(private val json: JsonObject) {
+internal class CuerpoDeBlumon private constructor(private val json: JsonObject) {
 
     @JvmSynthetic internal fun comoRequestBody(): RequestBody = json.toString().toRequestBody(JSON)
 

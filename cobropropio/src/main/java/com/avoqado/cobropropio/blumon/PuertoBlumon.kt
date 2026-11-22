@@ -6,8 +6,8 @@ import java.io.Closeable
 import kotlin.time.Duration
 
 /** La credencial del cliente de Blumon (Basic del tokener). Se inyecta; nunca vive en el código ni se imprime. */
-class CredencialDelCliente(@get:JvmSynthetic internal val usuario: String, @get:JvmSynthetic internal val contrasena: String) {
-    override fun toString() = "CredencialDelCliente(oculta)"
+public class CredencialDelCliente(@get:JvmSynthetic internal val usuario: String, @get:JvmSynthetic internal val contrasena: String) {
+    override fun toString(): String = "CredencialDelCliente(oculta)"
 }
 
 /**
@@ -15,7 +15,7 @@ class CredencialDelCliente(@get:JvmSynthetic internal val usuario: String, @get:
  * crea se los entrega en la misma línea. [close] los pone en ceros y suelta las referencias; [usar] los presta sin que el
  * bloque se quede con ellos. Comparten el monitor: un cierre nunca deja a medias una copia en curso.
  */
-class MaterialDeSesion internal constructor(ipek: ByteArray, ksnBase: ByteArray) : Closeable {
+internal class MaterialDeSesion internal constructor(ipek: ByteArray, ksnBase: ByteArray) : Closeable {
     private var ipek: ByteArray? = ipek
     private var ksn: ByteArray? = ksnBase
 
@@ -40,7 +40,7 @@ class MaterialDeSesion internal constructor(ipek: ByteArray, ksnBase: ByteArray)
  * cero, no es secreta: va en la libreta) y `ultimoContadorDeBlumon` el contador del KSN que devolvió `initDukptKeys`.
  * Renovar el token ([conToken]) reúsa el MISMO material: ni lo copia ni lo cierra (v4-8).
  */
-class SesionBlumon internal constructor(
+internal class SesionBlumon internal constructor(
     @get:JvmSynthetic internal val token: String,
     internal val material: MaterialDeSesion,
     internal val ksnBaseCanonica: String,
@@ -56,7 +56,7 @@ class SesionBlumon internal constructor(
 }
 
 /** El cuerpo EXACTO de la venta como salió y el token con que salió: lo único con que se arma su reverso. Sólo en RAM. */
-class CuerpoCongelado(@get:JvmSynthetic internal val cuerpo: CuerpoDeBlumon, @get:JvmSynthetic internal val token: String) {
+internal class CuerpoCongelado(@get:JvmSynthetic internal val cuerpo: CuerpoDeBlumon, @get:JvmSynthetic internal val token: String) {
     override fun toString() = "CuerpoCongelado(oculto)"
 }
 
@@ -64,11 +64,11 @@ class CuerpoCongelado(@get:JvmSynthetic internal val cuerpo: CuerpoDeBlumon, @ge
  * Ola final, 3ª parte: el `access_token` de Blumon, opaco. Es lo que [PuertoBlumon.renovarToken] entrega a quien esté fuera
  * del módulo; sólo el módulo lee [valor], y Java tampoco lo ve.
  */
-class TokenDeBlumon internal constructor(@get:JvmSynthetic internal val valor: String) {
+internal class TokenDeBlumon internal constructor(@get:JvmSynthetic internal val valor: String) {
     override fun toString() = "TokenDeBlumon(oculto)"
 }
 
-interface PuertoBlumon {
+internal interface PuertoBlumon {
     /** `null` si no coinciden `posId` y comercio, si `qps != false`, si el KCV no cuadra, si algo falla o si vence `espera`. */
     suspend fun iniciarSesion(espera: Duration): SesionBlumon?
 

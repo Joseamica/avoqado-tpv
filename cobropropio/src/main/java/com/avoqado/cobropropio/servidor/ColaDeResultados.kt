@@ -8,6 +8,7 @@ import com.avoqado.cobropropio.libreta.EstadoDelReversoEnServidor
 import com.avoqado.cobropropio.libreta.IntentoEntity
 import com.avoqado.cobropropio.libreta.Libreta
 import com.avoqado.cobropropio.libreta.ResultadoParaReportar
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -17,14 +18,14 @@ import kotlinx.coroutines.withContext
  * no se llamó al SERVIDOR). `fila` = la fila tal como quedó (la del acuse aplicado, o la de ahora si el CAS no aplicó); null si
  * el id no existe.
  */
-data class ResultadoDeEntrega(val acuse: AcuseDelResultado?, val fila: IntentoEntity?)
+internal data class ResultadoDeEntrega(val acuse: AcuseDelResultado?, val fila: IntentoEntity?)
 
 /**
  * La cola durable de `/resultado`: la obligación vive en la libreta (`reporte = PENDIENTE`), y cada acuse se aplica con el CAS
  * de [Libreta.aplicarAcuse] en una transacción por id (r3 R3-09). La cola no tiene reloj: `reversadoEn` sale de la fila.
  * La app sólo la construye para dársela al motor; entregar es del motor (`MotorDeCobro.recuperar`), r2 familia A.
  */
-class ColaDeResultados(
+internal class ColaDeResultados(
     private val libreta: Libreta,
     private val servidor: ReversoDelServidor,
     /** Donde corren las llamadas de la libreta. Sólo las pruebas lo cambian, para que el tiempo virtual las espere. */
@@ -66,7 +67,19 @@ class ColaDeResultados(
     /** Una vuelta por todas las obligaciones pendientes, en orden (r3 R3-09). */
     internal suspend fun entregarPendientes(): Map<AttemptId, AcuseDelResultado> {
         val ids = enLaLibreta { libreta.pendientesDeReporte() }.map { AttemptId(it.attemptId) }
-        return buildMap { for (id in ids) entregar(id).acuse?.let { put(id, it) } }
+        return buildMap {
+            for (id in ids) {
+                // I3: una fila no detiene a las demás; la que lanzó se queda PENDIENTE para la siguiente vuelta.
+                val acuse = try {
+                    entregar(id).acuse
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    null
+                }
+                acuse?.let { put(id, it) }
+            }
+        }
     }
 
     // V sólo sube (el permiso se acredita antes del primer POST de reverso, y el reporte nace después): leerlo antes es seguro.

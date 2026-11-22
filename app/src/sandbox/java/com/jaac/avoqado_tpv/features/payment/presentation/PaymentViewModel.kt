@@ -666,6 +666,9 @@ class PaymentViewModel @Inject constructor(
         }
     }
 
+    /** D666: el número de esta pantalla de cobro; al morir sólo suelta las banderas si ninguna nació después. */
+    private val pantallaDeCobro = paymentStateHolder.entraPantallaDeCobro()
+
     init {
         Timber.d("🎬 [PaymentViewModel] Initialized")
 
@@ -8798,8 +8801,9 @@ class PaymentViewModel @Inject constructor(
                 // viewModelScope, and kill BOTH the record AND the offline-queue fallback (which
                 // is itself viewModelScope-bound) → money moved, no record, no queue, no alert.
                 recordingInFlight = false
-                paymentStateHolder.setCharging(false)
-                paymentStateHolder.setChargeAttemptActive(false)
+                // 🔴 D666 (Codex r2 #2): este `finally` sigue tras salir del éxito; si mientras tanto nació otra pantalla de cobro, las
+                // banderas ya son suyas y no se tocan (PaymentStateHolder.soltarBanderasDe).
+                paymentStateHolder.soltarBanderasDe(pantallaDeCobro, soltarVentanaDelDinero = true)
             }
         }
     }
@@ -9095,8 +9099,9 @@ class PaymentViewModel @Inject constructor(
                 // flags to us; if we did not close them here the terminal would refuse every
                 // future POS charge until the app restarts.
                 recordingInFlight = false
-                paymentStateHolder.setCharging(false)
-                paymentStateHolder.setChargeAttemptActive(false)
+                // 🔴 D666 (Codex r2 #2): este `finally` sigue tras salir del éxito; si mientras tanto nació otra pantalla de cobro, las
+                // banderas ya son suyas y no se tocan (PaymentStateHolder.soltarBanderasDe).
+                paymentStateHolder.soltarBanderasDe(pantallaDeCobro, soltarVentanaDelDinero = true)
             }
         }
     }
@@ -10647,7 +10652,6 @@ class PaymentViewModel @Inject constructor(
         super.onCleared()
         // 🛑 Ruling 96: una salida sin resetPayment() no se lleva el desenlace retenido de un cobro del POS.
         enviarDesenlaceRetenidoAlSalir()
-        criticalNetworkOperationManager.setPaymentFlowInProgress(false)
         // 🔒 The state collector died with viewModelScope — never leave the singleton flags stuck
         // true. A stuck money-window flag would refuse every future POS cancel; a stuck
         // charge-active flag would refuse every future POS CHARGE («La terminal tiene otro cobro en curso…»)
@@ -10655,7 +10659,13 @@ class PaymentViewModel @Inject constructor(
         // 🧾 R86: con un registro de tarjeta en vuelo la ventana del dinero NO se cierra aquí. El POST es NonCancellable y sigue
         // tras salir del éxito (que se ve ANTES de que termine el registro); el `finally` de handlePaymentSuccess suelta las dos
         // banderas al terminar. Cerrarla aquí dejaba a «Pedidos por pagar» cobrar el mismo folio otra vez a media espera.
-        if (!recordingInFlight) paymentStateHolder.setCharging(false)
-        paymentStateHolder.setChargeAttemptActive(false)
+        // 🔴 D666: sólo si ninguna otra pantalla de cobro nació después. Ésta muere ~700 ms después de salir (la animación de la
+        // navegación) y en ese rato otra ya pudo encender sus banderas: apagarlas aquí le quitaba la protección a esa venta.
+        if (paymentStateHolder.salePantallaDeCobro(pantallaDeCobro, soltarVentanaDelDinero = !recordingInFlight)) {
+            criticalNetworkOperationManager.setPaymentFlowInProgress(false)
+            Timber.d("♻️ [PaymentViewModel] onCleared: pantalla #%d soltó las banderas", pantallaDeCobro)
+        } else {
+            Timber.d("♻️ [PaymentViewModel] onCleared: pantalla #%d; otra pantalla de cobro nació después, sus banderas no se tocan", pantallaDeCobro)
+        }
     }
 }

@@ -10,7 +10,9 @@ import java.math.RoundingMode
 /** Sólo presenta hechos existentes. Nunca calcula ventas, esperado ni diferencia. */
 data class CajaLocalPresentation(val session: LocalShiftSessionEntity, val summary: LocalShiftSummary) {
     val hasLocalClose get() = session.closeOperationId != null
-    val canAdopt get() = session.openingDisposition == "ADOPTED" && session.adoptionAcceptedAt == null
+    /** D24: no sobre una caja vinculada que ya se cerró en otro aparato (la volvería a abrir aquí). */
+    val canAdopt get() = session.openingDisposition == "ADOPTED" && session.adoptionAcceptedAt == null &&
+        !(session.localStatus == "CLOSED" && !hasLocalClose)
     val title: String get() = when {
         !hasLocalClose && session.localStatus == "CLOSED" -> "Caja cerrada o cerrándose en otro aparato"
         session.closeStatus == "REVIEW" || session.openingStatus == "REVIEW" -> "Caja pendiente de revisión"

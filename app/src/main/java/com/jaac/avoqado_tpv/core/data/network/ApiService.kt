@@ -955,6 +955,24 @@ interface ApiService {
     ): Response<com.jaac.avoqado_tpv.features.shift.data.dto.KnownShiftState>
 
     /**
+     * D24: cuál caja del negocio está abierta, SIN cifras, con el permiso de cobrar (no `shifts:read`). [known] pregunta además
+     * cómo está una caja que este aparato ya conoce. Un SERVIDOR sin esta ruta contesta 404 y la terminal sigue como antes.
+     */
+    @GET("tpv/venues/{venueId}/shift/identity")
+    suspend fun getShiftIdentity(
+        @Path("venueId") venueId: String,
+        @Query("known") known: String?,
+    ): Response<com.jaac.avoqado_tpv.features.shift.data.dto.ShiftIdentityResponse>
+
+    /** D24: abrir la caja con el PIN de un gerente o cajero (token de un solo uso en `X-Permission-Override`). Sólo en línea. */
+    @POST("tpv/venues/{venueId}/shifts/open")
+    suspend fun openShiftConPin(
+        @Path("venueId") venueId: String,
+        @Body request: com.jaac.avoqado_tpv.features.shift.data.dto.OpenShiftRequest,
+        @Header("X-Permission-Override") overrideToken: String,
+    ): Response<com.jaac.avoqado_tpv.features.shift.data.dto.ShiftResponse>
+
+    /**
      * Get shift history for venue
      *
      * GET /tpv/venues/{venueId}/shifts

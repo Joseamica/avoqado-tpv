@@ -10,7 +10,7 @@ import com.avoqado.cobropropio.red.Segmento
 import java.math.BigDecimal
 import java.time.Instant
 
-sealed interface DesenlaceDeVenta {
+internal sealed interface DesenlaceDeVenta {
     data class Aprobada(val operationNumber: Long, val autorizacion: String) : DesenlaceDeVenta
     data class Rechazada(val codigo: String, val leyenda: String) : DesenlaceDeVenta
     data object NoSe : DesenlaceDeVenta
@@ -20,7 +20,7 @@ sealed interface DesenlaceDeVenta {
     data object NoEnviada : DesenlaceDeVenta
 }
 
-sealed interface DesenlaceDeCancelacion {
+internal sealed interface DesenlaceDeCancelacion {
     data class Cancelada(val operationNumber: Long) : DesenlaceDeCancelacion
     data class Rechazada(val codigo: String, val leyenda: String) : DesenlaceDeCancelacion
     data object NoSe : DesenlaceDeCancelacion
@@ -28,7 +28,7 @@ sealed interface DesenlaceDeCancelacion {
 }
 
 /** `codigo` va normalizado: del catálogo, de las listas del plan o `DESCONOCIDO`. Nunca un texto crudo del procesador. */
-sealed interface ClaseDelReverso {
+internal sealed interface ClaseDelReverso {
     data class Confirmado(val hora: Instant) : ClaseDelReverso
     data class Rechazado(val codigo: String, val hora: Instant) : ClaseDelReverso
     data class Reintentar(val codigo: String, val pruebaQueNoEntro: Boolean, val hora: Instant) : ClaseDelReverso
@@ -212,7 +212,7 @@ internal class SobreDeBlumon private constructor(
  * rechazo exige 2xx o 4xx de negocio + el sobre de error + un código de la lista de negativas definitivas de ESA
  * operación. Nunca lanza: lo que no cuadra es duda.
  */
-object Clasificador {
+internal object Clasificador {
 
     /**
      * El contrato congelado del intento. **Todo veredicto definitivo** exige que, si el sobre trae `reference` o importe,

@@ -10,7 +10,7 @@ import com.avoqado.cobropropio.dominio.AttemptId
  * qué contesta después el reverso. Una venta de los escenarios de CANCELACIÓN se aprueba; su escenario es lo que contesta la
  * cancelación de esa venta.
  */
-enum class EscenarioDeBlumon(val centavos: Int) {
+internal enum class EscenarioDeBlumon(val centavos: Int) {
     /** La venta aprobada, con el eco. Su cancelación también sale bien, con el eco del folio de la cancelación. */
     APROBADO(0),
 
@@ -94,7 +94,7 @@ enum class EscenarioDeBlumon(val centavos: Int) {
  * (cuatro hexadecimales con letras, así que nunca arma una racha de dígitos; un folio al azar cae en uno de éstos 1 de cada
  * 65,536 veces). Cualquier otro folio ⇒ [CONCEDE_Y_ACUSA].
  */
-enum class EscenarioDelServidor(val sufijo: String?) {
+internal enum class EscenarioDelServidor(val sufijo: String?) {
     /** Concede (`reversing`) y acusa lo reportado: `REVERSADA` ⇒ `reversed`, `SIN_RESPUESTA` ⇒ `reversing`, otro código ⇒ `reverse_failed`. */
     CONCEDE_Y_ACUSA(null),
 

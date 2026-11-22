@@ -5306,6 +5306,26 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
+     * 🛑 Ruling 96 (D661): el desenlace que retiene el reloj H.3 (un rechazo reintentable de un cobro del POS) sale aunque la
+     * pantalla se vaya sin `resetPayment()` —el «Ver» de la banda de pagados en línea, el salto a Turnos—. Al limpiarse el VM,
+     * `viewModelScope` se cierra ANTES de `onCleared()` y se lleva el reloj: la tablet nunca se enteraba del rechazo y la terminal
+     * quedaba apartada hasta el tope del servidor. Sale UNA vez y con lo mismo que mandaría el reloj (tras un rechazo del banco,
+     * `failed + PROCESSOR_DECLINED`); nada si ya salió uno (`resetPayment()`, el propio reloj y todo otro desenlace lo desarman) y
+     * nada con dinero en duda o aprobado, como `resetPayment()`. El reloj cuenta como pendiente si sigue vivo o si lo canceló el
+     * cierre del scope; si ya corrió, él decidió. Es la red de `AngelPayPaymentViewModel.onCleared()` (`emitirDeclinacionRetenida`).
+     */
+    private fun enviarDesenlaceRetenidoAlSalir() {
+        val reloj = cierreDelCobroRemotoJob ?: return
+        if (!reloj.isActive && !reloj.isCancelled) return
+        val requestId = _socketRequestId ?: return
+        val estado = _state.value
+        if (_paymentSource != "SOCKET" || estado !is PaymentState.Error || !estado.canRetry) return
+        if (authorizationUnresolved || authorizationApproved) return
+        Timber.w("📡 [Socket-Payment] La pantalla se fue sin resetPayment con el desenlace retenido: sale ahora | requestId=%s", requestId)
+        emitirDesenlaceNegativo(requestId, statusPreferido = "cancelled", mensaje = estado.message)
+    }
+
+    /**
      * 🛑 C.5 — el POS canceló y la bandeja lo ACEPTÓ (el desenlace durable ya está escrito). Aquí sólo se
      * alinea la terminal: se deja de pedir tarjeta, no se emite otro desenlace y se dice qué pasó.
      */
@@ -10625,6 +10645,8 @@ class PaymentViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
+        // 🛑 Ruling 96: una salida sin resetPayment() no se lleva el desenlace retenido de un cobro del POS.
+        enviarDesenlaceRetenidoAlSalir()
         criticalNetworkOperationManager.setPaymentFlowInProgress(false)
         // 🔒 The state collector died with viewModelScope — never leave the singleton flags stuck
         // true. A stuck money-window flag would refuse every future POS cancel; a stuck

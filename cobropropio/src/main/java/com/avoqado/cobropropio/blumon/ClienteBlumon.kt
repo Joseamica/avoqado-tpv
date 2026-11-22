@@ -27,7 +27,7 @@ import kotlin.time.TimeSource
  * El cliente de Blumon sobre `EnvioUnico` (rescate de `lectorlab/BlumonPilot.kt:49-85` y `BlumonSandbox.kt`). La sesión
  * sólo se arma si `device/init` devuelve ESTA identidad con `qps=false`, y si la IPEK cuadra con su KCV.
  */
-class ClienteBlumon(
+internal class ClienteBlumon(
     private val endpoints: Endpoints,
     private val envio: EnvioUnico,
     private val credencial: CredencialDelCliente,

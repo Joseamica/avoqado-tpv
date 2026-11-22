@@ -2,18 +2,19 @@ package com.avoqado.cobropropio.admision
 
 import com.avoqado.cobropropio.dominio.Cvm
 import com.avoqado.cobropropio.dominio.Entrada
+import com.avoqado.cobropropio.dominio.IMPORTE_MAXIMO_CENTAVOS
 import com.avoqado.cobropropio.dominio.Lectura
 import com.avoqado.cobropropio.dominio.Marca
 import com.avoqado.cobropropio.dominio.Operacion
 import com.avoqado.cobropropio.dominio.ResultadoKernel
 
-sealed interface Admision {
+internal sealed interface Admision {
     data class Admitida(val combinacion: Combinacion) : Admision
     data class NoAdmitida(val motivo: MotivoNoAdmitida) : Admision
 }
 
 /** Sólo el motivo: nunca un texto armado con tags. */
-enum class MotivoNoAdmitida {
+public enum class MotivoNoAdmitida {
     PERFIL_NO_MEDIDO,
     PERFIL_AMBIGUO,
     PIDE_NIP,
@@ -30,7 +31,7 @@ enum class MotivoNoAdmitida {
  * ¿Esta lectura puede ir al banco? Primero las reglas comunes (generalizan `lectorlab/PilotCardPolicy.kt` con el importe
  * real); luego tiene que encajar en exactamente UNA combinación medida (`Perfiles.MEDIDOS`).
  */
-object TablaDeAdmision {
+internal object TablaDeAdmision {
 
     /** Largo en caracteres hex de cada tag obligatorio. */
     private val LARGOS = mapOf(0x9F27 to 2, 0x9F26 to 16, 0x9F36 to 4, 0x9F37 to 8, 0x9F02 to 12, 0x9F03 to 12,
@@ -71,7 +72,7 @@ object TablaDeAdmision {
         if (banda == null || banda.length > 48 || banda.length % 2 != 0 || !BANDA.matches(banda))
             return MotivoNoAdmitida.LECTURA_INCOMPLETA
 
-        if (importeCentavos !in 1..999_999_999_999 || tags[0x9F02] != importeCentavos.toString().padStart(12, '0') ||
+        if (importeCentavos !in 1..IMPORTE_MAXIMO_CENTAVOS || tags[0x9F02] != importeCentavos.toString().padStart(12, '0') ||
             (tags[0x9F03] ?: CERO_12) != CERO_12) return MotivoNoAdmitida.IMPORTE_NO_COINCIDE
         if (tags[0x5F2A] != MEXICO || tags[0x9F1A] != MEXICO) return MotivoNoAdmitida.MONEDA_O_PAIS
         if (tags[0x9C] != if (operacion == Operacion.VENTA) "00" else "20") return MotivoNoAdmitida.TIPO_DE_OPERACION

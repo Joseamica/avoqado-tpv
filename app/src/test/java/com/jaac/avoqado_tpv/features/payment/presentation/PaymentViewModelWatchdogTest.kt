@@ -739,6 +739,72 @@ class PaymentViewModelWatchdogTest {
         } finally { vm.viewModelScope.cancel() }
     }
 
+    // ── 🛑 Ruling 96 (D661, ronda 5): una salida SIN resetPayment() no se lleva el desenlace retenido ──────────────────────
+    // El «Ver» de la banda de pagados en línea (o el salto a Turnos) saca la entrada del cobro sin resetPayment(). Como en
+    // ViewModel.clear() de lifecycle 2.9, primero se cierra el viewModelScope (muere el reloj H.3) y DESPUÉS corre onCleared().
+
+    private fun limpiarComoAndroid(vm: PaymentViewModel) {
+        vm.viewModelScope.cancel()
+        PaymentViewModel::class.java.getDeclaredMethod("onCleared").apply { isAccessible = true }.invoke(vm)
+    }
+
+    @Test
+    fun `Ruling 96 una pantalla que se va sin resetPayment manda el rechazo retenido al limpiarse, una sola vez`() = runTest(scheduler) {
+        val vm = vmConRechazoDelBanco("req-ver")
+        ponerEstado(vm, PaymentState.Error(message = "Pago rechazado por el banco", context = null, canRetry = true))
+        scheduler.runCurrent()
+        verify(exactly = 0) {
+            mockSocketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+        }
+
+        limpiarComoAndroid(vm)
+        scheduler.advanceUntilIdle()
+
+        // Lo mismo que habría mandado el reloj a los 120 s: `failed` + PROCESSOR_DECLINED, y nada más.
+        verify(exactly = 1) {
+            mockSocketManager.emitTerminalPaymentResult(
+                "req-ver", "failed", any(), any(), any(), any(), any(), any(),
+                outcomeEvidence = "PROCESSOR_DECLINED",
+            )
+        }
+        verify(exactly = 1) {
+            mockSocketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+        }
+    }
+
+    @Test
+    fun `Ruling 96 si resetPayment ya mando el desenlace, limpiar el VM no manda otro`() = runTest(scheduler) {
+        val vm = vmConRechazoDelBanco("req-reset")
+        ponerEstado(vm, PaymentState.Error(message = "Pago rechazado por el banco", context = null, canRetry = true))
+        scheduler.runCurrent()
+        vm.resetPayment()
+        scheduler.advanceUntilIdle()
+
+        limpiarComoAndroid(vm)
+        scheduler.advanceUntilIdle()
+
+        verify(exactly = 1) {
+            mockSocketManager.emitTerminalPaymentResult("req-reset", any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+        }
+    }
+
+    @Test
+    fun `Ruling 96 si el reloj H3 ya lo mando, limpiar el VM no manda otro`() = runTest(scheduler) {
+        val vm = vmConRechazoDelBanco("req-reloj")
+        vm.msAbandonoDelCobroRemoto = 100L
+        ponerEstado(vm, PaymentState.Error(message = "Pago rechazado por el banco", context = null, canRetry = true))
+        scheduler.runCurrent()
+        scheduler.advanceTimeBy(300)
+        scheduler.runCurrent()
+
+        limpiarComoAndroid(vm)
+        scheduler.advanceUntilIdle()
+
+        verify(exactly = 1) {
+            mockSocketManager.emitTerminalPaymentResult("req-reloj", any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+        }
+    }
+
     @Test
     fun `tras un rechazo, un reintento aprobado emite success y ningun desenlace negativo`() = runTest(scheduler) {
         val vm = vmConRechazoDelBanco("req-rechazo-y-exito")

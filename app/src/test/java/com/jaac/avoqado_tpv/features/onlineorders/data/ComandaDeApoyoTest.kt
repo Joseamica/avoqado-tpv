@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.onlineorders.data
 
 import com.google.common.truth.Truth.assertThat
+import com.jaac.avoqado_tpv.core.printer.ComandaNoEmpezada
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.FolioModificador
@@ -13,10 +14,18 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Before
 import org.junit.Test
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * La comanda de apoyo de un folio ya cobrado (P4, decisión 18 del diseño): reclama, imprime y confirma sólo si el papel salió.
@@ -46,7 +55,7 @@ class ComandaDeApoyoTest {
     @Before
     fun setUp() {
         every { impresora.isPrinterAvailable() } returns true
-        coEvery { folios.reclamarImpresion("v1", "ord-1") } returns Result.success(true)
+        coEvery { folios.reclamarImpresion("v1", "ord-1") } returns Result.success(ReclamoDeComanda(true))
         coEvery { folios.confirmarImpresion("v1", "ord-1") } returns Result.success(true)
         imprime(Result.success(Unit))
     }
@@ -99,7 +108,7 @@ class ComandaDeApoyoTest {
 
     @Test
     fun `reclamo perdido no imprime`() = runTest {
-        coEvery { folios.reclamarImpresion("v1", "ord-1") } returns Result.success(false)
+        coEvery { folios.reclamarImpresion("v1", "ord-1") } returns Result.success(ReclamoDeComanda(false))
 
         comanda.intentar("v1", folio)
 
@@ -124,5 +133,109 @@ class ComandaDeApoyoTest {
         comanda.intentar("v1", folio)
 
         coVerify(exactly = 0) { folios.confirmarImpresion(any(), any()) }
+    }
+
+    @Test
+    fun `Ruling 9 con posibleRepetida la comanda dice POSIBLE REPETIDA arriba`() = runTest {
+        coEvery { folios.reclamarImpresion("v1", "ord-1") } returns Result.success(ReclamoDeComanda(true, posibleRepetida = true))
+        every { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any(), any(), any()) } returns Result.success(Unit)
+
+        comanda.intentar("v1", folio)
+
+        verify(exactly = 1) { impresora.printKitchenTicket("W7K3P", null, any(), null, "Ana", "sin azúcar, por favor", true, true) }
+        coVerify(exactly = 1) { folios.confirmarImpresion("v1", "ord-1") }
+    }
+
+    @Test
+    fun `D661 intentar dice si salio, si la tiene otra caja o si no salio aqui`() = runTest {
+        assertThat(comanda.intentar("v1", folio)).isEqualTo(ResultadoDeComanda.IMPRESA)
+
+        coEvery { folios.reclamarImpresion("v1", "ord-1") } returns Result.success(ReclamoDeComanda(false))
+        assertThat(comanda.intentar("v1", folio)).isEqualTo(ResultadoDeComanda.OTRA_CAJA)
+
+        coEvery { folios.reclamarImpresion("v1", "ord-1") } returns Result.success(ReclamoDeComanda(true))
+        imprime(Result.failure(Exception("Error al imprimir comanda (código: 2)")))
+        assertThat(comanda.intentar("v1", folio)).isEqualTo(ResultadoDeComanda.NO_SALIO)
+
+        every { impresora.isPrinterAvailable() } returns false
+        assertThat(comanda.puedeImprimir()).isFalse()
+        assertThat(comanda.intentar("v1", folio)).isEqualTo(ResultadoDeComanda.NO_SALIO)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // D661 · Ruling 50: un reclamo que envejeció esperando la impresora (ocupada, sin papel, otra comanda) ya no se imprime.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private var monotonico = 0L
+    private val conReloj = ComandaDeApoyo(folios, impresora) { monotonico }
+
+    /** La impresora queda libre [espera] ms después y, ya libre, pregunta si todavía toca (como el PrinterManager de verdad). */
+    private fun impresoraQueTarda(espera: Long) {
+        every { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any(), any(), any(), any()) } answers {
+            monotonico += espera
+            if (arg<(() -> Boolean)?>(8)?.invoke() == false) Result.failure(ComandaNoEmpezada()) else Result.success(Unit)
+        }
+    }
+
+    @Test
+    fun `Ruling 50 un reclamo de 75 s al soltarse la impresora no se imprime ni se confirma - uno mas joven sale como hoy`() = runTest {
+        impresoraQueTarda(75_000)
+        assertThat(conReloj.intentar("v1", folio, edadMaximaDelReclamo = 75_000)).isEqualTo(ResultadoDeComanda.RECLAMO_VENCIDO)
+        coVerify(exactly = 0) { folios.confirmarImpresion(any(), any()) }
+
+        impresoraQueTarda(74_999)
+        assertThat(conReloj.intentar("v1", folio, edadMaximaDelReclamo = 75_000)).isEqualTo(ResultadoDeComanda.IMPRESA)
+        coVerify(exactly = 1) { folios.confirmarImpresion("v1", "ord-1") }
+    }
+
+    @Test
+    fun `Ruling 50 la edad cuenta desde que se pide el reclamo - una respuesta lenta tambien cuenta`() = runTest {
+        coEvery { folios.reclamarImpresion("v1", "ord-1") } coAnswers {
+            monotonico += 30_000
+            Result.success(ReclamoDeComanda(true))
+        }
+        impresoraQueTarda(45_000)
+
+        assertThat(conReloj.intentar("v1", folio, edadMaximaDelReclamo = 75_000)).isEqualTo(ResultadoDeComanda.RECLAMO_VENCIDO)
+        coVerify(exactly = 0) { folios.confirmarImpresion(any(), any()) }
+    }
+
+    @Test
+    fun `Ruling 50 sin tope - la comanda de un folio pagado en caja sale aunque haya esperado`() = runTest {
+        // Nadie más la pediría (no está en `comandasPorImprimir`): se prefiere imprimir tarde a no imprimir.
+        impresoraQueTarda(200_000)
+        assertThat(conReloj.intentar("v1", folio)).isEqualTo(ResultadoDeComanda.IMPRESA)
+        coVerify(exactly = 1) { folios.confirmarImpresion("v1", "ord-1") }
+    }
+
+    /**
+     * D661 · ronda 3: el papel es bloqueante (la Nexgo espera la respuesta de su SDK sin tope). La comanda lo corre en un hilo de E/S
+     * aunque la pida el hilo principal: con el papel colgado, el hilo de quien la pidió sigue libre (un hilo real, no un reloj de prueba).
+     */
+    @Test
+    fun `el papel colgado corre fuera del hilo de quien pide la comanda y ese hilo sigue libre`() {
+        runBlocking {
+            val quienPide = Executors.newSingleThreadExecutor { Thread(it, "quien-pide") }.asCoroutineDispatcher()
+            val empezo = CountDownLatch(1)
+            val suelta = CountDownLatch(1)
+            var hiloDelPapel: String? = null
+            every { impresora.printKitchenTicket(any(), any(), any(), any(), any(), any(), any(), any(), any()) } answers {
+                hiloDelPapel = Thread.currentThread().name
+                empezo.countDown()
+                suelta.await(5, TimeUnit.SECONDS)
+                Result.success(Unit)
+            }
+            try {
+                val resultado = async(quienPide) { comanda.intentar("v1", folio) }
+                assertThat(empezo.await(5, TimeUnit.SECONDS)).isTrue()
+                assertThat(withTimeoutOrNull(2_000) { withContext(quienPide) { "libre" } }).isEqualTo("libre")
+                suelta.countDown()
+                assertThat(resultado.await()).isEqualTo(ResultadoDeComanda.IMPRESA)
+                assertThat(hiloDelPapel).isNotEqualTo("quien-pide")
+            } finally {
+                suelta.countDown()
+                quienPide.close()
+            }
+        }
     }
 }

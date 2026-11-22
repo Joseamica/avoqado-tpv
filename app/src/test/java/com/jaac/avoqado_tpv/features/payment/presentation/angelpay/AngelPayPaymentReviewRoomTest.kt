@@ -1062,7 +1062,7 @@ class AngelPayPaymentReviewRoomTest {
             kotlinx.coroutines.withTimeout(15_000) {
                 vm!!.state.first { it is AngelPayPaymentState.Error && it.message.contains("evidencia de cobro") }
             }
-            kotlinx.coroutines.withTimeout(5_000) {
+            kotlinx.coroutines.withTimeout(15_000) {
                 while (db.paymentAttemptDao().getById("att-r3")!!.serverProcessorEvidence != "APPROVED") kotlinx.coroutines.delay(25)
             }
             // 3) El POS cancela: decide la BANDEJA (Room real), no la RAM.

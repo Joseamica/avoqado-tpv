@@ -292,6 +292,26 @@ class AngelPayPaymentViewModelTest {
         }
     }
 
+    /**
+     * D21 (21-nov): el registro del cobro corre en `Dispatchers.IO` (hilo real). Antes se esperaba con `verify(timeout = 2000)`
+     * y, con el CI cargado, el plazo podía vencer antes de que ese hilo llegara: un rojo falso. Ahora se espera al ESTADO en
+     * tiempo real; [TOPE_DE_ESPERA_MS] sólo es red de seguridad para que una regresión salga roja y no cuelgue el CI.
+     */
+    private val TOPE_DE_ESPERA_MS = 30_000L
+
+    private suspend fun esperarEstado(vm: AngelPayPaymentViewModel, condicion: (AngelPayPaymentState) -> Boolean): AngelPayPaymentState =
+        withContext(Dispatchers.Default) { kotlinx.coroutines.withTimeout(TOPE_DE_ESPERA_MS) { vm.state.first(condicion) } }
+
+    /**
+     * D21: la pantalla resuelta del cobro. Lo que el ViewModel hace ANTES de publicarla (registrar, encolar, aplicar el
+     * veredicto) ya pasó al volver, así que se verifica sin plazo. Lo que hace DESPUÉS (el aviso de éxito al POS, el
+     * `setChargeAttemptActive` del colector, el ticket de rechazo en IO) se sigue esperando con `verify(timeout = TOPE…)`.
+     */
+    private suspend fun esperarDesenlace(vm: AngelPayPaymentViewModel): AngelPayPaymentState = esperarEstado(vm) {
+        it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Queued ||
+            it is AngelPayPaymentState.Error || it is AngelPayPaymentState.Cancelled
+    }
+
     private fun createViewModel(
         savedStateHandle: androidx.lifecycle.SavedStateHandle = androidx.lifecycle.SavedStateHandle(),
         proofOfSaleQueue: com.jaac.avoqado_tpv.features.verification.data.ProofOfSaleQueueRepository? = null,
@@ -1291,7 +1311,8 @@ class AngelPayPaymentViewModelTest {
             vm.onAngelPaySdkResult(approvedSdkResult())
             runCurrent()
 
-            coVerify(timeout = 2_000, exactly = 1) {
+            esperarDesenlace(vm)
+            coVerify(exactly = 1) {
                 recordPaymentUseCase(
                     match { context ->
                         context.amount.compareTo(java.math.BigDecimal("475.00")) == 0 &&
@@ -1637,8 +1658,9 @@ class AngelPayPaymentViewModelTest {
             vm.onAngelPaySdkResult(approvedSdkResult(authCode = "A1", reference = "R1"))
             runCurrent()
 
-            // recordCardPayment hops through withContext(Dispatchers.IO) — wait for the tail mark.
-            coVerify(timeout = 2000, exactly = 1) { paymentAttemptLedger.aplicarVeredictoDelServidor(any()) }
+            // recordCardPayment hops through withContext(Dispatchers.IO) — wait for the screen it publishes after the verdict.
+            esperarDesenlace(vm)
+            coVerify(exactly = 1) { paymentAttemptLedger.aplicarVeredictoDelServidor(any()) }
             val veredicto = veredictos.single()
             assertThat(veredicto.outcome).isEqualTo(com.jaac.avoqado_tpv.features.payment.domain.model.VeredictoDelServidor.RECORDED)
             assertThat(veredicto.fuente).isEqualTo(com.jaac.avoqado_tpv.features.payment.data.ledger.VeredictoDeIntento.Fuente.REST)
@@ -1675,8 +1697,9 @@ class AngelPayPaymentViewModelTest {
             runCurrent()
 
             // markRecordFailed runs BEFORE handleRecordFailure so the queue mark's CAS
-            // (REGISTRO_FALLIDO → ENTREGADA_A_COLA) can match.
-            coVerify(timeout = 2000, exactly = 1) { paymentAttemptLedger.markDeliveredToQueue(any()) }
+            // (REGISTRO_FALLIDO → ENTREGADA_A_COLA) can match. Both happen before the Queued screen is published.
+            esperarDesenlace(vm)
+            coVerify(exactly = 1) { paymentAttemptLedger.markDeliveredToQueue(any()) }
             coVerify(exactly = 1) { paymentAttemptLedger.markRecordFailed(any(), "HTTP 503") }
             coVerify(exactly = 0) { paymentAttemptLedger.markRecorded(any()) }
         } finally {
@@ -1941,9 +1964,7 @@ class AngelPayPaymentViewModelTest {
                 // Se espera al ESTADO en tiempo real, no a la llamada al mock: la continuación tras `withContext(IO)` corre en el
                 // hilo de IO (dispatcher de prueba unconfined) y `coVerify(timeout)` volvía en cuanto el mock era LLAMADO, unas
                 // instrucciones ANTES de `_state.value = Error` — leía `RecordingPayment` 1 de cada 3 corridas (Task 7, fix 1).
-                val estado = withContext(Dispatchers.Default) {
-                    kotlinx.coroutines.withTimeout(2_000) { vm.state.first { it is AngelPayPaymentState.Error || it is AngelPayPaymentState.Success } }
-                }
+                val estado = esperarEstado(vm) { it is AngelPayPaymentState.Error || it is AngelPayPaymentState.Success }
                 coVerify(exactly = 1) { paymentAttemptLedger.aplicarVeredictoDelServidor(any()) }
                 assertThat(estado).isNotInstanceOf(AngelPayPaymentState.Success::class.java)
                 assertThat(estado).isInstanceOf(AngelPayPaymentState.Error::class.java)
@@ -1960,7 +1981,7 @@ class AngelPayPaymentViewModelTest {
     fun `P1-1 un veredicto ya APLICADO antes (S5 llego primero, sin transicion nueva) sigue siendo Success y reporta success`() = runTest(testDispatcher) {
         val vm = vmRemotoRegistradoCon(com.jaac.avoqado_tpv.features.payment.data.ledger.ResultadoDelVeredicto.Decision.APLICADO, transiciono = false, contradiccion = false)
         try {
-            verify(timeout = 2000) {
+            verify(timeout = TOPE_DE_ESPERA_MS) {
                 socketManager.emitTerminalPaymentResult(requestId = "req-veredicto", status = "success", paymentId = "pay-1",
                     transactionId = any(), cardDetails = any(), errorMessage = any(), receiptUrl = any(), receiptAccessKey = any(), outcomeEvidence = any())
             }
@@ -1977,7 +1998,7 @@ class AngelPayPaymentViewModelTest {
                 tipAmount = java.math.BigDecimal.ZERO, serverStatus = "PENDING", reconciliationKind = "POSSIBLE_SECOND_CAPTURE", winnerPaymentId = "pay-ganador"),
         )
         try {
-            verify(timeout = 2000) {
+            verify(timeout = TOPE_DE_ESPERA_MS) {
                 socketManager.emitTerminalPaymentResult(requestId = "req-veredicto", status = "success", paymentId = "pay-ganador",
                     transactionId = any(), cardDetails = any(), errorMessage = any(), receiptUrl = any(), receiptAccessKey = any(), outcomeEvidence = any())
             }
@@ -2013,7 +2034,7 @@ class AngelPayPaymentViewModelTest {
             runCurrent()
 
             // recordCardPayment records via withContext(Dispatchers.IO); verify(timeout) waits for it.
-            verify(timeout = 2000) {
+            verify(timeout = TOPE_DE_ESPERA_MS) {
                 socketManager.emitTerminalPaymentResult(
                     requestId = "req-success",
                     status = "success",
@@ -2154,7 +2175,7 @@ class AngelPayPaymentViewModelTest {
             vm.onAngelPaySdkResult(approvedSdkResult())
             runCurrent()
 
-            verify(timeout = 2000, exactly = 1) {
+            verify(timeout = TOPE_DE_ESPERA_MS, exactly = 1) {
                 socketManager.emitTerminalPaymentResult(
                     requestId = "req-decline-retry", status = "success", paymentId = "pay-retry",
                     transactionId = any(), cardDetails = any(), errorMessage = any(), receiptUrl = any(),
@@ -2201,7 +2222,7 @@ class AngelPayPaymentViewModelTest {
             // discriminate (not the `timeout`, which is defensive/harmless here).
             vm.onAngelPaySdkResult(sdkFailureResult("G500"))
             runCurrent()
-            verify(timeout = 2000, exactly = 1) { paymentStateHolder.setChargeAttemptActive(false) }
+            verify(timeout = TOPE_DE_ESPERA_MS, exactly = 1) { paymentStateHolder.setChargeAttemptActive(false) }
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
         } finally {
             vm.viewModelScope.cancel()
@@ -2223,7 +2244,9 @@ class AngelPayPaymentViewModelTest {
         vm.initPayment(amount = "100.00")
         runCurrent()
         vm.startCashPayment()
-        repeat(300) {
+        // D21: ~30 s de tope (eran 300 vueltas ≈ 3 s, que con el CI cargado podían vencer). Sigue con `runCurrent()` y no
+        // con `esperarEstado`: esperar suspendido dejaría correr el reloj virtual, y las pruebas D4 lo mueven a mano.
+        repeat((TOPE_DE_ESPERA_MS / 10).toInt()) {
             runCurrent()
             (vm.state.value as? AngelPayPaymentState.Queued)?.let { if (encolado.isCaptured) return it }
             Thread.sleep(10) // el registro→cola salta por Dispatchers.IO (igual que las pruebas vecinas)
@@ -2431,14 +2454,14 @@ class AngelPayPaymentViewModelTest {
 
             // Approved + record failure → Queued is a RESOLVED state → NOT active. The
             // record→enqueue attempt genuinely hops through Dispatchers.IO (same as the sibling
-            // "approved SDK result with record failure..." test above, which waits on
-            // paymentAttemptLedger the same way) — `exactly = 1` is what makes `timeout` do real
+            // "approved SDK result with record failure..." test above) — `exactly = 1` is what makes `timeout` do real
             // polling work now: right after the clear the count is 0 (only a same-transaction
             // `true` from the intermediate RecordingPayment state is recorded), and MockK keeps
-            // retrying until the async Queued transition lands the `false` call or 2s elapse.
+            // retrying until the async Queued transition lands the `false` call. The collector makes that call AFTER
+            // publishing Queued, so this one stays a `verify(timeout)`; D21: its cap is only a safety net (was 2 s).
             vm.onAngelPaySdkResult(approvedSdkResult())
             runCurrent()
-            verify(timeout = 2000, exactly = 1) { paymentStateHolder.setChargeAttemptActive(false) }
+            verify(timeout = TOPE_DE_ESPERA_MS, exactly = 1) { paymentStateHolder.setChargeAttemptActive(false) }
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Queued::class.java)
         } finally {
             vm.viewModelScope.cancel()
@@ -2493,7 +2516,7 @@ class AngelPayPaymentViewModelTest {
             vm.onAngelPaySdkResult(approvedSdkResult())
             runCurrent()
 
-            verify(timeout = 2000) {
+            verify(timeout = TOPE_DE_ESPERA_MS) {
                 socketManager.emitTerminalPaymentResult(
                     requestId = "req-e608",
                     status = "success",
@@ -2693,7 +2716,9 @@ class AngelPayPaymentViewModelTest {
             vm.setSocketPaymentSource("SOCKET", "req-card")
             vm.onAngelPaySdkResult(approvedSdkResult(authCode = "A9", reference = "REF9"))
 
-            coVerify(timeout = 2000) {
+            // D21: en tarjeta, `handleRecordFailure` avisa al POS y encola ANTES de publicar la pantalla resuelta.
+            esperarDesenlace(vm)
+            coVerify {
                 paymentQueueRepository.enqueue(
                     match { it.referenceNumber == "REF9" && it.idempotencyKey != null && it.processor == ProcessorType.ANGELPAY },
                 )
@@ -3943,7 +3968,8 @@ class AngelPayPaymentViewModelTest {
             compuerta.complete(Unit)
             runCurrent()
 
-            coVerify(timeout = 5_000, exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
+            esperarDesenlace(vm)
+            coVerify(exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
         } finally {
             vm.viewModelScope.cancel()
         }
@@ -4074,10 +4100,11 @@ class AngelPayPaymentViewModelTest {
 
             // El dinero SI se movio: la venta se registra con la autorizacion que devolvio
             // el historial, no se pierde por haber vuelto sin resultado.
-            coVerify(timeout = 2000) {
+            esperarDesenlace(vm)
+            coVerify {
                 recordPaymentUseCase(any(), any(), "251259", "260908155812")
             }
-            verify(timeout = 2000) {
+            verify(timeout = TOPE_DE_ESPERA_MS) {
                 socketManager.emitTerminalPaymentResult(
                     requestId = "req-cobrado",
                     status = "success",
@@ -4141,7 +4168,7 @@ class AngelPayPaymentViewModelTest {
             // `timeout` es lo mas cerca de "no se" que admite el contrato del servidor
             // (success|failed|cancelled|timeout): cierra la fila sin decirle al POS que
             // fallo, y un cobro que aparezca despues la reconcilia a COMPLETED.
-            verify(timeout = 2000) {
+            verify(timeout = TOPE_DE_ESPERA_MS) {
                 socketManager.emitTerminalPaymentResult(
                     requestId = "req-sinverificar",
                     status = "timeout",
@@ -5799,9 +5826,7 @@ class AngelPayPaymentViewModelTest {
         try {
             vm.onAngelPaySdkResult(approvedSdkResult("A9", "R9")); runCurrent()
             // El registro corre en `withContext(NonCancellable + IO)` (hilo real): se espera al ESTADO, como en P1-1.
-            withContext(Dispatchers.Default) {
-                kotlinx.coroutines.withTimeout(5_000) { vm.state.first { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error } }
-            }
+            esperarEstado(vm) { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error }
             val ctx = ctxSlot.captured as PaymentContext.AngelPayPayment
             assertThat(ctx.amount).isEqualTo(java.math.BigDecimal("120.50"))
             assertThat(ctx.tip).isEqualTo(java.math.BigDecimal("10.00"))
@@ -5842,9 +5867,7 @@ class AngelPayPaymentViewModelTest {
             assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("evidencia de cobro")
 
             vm.onAngelPaySdkResult(approvedSdkResult("A9", "R9")); runCurrent()
-            withContext(Dispatchers.Default) {
-                kotlinx.coroutines.withTimeout(5_000) { vm.state.first { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error } }
-            }
+            esperarEstado(vm) { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error }
             val ctx = ctxSlot.captured as PaymentContext.AngelPayPayment
             assertThat(ctx.idempotencyKey).isEqualTo("att-rc1")
             assertThat(ctx.merchantAccountId).isEqualTo("cma-001")   // la cuenta con la que A viajó al SDK
@@ -5946,9 +5969,7 @@ class AngelPayPaymentViewModelTest {
             assertThat(vm.currentMerchant.value?.merchantAccountId).isEqualTo("cma-002")   // precondición: la cuenta elegida es M2
 
             vm.onAngelPayResult(android.app.Activity.RESULT_OK, null); runCurrent()
-            withContext(Dispatchers.Default) {
-                kotlinx.coroutines.withTimeout(5_000) { vm.state.first { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error } }
-            }
+            esperarEstado(vm) { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error }
             val ctx = ctxSlot.captured as PaymentContext.AngelPayPayment
             assertThat(ctx.idempotencyKey).isEqualTo("att-rc1")
             assertThat(ctx.merchantAccountId).isEqualTo("cma-001")   // la cuenta con la que A salió al banco
@@ -5998,9 +6019,7 @@ class AngelPayPaymentViewModelTest {
             vm.primeSdkLaunch(); runCurrent()
             assertThat(vm.attemptIdForTest()).isNotEqualTo("att-rc1")
             vm.onAngelPaySdkResult(approvedSdkResult("B9", "RB")); runCurrent()
-            withContext(Dispatchers.Default) {
-                kotlinx.coroutines.withTimeout(5_000) { vm.state.first { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error } }
-            }
+            esperarEstado(vm) { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error }
             val ctx = ctxSlot.captured as PaymentContext.AngelPayPayment
             assertThat(ctx.amount).isEqualTo(java.math.BigDecimal("120.50"))   // el contexto SÍ es el restaurado de A…
             assertThat(ctx.idempotencyKey).isNotEqualTo("att-rc1")
@@ -6052,9 +6071,7 @@ class AngelPayPaymentViewModelTest {
         val vm = createViewModel(handle)
         try {
             vm.onAngelPaySdkResult(approvedSdkResult("A9", "R9")); runCurrent()
-            withContext(Dispatchers.Default) {
-                kotlinx.coroutines.withTimeout(5_000) { vm.state.first { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error } }
-            }
+            esperarEstado(vm) { it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Error }
             val ctx = ctxSlot.captured as PaymentContext.AngelPayPayment
             assertThat(ctx.idempotencyKey).isEqualTo("att-propio")
             assertThat(ctx.amount).isEqualTo(BigDecimal("120.50"))
@@ -6116,7 +6133,7 @@ class AngelPayPaymentViewModelTest {
             advanceTimeBy(5_000); runCurrent()
 
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
-            verify(timeout = 5_000, exactly = 1) { angelPayTicketBuilder.buildDeclineTicket(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+            verify(timeout = TOPE_DE_ESPERA_MS, exactly = 1) { angelPayTicketBuilder.buildDeclineTicket(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
             assertWithMessage("el ticket del rechazo no puede decir «Monto intentado $0.00»: no se sabe el importe")
                 .that(importes.single()).isNull()
         } finally { vm.viewModelScope.cancel() }
@@ -6468,8 +6485,9 @@ class AngelPayPaymentViewModelTest {
             runCurrent()
             advanceUntilIdle()
 
+            esperarDesenlace(vm)
             coVerify(exactly = 0) { paymentAttemptLedger.iniciarEjecucionNoTarjeta(any()) }
-            coVerify(timeout = 2000, exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
+            coVerify(exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
         } finally {
             vm.viewModelScope.cancel()
         }
@@ -6825,9 +6843,7 @@ class AngelPayPaymentViewModelTest {
     // `initPayment` consulta el turno en `Dispatchers.IO` REAL: `advanceUntilIdle` no lo espera y se
     // leía el estado antes de tiempo. Se espera al ESTADO en tiempo real, como las pruebas vecinas.
     private suspend fun esperarQueSalgaDeIdle(vm: AngelPayPaymentViewModel): AngelPayPaymentState =
-        withContext(Dispatchers.Default) {
-            kotlinx.coroutines.withTimeout(2_000) { vm.state.first { it !is AngelPayPaymentState.Idle } }
-        }
+        esperarEstado(vm) { it !is AngelPayPaymentState.Idle }
 
     private fun sinServidor() = com.jaac.avoqado_tpv.core.domain.models.Result.Error(
         com.jaac.avoqado_tpv.core.domain.models.ApiException.NetworkError(java.net.ConnectException("ECONNREFUSED")),
@@ -6861,7 +6877,8 @@ class AngelPayPaymentViewModelTest {
             runCurrent()
             advanceUntilIdle()
 
-            coVerify(timeout = 2000, exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
+            esperarDesenlace(vm)
+            coVerify(exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
             assertThat(ctxSlot.captured.shiftId).isEqualTo("shift-guardado")
         } finally {
             vm.viewModelScope.cancel()
@@ -7556,12 +7573,8 @@ class AngelPayPaymentViewModelTest {
         amount = java.math.BigDecimal("85.00"), tipAmount = java.math.BigDecimal.ZERO,
     )
 
-    private suspend fun esperarFinal(vm: AngelPayPaymentViewModel): AngelPayPaymentState = withContext(Dispatchers.Default) {
-        kotlinx.coroutines.withTimeout(2_000) {
-            vm.state.first {
-                it is AngelPayPaymentState.Success && it.receipt != null || it is AngelPayPaymentState.Queued || it is AngelPayPaymentState.Error
-            }
-        }
+    private suspend fun esperarFinal(vm: AngelPayPaymentViewModel): AngelPayPaymentState = esperarEstado(vm) {
+        it is AngelPayPaymentState.Success && it.receipt != null || it is AngelPayPaymentState.Queued || it is AngelPayPaymentState.Error
     }
 
     private fun cobroDeFolio(registro: Result<PaymentReceipt>) {

@@ -4,10 +4,20 @@ import com.avoqado.cobropropio.fixtures.LecturasDePrueba
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TiposTest {
+
+    /** Tabla B, `SolicitudDeVenta` (D11): fuera de 1..999,999,999,999 centavos no se construye, ni emite `Iniciado` ni anota. */
+    @Test fun `una venta fuera de rango no se construye`() {
+        for (malo in listOf(0L, -1L, 1_000_000_000_000L)) {
+            assertThrows(IllegalArgumentException::class.java) { SolicitudDeVenta(AttemptId.nuevo(), "venue-1", malo, Origen.VINCULADO_AL_POS) }
+        }
+        SolicitudDeVenta(AttemptId.nuevo(), "venue-1", 1, Origen.VINCULADO_AL_POS)
+        SolicitudDeVenta(AttemptId.nuevo(), "venue-1", 999_999_999_999L, Origen.VINCULADO_AL_POS)
+    }
 
     private fun rechaza(valor: String) {
         val error = runCatching { AttemptId(valor) }.exceptionOrNull()

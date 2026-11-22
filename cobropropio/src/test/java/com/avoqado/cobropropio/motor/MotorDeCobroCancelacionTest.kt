@@ -628,12 +628,14 @@ class MotorDeCobroCancelacionTest {
     }
 
     /**
-     * C1 (Codex b1 r1, D4): una cancelación hermana ilegible hace tronar `anotarCancelacion` ANTES de que exista la fila del
-     * folio nuevo. Nunca «No salió»: el folio queda «por confirmar», sin veto ni ninguna otra fila, sin resultado tardío
-     * distinto, y otra vez «por confirmar» al volver a pedirlo (en este proceso y tras reiniciar). Cero llamadas a Blumon.
+     * C1 (Codex b1 r1 y r2, D4): una cancelación hermana ilegible hace tronar `anotarCancelacion` ANTES de que exista la fila del
+     * folio nuevo. La cajera sale con «por confirmar» desde la memoria; después rige la regla N: el veto queda en la libreta y el
+     * folio contesta «No salió (interrumpido)» desde ahí (tarde, al volver a pedirlo y tras reiniciar). Con OTRA venta es otro
+     * contrato. Cero llamadas a Blumon y la hermana ilegible no se toca.
      */
-    @Test fun `una cancelacion frenada por una hermana ilegible queda por confirmar sin fila`() = prueba {
+    @Test fun `una cancelacion frenada por una hermana ilegible deja su veto y no sale`() = prueba {
         val v = ventaAprobada()
+        val w = ventaAprobada() // otra venta APROBADO del mismo venue y ámbito
         // Como en LibretaTest: una hermana cerrada con un folio de 36 (Room la lee; la validación de hoy no la pasa).
         assertTrue(
             db.dao().insertar(
@@ -645,26 +647,38 @@ class MotorDeCobroCancelacionTest {
                 ),
             ) != -1L,
         )
+        fun hermana(): List<String?> =
+            db.openHelper.readableDatabase.query("SELECT * FROM intentos WHERE attemptId = ?", arrayOf(ID_DE_36)).use { cur ->
+                assertTrue(cur.moveToFirst())
+                (0 until cur.columnCount).map { cur.getString(it) }
+            }
+        val antes = hermana()
         val c = cancelacionDe(v)
-        assertEquals(listOf<EventoDeCobro>(PorConfirmar(0)), cancelar(c).map { it.first })
+        val interrumpido = noSalio(MotivoNoSalio.INTERRUMPIDO)
+        assertEquals("primero, desde la memoria", listOf<EventoDeCobro>(PorConfirmar(0)), cancelar(c).map { it.first })
         esperarTodo()
-        assertEquals("ningún final tardío distinto", listOf<EventoDeCobro>(PorConfirmar(0)), tardiasDe(c.id))
-        assertNull("ni veto ni ninguna fila", libreta.buscar(c.id))
-        assertEquals(listOf<EventoDeCobro>(PorConfirmar(0)), motor.cancelar(c).toList())
+        assertEquals("el tardío sale de la fila", listOf(PorConfirmar(0), interrumpido), tardiasDe(c.id))
+        val f = fila(c.id)
+        assertEquals(EstadoDelIntento.NO_SALIO, f.estado)
+        assertEquals(MotivoNoSalio.INTERRUMPIDO, f.motivoNoSalio)
+        assertEquals(v.id.valor, f.operacionOriginal)
+        assertEquals(listOf<EventoDeCobro>(interrumpido), motor.cancelar(c).toList())
+        val conOtraVenta = SolicitudDeCancelacion(c.id, c.venueId, w.id)
+        assertEquals(listOf<EventoDeCobro>(EventoDeCobro.ContratoDistinto), motor.cancelar(conOtraVenta).toList())
         esperarTodo()
-        assertEquals(listOf<EventoDeCobro>(PorConfirmar(0)), tardiasDe(c.id))
-        assertNull(libreta.buscar(c.id))
         assertTrue(blumon.preflights.isEmpty() && blumon.cancelaciones.isEmpty())
         assertEquals(0, blumon.reversos)
+        assertEquals("la hermana ilegible no se toca", antes, hermana())
         cerrar()
         db.close()
         val otro = Mundo(prueba, archivo = archivo, proceso = "otro-proceso")
         try {
             otro.motor.recuperar()
-            assertEquals("tras reiniciar", listOf<EventoDeCobro>(PorConfirmar(0)), otro.motor.cancelar(c).toList())
+            assertEquals("tras reiniciar", listOf<EventoDeCobro>(interrumpido), otro.motor.cancelar(c).toList())
+            assertEquals(listOf<EventoDeCobro>(EventoDeCobro.ContratoDistinto), otro.motor.cancelar(conOtraVenta).toList())
             otro.esperarTodo()
-            assertNull(otro.libreta.buscar(c.id))
-            assertTrue(otro.tardiasDe(c.id).none { it is NoSalioAlBanco })
+            assertEquals(EstadoDelIntento.NO_SALIO, otro.fila(c.id).estado)
+            assertTrue(otro.lector.operaciones.isEmpty())
             assertTrue(otro.blumon.preflights.isEmpty() && otro.blumon.cancelaciones.isEmpty())
         } finally {
             otro.cerrar()

@@ -31,7 +31,6 @@ import com.avoqado.cobropropio.dominio.SolicitudDeVenta
 import com.avoqado.cobropropio.libreta.DatosDelEnvio
 import com.avoqado.cobropropio.libreta.EstadoDelIntento
 import com.avoqado.cobropropio.libreta.EstadoDelReverso
-import com.avoqado.cobropropio.libreta.FilaIlegible
 import com.avoqado.cobropropio.libreta.IntentoEntity
 import com.avoqado.cobropropio.libreta.Libreta
 import com.avoqado.cobropropio.libreta.ResultadoDeAnotarCancelacion
@@ -221,9 +220,6 @@ public class MotorDeCobro internal constructor(
 
         /** v3.1: perdió el `INSERT` contra una fila que ya existía: contesta desde esa fila, no publica nada y no deja lápida. */
         @Volatile var ajeno = false
-
-        /** C1 (D4): una fila ilegible lo frenó ANTES de anotar la suya; [cerrarSinFinal] no escribe el veto. */
-        @Volatile var frenadoPorFilaIlegible = false
 
         /** Regla M: terminó y quedó como lápida (después de su última escritura). */
         @Volatile var retirado = false
@@ -457,14 +453,10 @@ public class MotorDeCobro internal constructor(
      * mira ya recibió lo de la memoria ([Registro.soltarDesdeMemoria], R6-1); aquí, después y en `NonCancellable`, si no salió
      * se escribe el veto (regla N: con fila o sin ella) y lo que diga la fila sale por el embudo (sólo un definitivo
      * reemplaza). Si el veto no entra porque la fila ya era de otro, el `Registro` es [Registro.ajeno] (v3.1).
-     *
-     * La excepción a la regla N (C1, D4): si una fila ilegible lo frenó antes de anotar la suya
-     * ([Registro.frenadoPorFilaIlegible]), no se escribe nada. Una fila ilegible nunca produce «No salió» (la vara de la fila
-     * ilegible): el folio se queda en `PorConfirmar`, sin fila, hasta que alguien vea la ilegible; otra petición del mismo folio
-     * vuelve a tropezar con ella y vuelve a dar `PorConfirmar`.
+     * D4: una cancelación frenada por una hermana ilegible también deja su veto: el folio nuevo no salió ni saldrá.
      */
     private suspend fun cerrarSinFinal(r: Registro) {
-        if (!r.soltarDesdeMemoria() || r.frenadoPorFilaIlegible) return
+        if (!r.soltarDesdeMemoria()) return
         val f = intentar {
             enLibreta {
                 if (!r.pasoElPunto() && !libreta.vetarPorCorte(nuevaFila(r.solicitud)) && !r.anotado) r.ajeno = true
@@ -597,8 +589,7 @@ public class MotorDeCobro internal constructor(
             // Nunca escapa de fondo. R6-1: la cajera sale PRIMERO desde la memoria, sin esperar a Room. Después, lo de antes de
             // salir se cierra como NO_SALIO; lo de después, como una huérfana (NO_SE, el reverso abierto NO_CONCLUYENTE y
             // PUDO_ENTRAR si una vuelta pudo salir), en una transacción (r1 R1-5 a), y lo de la fila sale tarde. Si eso
-            // también falla, la fila queda para `recuperar()`. C1: una fila ilegible antes de anotar la propia no deja veto.
-            if (e is FilaIlegible && !r.anotado) r.frenadoPorFilaIlegible = true
+            // también falla, la fila queda para `recuperar()`.
             r.soltarDesdeMemoria()
             val f = intentar {
                 enLibreta {

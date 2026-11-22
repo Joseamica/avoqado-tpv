@@ -71,6 +71,11 @@ data class FastPaymentRequest(
     @SerializedName("createdAtLocal")
     val createdAtLocal: Long? = null,
 
+    // D7 (encargo a25cd7): epoch ms en que se abrió el intento de tarjeta; sólo lo manda la recuperación de la libreta (el
+    // «Aprobado» que se registra tarde). El servidor sólo lo usa para avisar de un efectivo en medio. Nulo se omite.
+    @SerializedName("capturadoEnAparato")
+    val capturadoEnAparato: Long? = null,
+
     // Datos de Blumon SDK
     @SerializedName("authorizationNumber")
     val authorizationNumber: String?,

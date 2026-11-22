@@ -313,6 +313,29 @@ class FastPaymentRecorderTest {
     }
 
     @Test
+    fun `D7 la tarjeta recuperada manda la hora de su intento y una venta normal o el efectivo no`() = runTest {
+        val captured = mutableListOf<FastPaymentRequest>()
+        coEvery { apiService.recordFastPayment(any(), capture(captured)) } returns successResponse()
+        val tarjeta = CardDetails(
+            maskedPan = "411111******1111",
+            cardBrand = CardBrand.VISA,
+            entryMode = CardEntryMode.CHIP,
+            cardNature = CardNature.CREDIT,
+        )
+
+        recorder.recordPayment(cardContext().copy(capturadoEnAparato = 1_763_830_000_000L), tarjeta, "067718", "000000067718")
+        recorder.recordPayment(cardContext(), tarjeta, "067719", "000000067719")
+        recorder.recordPayment(
+            cashContextWithLeakedMerchantId().copy(capturadoEnAparato = 1_763_830_000_000L),
+            CardDetails.CASH,
+            "EFECTIVO",
+            "CASH-1",
+        )
+
+        assertThat(captured.map { it.capturadoEnAparato }).containsExactly(1_763_830_000_000L, null, null).inOrder()
+    }
+
+    @Test
     fun `recordPayment sends issuer evidence without changing legacy international flag`() = runTest {
         val captured = slot<FastPaymentRequest>()
         coEvery { apiService.recordFastPayment(any(), capture(captured)) } returns successResponse()

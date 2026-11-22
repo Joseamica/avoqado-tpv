@@ -4,7 +4,7 @@ package com.avoqado.cobropropio.motor
  * Los plazos del motor, en milisegundos del reloj monotónico (Global Constraints). Antes de salir todo vence como
  * `NO_SALIO`; desde t0 (el commit de `ENVIADO`) corren los demás. El `connectTimeout` de 3 s vive en el transporte.
  */
-data class Relojes(
+internal data class Relojes(
     val esperaSesion: Long = 15_000,
     val esperaLectura: Long = 30_000,
     val esperaRespuesta: Long = 15_000,

@@ -35,7 +35,7 @@ import kotlin.coroutines.resume
 import kotlin.time.Duration
 
 /** Los dos orígenes de Blumon. Sólo HTTPS; `core` termina en `/` y las rutas se le pegan. */
-data class Endpoints(val tokener: String, val core: String) {
+internal data class Endpoints(val tokener: String, val core: String) {
     init {
         require(tokener.startsWith("https://")) { "tokener sin https" }
         require(core.startsWith("https://") && core.endsWith("/")) { "core sin https o sin barra final" }
@@ -47,7 +47,7 @@ data class Endpoints(val tokener: String, val core: String) {
     }
 }
 
-sealed interface Respuesta {
+internal sealed interface Respuesta {
     /** Lo que contestó Blumon. El cuerpo crudo nunca sale de aquí: sólo campos saneados y con su forma verificada. */
     class Http(val codigo: Int, private val cuerpo: String) : Respuesta {
         /** El sobre ya leído por el lector estricto; `null` si el cuerpo no es UN objeto JSON estricto. */
@@ -71,7 +71,7 @@ sealed interface Respuesta {
  * autenticador, proxy, reintentos ni redirecciones; sólo HTTP/1.1 y sin reusar conexiones. Cada cuerpo sale UNA vez.
  * Nunca registra URL ni cuerpo.
  */
-class EnvioUnico internal constructor(
+internal class EnvioUnico internal constructor(
     private val endpoints: Endpoints,
     private val ahora: () -> Long,
     internal val confianzaDePrueba: X509TrustManager?,

@@ -725,6 +725,58 @@ class CheckoutViewModelTest {
         viewModel.viewModelScope.cancel()
     }
 
+    // ── D36 (hz:e82938e1:D36): la venta declara su intención y «Cobrar»/«Pagar después» comparten la llave ──────────────────────
+
+    @Test
+    fun `D36 Cobrar declara la venta para cobrarse en el momento (payLater false)`() = runTest {
+        coEvery { orderRepository.createOrderWithItems(any(), any()) } returns
+            Result.success(fakeOrder(id = "ord-1", orderNumber = "T-001", version = 1))
+        val vm = createViewModel()
+        vm.addProduct(fakeProduct(id = "p-1", priceCents = 5000), quantity = 1)
+
+        assertTrue(vm.prepareForPayment().isSuccess)
+
+        coVerify(exactly = 1) { orderRepository.createOrderWithItems("venue-1", match { it.payLater == false }) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `D36 Pagar despues declara la cuenta abierta a proposito (payLater true)`() = runTest {
+        coEvery { orderRepository.createOrderWithItems(any(), any()) } returns
+            Result.success(fakeOrder(id = "ord-2", orderNumber = "T-002", version = 1))
+        val vm = createViewModel()
+        vm.selectCustomer(fakeCustomer(id = "c-1"))
+        vm.addProduct(fakeProduct(id = "p-1", priceCents = 5000), quantity = 1)
+
+        assertTrue(vm.createPayLaterOrder().isSuccess)
+
+        coVerify(exactly = 1) { orderRepository.createOrderWithItems("venue-1", match { it.payLater == true }) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `D36 Cobrar que fallo y luego Pagar despues con el mismo carrito usan la MISMA llave (una sola venta)`() = runTest {
+        // Codex D36 r1 #3: si la intención entrara en la huella, una creación que SÍ llegó (respuesta perdida) más el «Pagar después»
+        // dejarían DOS ventas. Con la misma llave, el SERVIDOR devuelve la primera y la marca como «Pagar después».
+        val pedidos = mutableListOf<com.jaac.avoqado_tpv.features.ordering.domain.TpvCreateOrderWithItemsRequest>()
+        coEvery { orderRepository.createOrderWithItems(any(), capture(pedidos)) } returnsMany listOf(
+            Result.failure(Exception("rechazo del servidor")),
+            Result.success(fakeOrder(id = "ord-3", orderNumber = "T-003", version = 1)),
+        )
+        val vm = createViewModel()
+        vm.selectCustomer(fakeCustomer(id = "c-1"))
+        vm.addProduct(fakeProduct(id = "p-1", priceCents = 5000), quantity = 1)
+
+        assertTrue(vm.prepareForPayment().isFailure)
+        assertTrue(vm.createPayLaterOrder().isSuccess)
+
+        assertEquals(2, pedidos.size)
+        assertEquals(false, pedidos[0].payLater)
+        assertEquals(true, pedidos[1].payLater)
+        assertEquals(pedidos[0].externalId, pedidos[1].externalId)
+        vm.viewModelScope.cancel()
+    }
+
     private val VENTA_EN_DUDA = "No pudimos confirmar la venta. Revisa las órdenes antes de volver a cobrar"
 
     private fun carritoConCortesia(vm: CheckoutViewModel) {

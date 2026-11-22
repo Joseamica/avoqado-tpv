@@ -214,7 +214,11 @@ class PorPagarViewModelTest {
         assertThat(TextosPorPagar.VACIO).isEqualTo("No hay pedidos por pagar")
         assertThat(TextosPorPagar.VACIO_AYUDA).isEqualTo("Cuando alguien pida por el QR, aparece aquí con su folio y su nombre.")
         assertThat(TextosPorPagar.SIN_CONEXION_TITULO).isEqualTo("Pedidos por pagar · Sin conexión:")
-        assertThat(TextosPorPagar.SIN_CONEXION_CUERPO).isEqualTo("los pedidos nuevos no se ven. Cobra en \"Cobrar\" como venta normal")
+        // D661 · W1: sin red no se ven los pagados en línea; cobrarlos en caja haría un segundo cobro al abrirlos después.
+        assertThat(TextosPorPagar.SIN_CONEXION_CUERPO).isEqualTo(
+            "los pedidos nuevos no se ven. Cobra en \"Cobrar\" como venta normal. " +
+                "Si ya pagó en línea, no lo cobres: ábrelo cuando vuelva la conexión.",
+        )
     }
 
     // endregion

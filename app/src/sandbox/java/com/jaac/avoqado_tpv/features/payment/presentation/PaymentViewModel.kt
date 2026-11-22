@@ -666,6 +666,9 @@ class PaymentViewModel @Inject constructor(
         }
     }
 
+    /** D666: el número de esta pantalla de cobro; al morir sólo suelta las banderas si ninguna nació después. */
+    private val pantallaDeCobro = paymentStateHolder.entraPantallaDeCobro()
+
     init {
         Timber.d("🎬 [PaymentViewModel] Initialized")
 
@@ -2205,6 +2208,7 @@ class PaymentViewModel @Inject constructor(
      * resetPayment() and cancelPayment().
      */
     private fun ensurePaymentAttemptId(): String {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         val existing = sessionSnapshot.paymentAttemptId
         if (existing != null) {
             Timber.d("🛡️ [Idempotency] Reusing existing paymentAttemptId=$existing")
@@ -3554,6 +3558,7 @@ class PaymentViewModel @Inject constructor(
     }
 
     fun startPayment(amount: String, selectedMsiMonths: Int?) {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         if (authorizationUnresolved) { showUnresolvedAuthorization(); return }
         // 🚦 GUARD: Prevent multiple concurrent payment flows (Square/Toast pattern)
         // Critical for slow network: User clicking "Tarjeta" multiple times during API delay
@@ -5231,6 +5236,17 @@ class PaymentViewModel @Inject constructor(
     @Volatile private var negativeOutcomeEvidence: String? = null
     @Volatile private var financialOperationStarted = false
 
+    /**
+     * 🔴 D36 (hz:e82938e1:D36): esta pantalla de cobro YA intentó cobrar (tarjeta, efectivo, cripto o el efectivo del kiosco) al menos
+     * una vez. A propósito NO se limpia en [resetPayment] ni en ningún otro lado: «atrás» desde Cobrar sólo pide anular la venta en el
+     * SERVIDOR si esta pantalla NUNCA intentó cobrarla, y cada cobro abre su propia pantalla (un ViewModel por entrada de navegación).
+     * Limpiarla haría que un reintento, un error o un reset borraran la prueba de que hubo un intento (Codex D36 r1 #4).
+     */
+    @Volatile private var seIntentoCobrar = false
+
+    /** D36: ¿esta pantalla intentó cobrar alguna vez? Lo lee la navegación ANTES de pedir que se anule la venta de Cobrar. */
+    fun yaSeIntentoCobrar(): Boolean = seIntentoCobrar
+
     /** 🛑 C.5: el POS canceló esta solicitud y la terminal lo aceptó — este cobro ya no continúa. */
     @Volatile private var cobroCanceladoPorElPos = false
 
@@ -6778,6 +6794,7 @@ class PaymentViewModel @Inject constructor(
     }
 
     fun processCashPayment(totalAmount: String) {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         financialOperationStarted = true
         negativeOutcomeEvidence = null
         Timber.d("💵 [Cash Payment] Processing cash payment: \$$totalAmount")
@@ -7168,6 +7185,7 @@ class PaymentViewModel @Inject constructor(
      * @param totalAmount Formatted total amount string (e.g., "55.00")
      */
     fun processCryptoPayment(totalAmount: String) {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         financialOperationStarted = true
         negativeOutcomeEvidence = null
         Timber.d("🪙 [Crypto Payment] Processing crypto payment: \$$totalAmount")
@@ -7445,6 +7463,7 @@ class PaymentViewModel @Inject constructor(
      * @param confirmedByStaffId Optional: The staff ID who confirmed (for audit trail)
      */
     fun confirmCashPayment(confirmedByStaffId: String? = null) {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         Timber.i("🥝 [KIOSK CASH] Staff confirmed cash payment received")
 
         val currentState = _state.value as? PaymentState.AwaitingCashConfirmation
@@ -7988,6 +8007,7 @@ class PaymentViewModel @Inject constructor(
      * @param context Preserved payment data from Error state
      */
     fun retryPayment(context: RetryContext?) {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         if (authorizationUnresolved) { showUnresolvedAuthorization(); return }
         Timber.i("🔄 [Smart Retry] Called with context: $context")
 
@@ -8781,8 +8801,9 @@ class PaymentViewModel @Inject constructor(
                 // viewModelScope, and kill BOTH the record AND the offline-queue fallback (which
                 // is itself viewModelScope-bound) → money moved, no record, no queue, no alert.
                 recordingInFlight = false
-                paymentStateHolder.setCharging(false)
-                paymentStateHolder.setChargeAttemptActive(false)
+                // 🔴 D666 (Codex r2 #2): este `finally` sigue tras salir del éxito; si mientras tanto nació otra pantalla de cobro, las
+                // banderas ya son suyas y no se tocan (PaymentStateHolder.soltarBanderasDe).
+                paymentStateHolder.soltarBanderasDe(pantallaDeCobro, soltarVentanaDelDinero = true)
             }
         }
     }
@@ -9078,8 +9099,9 @@ class PaymentViewModel @Inject constructor(
                 // flags to us; if we did not close them here the terminal would refuse every
                 // future POS charge until the app restarts.
                 recordingInFlight = false
-                paymentStateHolder.setCharging(false)
-                paymentStateHolder.setChargeAttemptActive(false)
+                // 🔴 D666 (Codex r2 #2): este `finally` sigue tras salir del éxito; si mientras tanto nació otra pantalla de cobro, las
+                // banderas ya son suyas y no se tocan (PaymentStateHolder.soltarBanderasDe).
+                paymentStateHolder.soltarBanderasDe(pantallaDeCobro, soltarVentanaDelDinero = true)
             }
         }
     }
@@ -10630,7 +10652,6 @@ class PaymentViewModel @Inject constructor(
         super.onCleared()
         // 🛑 Ruling 96: una salida sin resetPayment() no se lleva el desenlace retenido de un cobro del POS.
         enviarDesenlaceRetenidoAlSalir()
-        criticalNetworkOperationManager.setPaymentFlowInProgress(false)
         // 🔒 The state collector died with viewModelScope — never leave the singleton flags stuck
         // true. A stuck money-window flag would refuse every future POS cancel; a stuck
         // charge-active flag would refuse every future POS CHARGE («La terminal tiene otro cobro en curso…»)
@@ -10638,7 +10659,13 @@ class PaymentViewModel @Inject constructor(
         // 🧾 R86: con un registro de tarjeta en vuelo la ventana del dinero NO se cierra aquí. El POST es NonCancellable y sigue
         // tras salir del éxito (que se ve ANTES de que termine el registro); el `finally` de handlePaymentSuccess suelta las dos
         // banderas al terminar. Cerrarla aquí dejaba a «Pedidos por pagar» cobrar el mismo folio otra vez a media espera.
-        if (!recordingInFlight) paymentStateHolder.setCharging(false)
-        paymentStateHolder.setChargeAttemptActive(false)
+        // 🔴 D666: sólo si ninguna otra pantalla de cobro nació después. Ésta muere ~700 ms después de salir (la animación de la
+        // navegación) y en ese rato otra ya pudo encender sus banderas: apagarlas aquí le quitaba la protección a esa venta.
+        if (paymentStateHolder.salePantallaDeCobro(pantallaDeCobro, soltarVentanaDelDinero = !recordingInFlight)) {
+            criticalNetworkOperationManager.setPaymentFlowInProgress(false)
+            Timber.d("♻️ [PaymentViewModel] onCleared: pantalla #%d soltó las banderas", pantallaDeCobro)
+        } else {
+            Timber.d("♻️ [PaymentViewModel] onCleared: pantalla #%d; otra pantalla de cobro nació después, sus banderas no se tocan", pantallaDeCobro)
+        }
     }
 }

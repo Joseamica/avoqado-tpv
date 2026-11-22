@@ -185,25 +185,27 @@ class DeclaracionDesdeElAviso @Inject constructor(
      * Mientras el banner esté a la vista se consulta UN cobro por llamada, en rueda y con tope (Codex plan r1 #3): uno lento no tapa a los
      * demás y el banner se va solo si se declaró en el POS. Sin estampar: no gasta el turno de la recuperación. No usa
      * `ConsultaDelCierreDeCaja`, que empieza siempre por el primero, ni `liberarDudasLocales`, que puede hacer POST por otros intentos.
+     * true = Avoqado contestó (o no había nada que consultar).
      */
-    suspend fun refrescarUno(venueId: String, cobros: List<CobroDeclarable>) {
+    suspend fun refrescarUno(venueId: String, cobros: List<CobroDeclarable>): Boolean {
         val enOrden = cobros.sortedBy { it.identidad }
         val anterior = ultimoRefrescado
-        val cobro = enOrden.firstOrNull { anterior == null || it.identidad > anterior } ?: enOrden.firstOrNull() ?: return
+        val cobro = enOrden.firstOrNull { anterior == null || it.identidad > anterior } ?: enOrden.firstOrNull() ?: return true
         ultimoRefrescado = cobro.identidad
-        consultarConTope(venueId, cobro)
+        return consultarConTope(venueId, cobro)
     }
 
     /**
-     * hz:248b195b:D20 (21-nov): al MOSTRARSE «Por revisar» (y al volver a Pagos o de segundo plano) se consultan las [BARRIDO_AL_MOSTRARSE]
-     * más recientes una vez, en su orden y con el tope de [refrescarUno]. Una duda que el gerente firmó en la tablet mientras la terminal
-     * estaba en otra pantalla se va al abrir Pagos, no cuando le toque su turno en la rueda (antes, hasta N × 15 s). Es la MISMA consulta
-     * de la rueda: no firma, no libera ni declara nada. La primera sin respuesta (sin red, tope o 5xx) detiene el barrido y devuelve
-     * false: quien llama sigue con la rueda en el acto, como antes, sin insistir fila por fila. true = las consultó todas.
+     * hz:248b195b:D20 (21-nov): al MOSTRARSE «Por revisar» (y al volver a Pagos o de segundo plano) la rueda da hasta
+     * [BARRIDO_AL_MOSTRARSE] vueltas seguidas, SIN las pausas de 15 s. Una duda que el gerente firmó en la tablet mientras la terminal estaba
+     * en otra pantalla se va al abrir Pagos, no cuando le toque su turno (antes, hasta N × 15 s). Mismo orden que la rueda (Codex r2: con
+     * otro orden, la fila que ya tenía el siguiente turno podía llegar más tarde que antes): cada fila se consulta, a lo más, cuando la
+     * consultaba la rueda sola. Es la MISMA consulta: no firma, no libera ni declara nada. La primera sin respuesta (sin red, tope o 5xx)
+     * detiene el barrido y devuelve false: quien llama sigue con la rueda en el acto, sin insistir fila por fila. true = no se cortó.
      */
     suspend fun refrescarAlMostrarse(venueId: String, cobros: List<CobroDeclarable>): Boolean {
-        // ponytail: tope de 10 por vista (Codex r1 #3: «Ver anteriores» llega a cientos); las demás, la rueda de 15 s.
-        for (cobro in cobros.take(BARRIDO_AL_MOSTRARSE)) if (!consultarConTope(venueId, cobro)) return false
+        // ponytail: tope de 10 vueltas por vista (Codex r1 #3: «Ver anteriores» llega a cientos); las demás siguen en la rueda de 15 s.
+        repeat(minOf(cobros.size, BARRIDO_AL_MOSTRARSE)) { if (!refrescarUno(venueId, cobros)) return false }
         return true
     }
 

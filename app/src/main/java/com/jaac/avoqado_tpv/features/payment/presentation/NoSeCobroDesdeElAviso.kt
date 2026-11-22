@@ -224,8 +224,8 @@ internal fun CobrosPorRevisar(venueId: String, declaracion: DeclaracionDesdeElAv
 
     LaunchedEffect(porRevisar) { flujo.vigentesCambiaron(porRevisar) }
     // Si otro aparato o el POS lo resolvió, sale de la lista en segundos: una consulta, de una en una, sólo con Pagos a la vista.
-    // hz:248b195b:D20 (la duda firmada en la tablet seguía ~20 min): al mostrarse (y al volver), las más recientes una vez. Si el barrido
-    // se cortó (sin respuesta), la rueda arranca en el acto, como antes (Codex r1 #2); si las consultó todas, su primera vuelta espera.
+    // hz:248b195b:D20 (la duda firmada en la tablet seguía ~20 min): al mostrarse (y al volver), la rueda da hasta 10 vueltas sin pausa.
+    // Si el barrido se cortó (sin respuesta), la rueda sigue en el acto (Codex r1 #2); si no, su siguiente vuelta espera los 15 s.
     LaunchedEffect(hayPorRevisar, venueId) {
         if (!hayPorRevisar) return@LaunchedEffect
         cicloDeVida.repeatOnLifecycle(Lifecycle.State.STARTED) {

@@ -57,38 +57,50 @@ class DeclaracionDesdeElAvisoTest {
         coVerify(exactly = 1) { recuperacion.recoverOne(venue, "b", any(), false) }
     }
 
-    /** hz:248b195b:D20: al mostrarse, cada una en el orden de la lista y con el mismo tope; la primera sin respuesta detiene el barrido. */
-    @Test fun `D20 al mostrarse consulta todas en su orden con el tope y se detiene en la primera sin respuesta`() = runTest {
-        contesta("a", "b")
+    /**
+     * hz:248b195b:D20 (Codex r2 #1 y #2): al mostrarse, la rueda da sus vueltas SEGUIDAS, en su orden y siguiendo donde iba: la fila que ya
+     * tenía el siguiente turno («b») va primero, nunca después que con la rueda sola. La primera sin respuesta corta el barrido, y la rueda
+     * sigue con la que sigue.
+     */
+    @Test fun `D20 al mostrarse da las vueltas de la rueda seguidas, en su orden, y se corta en la primera sin respuesta`() = runTest {
+        contesta("a", "b", "d")
         coEvery { recuperacion.recoverOne(venue, "c", any(), false) } coAnswers {
             delay(6_000)
             LecturaDelIntento(null, servidorContesto = true)
         }
+        val cobros = listOf(intento("d"), intento("c"), intento("b"), intento("a"))
+        declaracion.refrescarUno(venue, cobros) // la rueda ya iba en «a»: le toca «b»
 
         val inicio = currentTime
-        val completo = declaracion.refrescarAlMostrarse(venue, listOf(intento("b"), intento("a"), intento("c"), intento("d")))
+        val completo = declaracion.refrescarAlMostrarse(venue, cobros)
 
-        assertThat(completo).isFalse() // se cortó: quien llama arranca la rueda en el acto
+        assertThat(completo).isFalse() // se cortó: quien llama sigue con la rueda en el acto
         assertThat(currentTime - inicio).isEqualTo(DeclaracionDesdeElAviso.TOPE_DEL_REFRESCO_MS)
         coVerify(ordering = io.mockk.Ordering.ORDERED) {
-            recuperacion.recoverOne(venue, "b", any(), false)
             recuperacion.recoverOne(venue, "a", any(), false)
+            recuperacion.recoverOne(venue, "b", any(), false)
             recuperacion.recoverOne(venue, "c", any(), false)
         }
         coVerify(exactly = 0) { recuperacion.recoverOne(venue, "d", any(), any()) }
+
+        declaracion.refrescarUno(venue, cobros)
+        coVerify(exactly = 1) { recuperacion.recoverOne(venue, "d", any(), false) }
         coVerify(exactly = 0) { recuperacion.recoverOne(any(), any(), any(), true) }
     }
 
-    /** D20 (Codex r1 #3): «Ver anteriores» puede dejar cientos en la lista; al mostrarse sólo se consultan las 10 más recientes. */
-    @Test fun `D20 al mostrarse consulta a lo mas las 10 mas recientes y dice que termino`() = runTest {
+    /** D20 (Codex r1 #3): «Ver anteriores» puede dejar cientos en la lista; al mostrarse, a lo más 10 vueltas, y la rueda sigue donde quedó. */
+    @Test fun `D20 al mostrarse da a lo mas 10 vueltas y la rueda sigue donde quedo`() = runTest {
         val ids = (1..12).map { "i%02d".format(it) }
         contesta(*ids.toTypedArray())
+        val cobros = ids.reversed().map(::intento) // la pantalla las trae de la más reciente a la más vieja
 
-        val completo = declaracion.refrescarAlMostrarse(venue, ids.map(::intento))
+        val completo = declaracion.refrescarAlMostrarse(venue, cobros)
 
         assertThat(completo).isTrue()
         for (id in ids.take(DeclaracionDesdeElAviso.BARRIDO_AL_MOSTRARSE)) coVerify(exactly = 1) { recuperacion.recoverOne(venue, id, any(), false) }
         for (id in ids.drop(DeclaracionDesdeElAviso.BARRIDO_AL_MOSTRARSE)) coVerify(exactly = 0) { recuperacion.recoverOne(venue, id, any(), any()) }
+        declaracion.refrescarUno(venue, cobros)
+        coVerify(exactly = 1) { recuperacion.recoverOne(venue, "i11", any(), false) }
     }
 
     @Test fun `una identidad por llamada, y nunca gasta el turno de la recuperacion`() = runTest {

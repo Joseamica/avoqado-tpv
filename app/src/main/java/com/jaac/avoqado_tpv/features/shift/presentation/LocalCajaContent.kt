@@ -71,7 +71,7 @@ fun LocalCajaContent(
             if (caja.canAdopt) OutlinedButton(onClick = onAdopt, modifier = Modifier.fillMaxWidth()) {
                 Text("Usar la caja vinculada para nuevas ventas")
             }
-            if (!canOpen && (caja.session.localStatus != "OPEN" || caja.canAdopt) && !needsDone) Text(TEXTO_PIN_PARA_ABRIR,
+            if (!canOpen && caja.session.localStatus != "OPEN" && !needsDone) Text(TEXTO_PIN_PARA_ABRIR,
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (needsReview) OutlinedButton(onClick = { onReview(caja.session.localSessionId, 0) }, modifier = Modifier.fillMaxWidth()) {
                 Text("Revisar registros pendientes")

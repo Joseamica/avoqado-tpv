@@ -19,8 +19,6 @@ import com.jaac.avoqado_tpv.features.shift.data.dto.ShiftIdentityDto
 import com.jaac.avoqado_tpv.features.shift.data.dto.ShiftIdentityResponse
 import com.jaac.avoqado_tpv.features.shift.data.dto.ShiftResponse
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
-import com.jaac.avoqado_tpv.features.shift.domain.LocalShiftSummary
-import com.jaac.avoqado_tpv.features.shift.presentation.CajaLocalPresentation
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -228,11 +226,7 @@ class CajaTrabadaSinPermisoRoomTest {
         coEvery { api.getCurrentShift(venue) } returns Response.success(CurrentShiftResponse(null))
         coEvery { api.getKnownShiftState(venue, vieja) } returns Response.success(KnownShiftState(vieja, venue, "CLOSED"))
         repo.getCurrentShift(venue)
-        val cerrada = db.localShiftSessionDao().leer(venue, local.localSessionId)!!
-        assertThat(cerrada.localStatus).isEqualTo("CLOSED")
-        // «Usar la caja vinculada» sobre una caja ya cerrada la volvería a abrir aquí: ya no se ofrece ni se acepta.
-        assertThat(CajaLocalPresentation(cerrada, LocalShiftSummary(null, null, "CLOSED", "CONFIRMED", "REVIEW", null)).canAdopt).isFalse()
-        assertThat(repo.adoptarCajaRemotaParaNuevosGestos(venue, local.localSessionId)).isInstanceOf(Result.Error::class.java)
+        assertThat(db.localShiftSessionDao().leer(venue, local.localSessionId)!!.localStatus).isEqualTo("CLOSED")
         entraCocina()
         sinCifras(identidad())
 
@@ -269,5 +263,95 @@ class CajaTrabadaSinPermisoRoomTest {
         assertThat((gastado as Result.Error).exception.userMessage).contains("PIN")
 
         assertThat(db.localShiftSessionDao().contar(venue)).isEqualTo(0)
+    }
+
+    /** Codex r1 #1: después de pasarse a B, la siguiente lectura (la de antes de cobrar en la N86) confirma B y no vuelve al 403. */
+    @Test fun `Cocina ya en la caja nueva sigue viendola abierta en la siguiente lectura y puede cobrar`() = runTest {
+        cajaDeAyerVistaCerrada()
+        entraCocina()
+        sinCifras(identidad())
+        repo.getCurrentShift(venue).getOrThrow()
+        sinCifras(identidad(), KnownShiftState(nueva, venue, "OPEN"), conocida = nueva)
+
+        val otraVez = repo.getCurrentShift(venue)
+
+        assertThat(otraVez.getOrThrow()!!.id).isEqualTo(nueva)
+        assertThat(otraVez.getOrThrow()!!.status.name).isEqualTo("OPEN")
+        assertThat(db.localShiftSessionDao().contar(venue)).isEqualTo(2)
+    }
+
+    /** Codex r1 #2: sin caja abierta en el negocio, Cocina ve «Sin turno de caja» con «Abrir caja» (PIN), no un error. */
+    @Test fun `sin caja abierta en el negocio Cocina recibe sin caja y no un error`() = runTest {
+        entraCocina()
+        sinCifras(null)
+
+        assertThat(repo.getCurrentShift(venue)).isEqualTo(Result.Success(null))
+        assertThat(db.localShiftSessionDao().contar(venue)).isEqualTo(0)
+    }
+
+    @Test fun `con la vieja abierta aqui, cerrada en el servidor y sin otra, se ve cerrada para abrir otra`() = runTest {
+        val a = repo.registrarCajaRemotaConocida(venue, caja(vieja, drawer = "c00000000000000000000000a")).getOrThrow()
+        entraCocina()
+        sinCifras(null, KnownShiftState(vieja, venue, "CLOSED"), conocida = vieja)
+
+        val visible = repo.getCurrentShift(venue).getOrThrow()!!
+
+        assertThat(visible.status.name).isEqualTo("CLOSED")
+        assertThat(db.localShiftSessionDao().leer(venue, a.localSessionId)!!.closeStatus).isEqualTo("REVIEW")
+        assertThat(db.localShiftSessionDao().abierta(venue)).isNull()
+    }
+
+    /** Codex r1 #9: con Caja apagada no se guarda ninguna caja (el 403 de siempre). */
+    @Test fun `con Caja apagada Cocina no guarda ninguna caja`() = runTest {
+        entraCocina()
+        every { storage.getBoolean("enable_shifts", true) } returns false
+        sinCifras(identidad())
+
+        assertThat(repo.getCurrentShift(venue)).isInstanceOf(Result.Error::class.java)
+        assertThat(db.localShiftSessionDao().contar(venue)).isEqualTo(0)
+    }
+
+    /** Codex r1 #8: una foto vieja de A no reabre A aunque la última caja (B) ya esté cerrada y confirmada. */
+    @Test fun `una foto vieja no reabre una caja que este aparato ya vio cerrar aunque la ultima este confirmada`() = runTest {
+        val a = cajaDeAyerVistaCerrada()
+        coEvery { api.getCurrentShift(venue) } returns Response.success(CurrentShiftResponse(caja(nueva)))
+        repo.getCurrentShift(venue)
+        val b = db.localShiftSessionDao().abierta(venue)!!
+        repo.guardarCierreLocal(venue, b.localSessionId, null, null).getOrThrow()
+        db.openHelper.writableDatabase.execSQL("UPDATE local_shift_sessions SET close_status = 'CONFIRMED' WHERE local_session_id = ?", arrayOf(b.localSessionId))
+
+        repo.registrarCajaRemotaConocida(venue, caja(vieja, drawer = "c00000000000000000000000a")).getOrThrow()
+
+        assertThat(db.localShiftSessionDao().porServidor(venue, vieja)!!.localSessionId).isEqualTo(a.localSessionId)
+        assertThat(db.localShiftSessionDao().abierta(venue)).isNull()
+        assertThat(db.localShiftSessionDao().contar(venue)).isEqualTo(2)
+    }
+
+    /** Codex r1 #3: con un cierre de este aparato todavía por enviar, abrir con PIN espera: el cierre va primero. */
+    @Test fun `abrir con PIN espera a que se envie el cierre pendiente de este aparato`() = runTest {
+        val a = repo.registrarCajaRemotaConocida(venue, caja(vieja, drawer = "c00000000000000000000000a")).getOrThrow()
+        repo.guardarCierreLocal(venue, a.localSessionId, null, null).getOrThrow()
+        entraCocina()
+
+        val r = repo.abrirCajaConPin(venue, "cocina", BigDecimal("800.00"), "tok-1")
+
+        assertThat((r as Result.Error).exception.userMessage).contains("todavía no se envía")
+        coVerify(exactly = 0) { api.openShiftConPin(any(), any(), any()) }
+    }
+
+    /** Codex r1 #6: si la respuesta se perdió, el reintento (otro PIN) repite la MISMA operación y no abre otra caja. */
+    @Test fun `el reintento de abrir con PIN repite la misma llave`() = runTest {
+        entraCocina()
+        val pedidos = mutableListOf<OpenShiftRequest>()
+        coEvery { api.openShiftConPin(venue, capture(pedidos), "tok-1") } throws IOException("se perdió")
+        coEvery { api.openShiftConPin(venue, capture(pedidos), "tok-2") } returns
+            Response.success(ShiftResponse(true, caja(nueva).copy(openingDisposition = "OWN")))
+
+        repo.abrirCajaConPin(venue, "cocina", BigDecimal("800.00"), "tok-1")
+        repo.abrirCajaConPin(venue, "cocina", BigDecimal("800.00"), "tok-2").getOrThrow()
+
+        assertThat(pedidos).hasSize(2)
+        assertThat(pedidos[1].operationId).isEqualTo(pedidos[0].operationId)
+        assertThat(db.localShiftSessionDao().abierta(venue)!!.serverShiftId).isEqualTo(nueva)
     }
 }

@@ -538,10 +538,10 @@ class ShiftViewModel @Inject constructor(
             _state.value = ShiftState.Error("Información de sesión incompleta")
             return true
         }
-        val token = secureStorage.getToken()
         val epoch = gestosDePantalla.get()
-        fun vigente() = secureStorage.getVenueId() == venueId && secureStorage.getStaffId() == staffId &&
-            secureStorage.getToken() == token && gestosDePantalla.get() == epoch
+        // Sin el token a propósito (Codex r1 #6): validar el PIN puede renovar la sesión (401 → token nuevo) y eso no descarta un PIN
+        // bueno. La sesión y la sucursal las vuelve a revisar el repositorio al guardar.
+        fun vigente() = secureStorage.getVenueId() == venueId && secureStorage.getStaffId() == staffId && gestosDePantalla.get() == epoch
         val auth = autorizacionDeGerente.paraPermiso(venueId, PERMISO_ABRIR, PERMISO_ABRIR, MOTIVO_PIN_ABRIR)
         if (!vigente()) return true
         val pin = when (auth) {
@@ -835,20 +835,15 @@ class ShiftViewModel @Inject constructor(
         val epoch = gestosDePantalla.incrementAndGet()
         solicitudesDeCierre.incrementAndGet()
         viewModelScope.launch {
-            // D24: sin `tpv-shifts:create`, un cajero o gerente pone su PIN (el servidor lo valida al dar el token).
-            val conPin = if (permissionsRepository.hasPermission(PERMISO_ABRIR)) false else
-                when (val auth = autorizacionDeGerente.paraPermiso(venue, PERMISO_ABRIR, PERMISO_ABRIR, MOTIVO_PIN_USAR)) {
-                    Autorizacion.NoHaceFalta -> false
-                    is Autorizacion.ConPin -> true
-                    Autorizacion.Cancelada -> return@launch
-                    is Autorizacion.Negada -> {
-                        if (gestosDePantalla.get() == epoch) _state.value = ShiftState.Error(TEXTO_SIN_PERMISO_DE_ABRIR)
-                        return@launch
-                    }
-                }
+            // D24: ya no queda en gris; sin permiso dice a quién pedírselo. Sin PIN a propósito (Codex r1 #5): usar la caja vinculada
+            // es un gesto sólo de este aparato, y el token del PIN no se gastaría en el servidor ni quedaría atado a esa caja.
+            if (!permissionsRepository.hasPermission(PERMISO_ABRIR)) {
+                if (gestosDePantalla.get() == epoch) _state.value = ShiftState.Error(TEXTO_SIN_PERMISO_DE_USAR)
+                return@launch
+            }
             if (gestosDePantalla.get() != epoch || secureStorage.getVenueId() != venue ||
                 secureStorage.getStaffId() != staff || secureStorage.getToken() != token) return@launch
-            when (val result = shiftRepository.adoptarCajaRemotaParaNuevosGestos(venue, source.session.localSessionId, conPin)) {
+            when (val result = shiftRepository.adoptarCajaRemotaParaNuevosGestos(venue, source.session.localSessionId)) {
                 is Result.Success -> {
                     if (gestosDePantalla.get() != epoch || secureStorage.getVenueId() != venue ||
                         secureStorage.getStaffId() != staff || secureStorage.getToken() != token) return@launch
@@ -1094,7 +1089,7 @@ class ShiftViewModel @Inject constructor(
 /** D24: el permiso de abrir la caja de ESTA terminal (mismo nombre exacto que el SERVIDOR). */
 private const val PERMISO_ABRIR = "tpv-shifts:create"
 private const val MOTIVO_PIN_ABRIR = "Tu puesto no puede abrir la caja. Un cajero, gerente o el dueño pone su PIN para abrirla."
-private const val MOTIVO_PIN_USAR = "Tu puesto no puede cambiar de caja. Un cajero, gerente o el dueño pone su PIN para usar la caja vinculada."
+internal const val TEXTO_SIN_PERMISO_DE_USAR = "Tu puesto no puede cambiar de caja. Pide a un cajero, gerente o al dueño que entre y la use."
 /** D24: el negocio tiene el PIN de gerente apagado: se dice a quién pedírselo, en vez de dejar el botón en gris. */
 internal const val TEXTO_SIN_PERMISO_DE_ABRIR = "Tu puesto no puede abrir la caja. Pide a un cajero, gerente o al dueño que entre y la abra."
 /** D24: lo que dice la pantalla bajo «Abrir caja» cuando el puesto no puede abrirla. */

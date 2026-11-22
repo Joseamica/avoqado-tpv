@@ -1493,7 +1493,7 @@ class DeclaracionDesdeElAvisoRoomTest {
         val enPantalla = declarables()
         assertThat(enPantalla.map { it.clave }).containsExactly("a-1", "a-2", "a-3").inOrder()
 
-        declaracion.refrescarAlMostrarse(venue, enPantalla)
+        assertThat(declaracion.refrescarAlMostrarse(venue, enPantalla)).isTrue()
 
         assertThat(declarables().map { it.clave }).containsExactly("a-1", "a-2").inOrder()
         val firmada = dao.getById("a-3")!!
@@ -1516,7 +1516,7 @@ class DeclaracionDesdeElAvisoRoomTest {
         dudaDeLaPax("a-3", "r-3", haceMin = 23)
         coEvery { api.getAttemptStatus(venue, any()) } throws java.io.IOException("sin red")
 
-        declaracion.refrescarAlMostrarse(venue, declarables())
+        assertThat(declaracion.refrescarAlMostrarse(venue, declarables())).isFalse()
 
         assertThat(declarables().map { it.clave }).containsExactly("a-1", "a-2", "a-3").inOrder()
         assertThat(declarables().all { it.declarable }).isTrue()
@@ -1536,7 +1536,7 @@ class DeclaracionDesdeElAvisoRoomTest {
         enBandeja("r-b")
         coEvery { api.getRequestStatus(venue, any()) } throws java.io.IOException("sin red")
 
-        declaracion.refrescarAlMostrarse(venue, declarables())
+        assertThat(declaracion.refrescarAlMostrarse(venue, declarables())).isFalse()
 
         coVerify(exactly = 1) { api.getRequestStatus(any(), any()) }
         assertThat(declarables().map { it.clave }).containsExactly("r-a", "r-b")

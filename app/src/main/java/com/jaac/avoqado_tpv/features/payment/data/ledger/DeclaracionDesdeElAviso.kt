@@ -195,13 +195,16 @@ class DeclaracionDesdeElAviso @Inject constructor(
     }
 
     /**
-     * hz:248b195b:D20 (21-nov): al MOSTRARSE la lista (y al volver a la pantalla o de segundo plano) se consulta TODA una vez, en su orden
-     * y con el tope de [refrescarUno]. Una duda que el gerente firmó en la tablet mientras la terminal estaba en otra pantalla se va al
-     * abrirla, no cuando le toque su turno en la rueda (antes, hasta N × 15 s). Sólo lee: nunca declara. La primera sin respuesta (sin
-     * red, tope o 5xx) detiene el barrido: no insiste fila por fila, y lo que falte lo pone al día la rueda cuando vuelva la red.
+     * hz:248b195b:D20 (21-nov): al MOSTRARSE «Por revisar» (y al volver a Pagos o de segundo plano) se consultan las [BARRIDO_AL_MOSTRARSE]
+     * más recientes una vez, en su orden y con el tope de [refrescarUno]. Una duda que el gerente firmó en la tablet mientras la terminal
+     * estaba en otra pantalla se va al abrir Pagos, no cuando le toque su turno en la rueda (antes, hasta N × 15 s). Es la MISMA consulta
+     * de la rueda: no firma, no libera ni declara nada. La primera sin respuesta (sin red, tope o 5xx) detiene el barrido y devuelve
+     * false: quien llama sigue con la rueda en el acto, como antes, sin insistir fila por fila. true = las consultó todas.
      */
-    suspend fun refrescarAlMostrarse(venueId: String, cobros: List<CobroDeclarable>) {
-        for (cobro in cobros) if (!consultarConTope(venueId, cobro)) return
+    suspend fun refrescarAlMostrarse(venueId: String, cobros: List<CobroDeclarable>): Boolean {
+        // ponytail: tope de 10 por vista (Codex r1 #3: «Ver anteriores» llega a cientos); las demás, la rueda de 15 s.
+        for (cobro in cobros.take(BARRIDO_AL_MOSTRARSE)) if (!consultarConTope(venueId, cobro)) return false
+        return true
     }
 
     /** Una consulta con [TOPE_DEL_REFRESCO_MS]. true = Avoqado contestó; sin respuesta, tope o un fallo inesperado, false. */
@@ -469,6 +472,8 @@ class DeclaracionDesdeElAviso @Inject constructor(
     companion object {
         /** El tope de una vuelta del refresco. */
         const val TOPE_DEL_REFRESCO_MS = 5_000L
+        /** D20: cuántas dudas, las más recientes, se consultan al mostrarse «Por revisar». */
+        const val BARRIDO_AL_MOSTRARSE = 10
         const val TEXTO_GENERICO = "Este cobro todavía no se puede declarar. Vuelve a consultar en un momento."
         /** F1 bloque 2 (R1): el texto exacto de una fila cuyo SDK puede regresar todavía. */
         const val TEXTO_SIGUE_TRABAJANDO = "La terminal sigue trabajando en este cobro. Si no avanza, apaga y prende la terminal."

@@ -176,14 +176,12 @@ internal fun BannerDeCobrosPendientes(
     val cicloDeVida = LocalLifecycleOwner.current.lifecycle
 
     // Si se declaró en el POS, el banner se va en segundos. Sin evento de socket nuevo: una consulta, de una en una, sólo con el banner a la vista.
-    // hz:248b195b:D20: al mostrarse, todas una vez; después, una cada 15 s.
     LaunchedEffect(hayDeclarables, venueId) {
         if (!hayDeclarables) return@LaunchedEffect
         cicloDeVida.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            declaracion.refrescarAlMostrarse(venueId, vigentesAlDia)
             while (true) {
-                delay(REFRESCO_DEL_BANNER_MS)
                 declaracion.refrescarUno(venueId, vigentesAlDia)
+                delay(REFRESCO_DEL_BANNER_MS)
             }
         }
     }
@@ -226,15 +224,15 @@ internal fun CobrosPorRevisar(venueId: String, declaracion: DeclaracionDesdeElAv
 
     LaunchedEffect(porRevisar) { flujo.vigentesCambiaron(porRevisar) }
     // Si otro aparato o el POS lo resolvió, sale de la lista en segundos: una consulta, de una en una, sólo con Pagos a la vista.
-    // hz:248b195b:D20 (la duda firmada en la tablet seguía ~20 min): al mostrarse (y al volver), toda la lista una vez; después, una
-    // cada 15 s.
+    // hz:248b195b:D20 (la duda firmada en la tablet seguía ~20 min): al mostrarse (y al volver), las más recientes una vez. Si el barrido
+    // se cortó (sin respuesta), la rueda arranca en el acto, como antes (Codex r1 #2); si las consultó todas, su primera vuelta espera.
     LaunchedEffect(hayPorRevisar, venueId) {
         if (!hayPorRevisar) return@LaunchedEffect
         cicloDeVida.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            declaracion.refrescarAlMostrarse(venueId, porRevisarAlDia)
+            if (declaracion.refrescarAlMostrarse(venueId, porRevisarAlDia)) delay(REFRESCO_DEL_BANNER_MS)
             while (true) {
-                delay(REFRESCO_DEL_BANNER_MS)
                 declaracion.refrescarUno(venueId, porRevisarAlDia)
+                delay(REFRESCO_DEL_BANNER_MS)
             }
         }
     }

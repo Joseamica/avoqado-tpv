@@ -64,22 +64,17 @@ class NoSeCobroCableadoTest {
 
     /**
      * hz:248b195b:D20: la duda firmada en la tablet seguía en «Por revisar» hasta su turno en la rueda. Al entrar en STARTED (mostrarse,
-     * volver a la pantalla o de segundo plano) se consulta TODA la lista una vez, y DESPUÉS empieza la rueda de 15 s. En los dos lugares.
+     * volver a Pagos o de segundo plano) se consultan las más recientes una vez, ANTES de la rueda de 15 s; si el barrido se cortó, la
+     * rueda arranca en el acto (Codex r1 #2). Sólo en Pagos: el aviso del Inicio también vive en Cobrar y Pago rápido (Codex r1 #3).
      */
-    @Test fun `D20 al mostrarse Pagos y el aviso del Inicio consultan toda la lista antes de la rueda de 15 s`() {
+    @Test fun `D20 al mostrarse Pagos consulta las mas recientes antes de la rueda, y el aviso del Inicio queda igual`() {
         val banner = dialogos.substring(dialogos.indexOf("internal fun BannerDeCobrosPendientes("), dialogos.indexOf("internal fun CobrosPorRevisar("))
         val recuadro = dialogos.substring(dialogos.indexOf("internal fun CobrosPorRevisar("), dialogos.indexOf("internal fun AvisoConBotones("))
-        for ((donde, cuerpo, lista) in listOf(Triple("Inicio", banner, "vigentesAlDia"), Triple("Pagos", recuadro, "porRevisarAlDia"))) {
-            val ciclo = cuerpo.substring(cuerpo.indexOf("repeatOnLifecycle(Lifecycle.State.STARTED)"))
-            val alMostrarse = ciclo.indexOf("declaracion.refrescarAlMostrarse(venueId, $lista)")
-            val rueda = ciclo.indexOf("while (true)")
-            assertWithMessage(donde).that(alMostrarse).isAtLeast(0)
-            assertWithMessage(donde).that(alMostrarse).isLessThan(rueda)
-            // La rueda espera ANTES de su primera consulta: lo de al mostrarse ya cubrió esa vuelta.
-            val vuelta = ciclo.substring(rueda)
-            assertWithMessage(donde).that(vuelta.indexOf("delay(REFRESCO_DEL_BANNER_MS)"))
-                .isLessThan(vuelta.indexOf("declaracion.refrescarUno(venueId, $lista)"))
-        }
+        val ciclo = recuadro.substring(recuadro.indexOf("repeatOnLifecycle(Lifecycle.State.STARTED)"))
+        val alMostrarse = ciclo.indexOf("if (declaracion.refrescarAlMostrarse(venueId, porRevisarAlDia)) delay(REFRESCO_DEL_BANNER_MS)")
+        assertThat(alMostrarse).isAtLeast(0)
+        assertThat(alMostrarse).isLessThan(ciclo.indexOf("while (true)"))
+        assertThat(banner).doesNotContain("refrescarAlMostrarse")
     }
 
     @Test fun `F1 el aviso del Inicio lleva Revisar y Ayuda, con el texto arriba y los botones abajo - sin No se cobro`() {

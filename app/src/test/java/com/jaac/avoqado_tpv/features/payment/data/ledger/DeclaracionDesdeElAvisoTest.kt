@@ -66,8 +66,9 @@ class DeclaracionDesdeElAvisoTest {
         }
 
         val inicio = currentTime
-        declaracion.refrescarAlMostrarse(venue, listOf(intento("b"), intento("a"), intento("c"), intento("d")))
+        val completo = declaracion.refrescarAlMostrarse(venue, listOf(intento("b"), intento("a"), intento("c"), intento("d")))
 
+        assertThat(completo).isFalse() // se cortó: quien llama arranca la rueda en el acto
         assertThat(currentTime - inicio).isEqualTo(DeclaracionDesdeElAviso.TOPE_DEL_REFRESCO_MS)
         coVerify(ordering = io.mockk.Ordering.ORDERED) {
             recuperacion.recoverOne(venue, "b", any(), false)
@@ -76,6 +77,18 @@ class DeclaracionDesdeElAvisoTest {
         }
         coVerify(exactly = 0) { recuperacion.recoverOne(venue, "d", any(), any()) }
         coVerify(exactly = 0) { recuperacion.recoverOne(any(), any(), any(), true) }
+    }
+
+    /** D20 (Codex r1 #3): «Ver anteriores» puede dejar cientos en la lista; al mostrarse sólo se consultan las 10 más recientes. */
+    @Test fun `D20 al mostrarse consulta a lo mas las 10 mas recientes y dice que termino`() = runTest {
+        val ids = (1..12).map { "i%02d".format(it) }
+        contesta(*ids.toTypedArray())
+
+        val completo = declaracion.refrescarAlMostrarse(venue, ids.map(::intento))
+
+        assertThat(completo).isTrue()
+        for (id in ids.take(DeclaracionDesdeElAviso.BARRIDO_AL_MOSTRARSE)) coVerify(exactly = 1) { recuperacion.recoverOne(venue, id, any(), false) }
+        for (id in ids.drop(DeclaracionDesdeElAviso.BARRIDO_AL_MOSTRARSE)) coVerify(exactly = 0) { recuperacion.recoverOne(venue, id, any(), any()) }
     }
 
     @Test fun `una identidad por llamada, y nunca gasta el turno de la recuperacion`() = runTest {

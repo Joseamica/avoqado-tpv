@@ -4,7 +4,7 @@ package com.avoqado.cobropropio.privacidad
  * Lo único que sale de una tarjeta hacia afuera (pantalla, registros, eventos). El número completo, la banda y las llaves
  * nunca pasan de aquí: se enseña el BIN (6) y los últimos 4, como en un ticket. Rescatado del piloto (`lectorlab/Enmascarar.kt`).
  */
-object Enmascarar {
+internal object Enmascarar {
 
     private const val TAPADO = "****"
     private val BANDA = Regex("[0-9]{12,19}[=Dd][0-9]*")

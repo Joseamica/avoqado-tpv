@@ -46,6 +46,16 @@ class AngelPaySdkGateway() {
 
     /** El inicio aceptado no equivale a impresión terminada. No reintenta papel automáticamente. */
     suspend fun printTicket(ticket: com.angelpay.angelpaysdk.models.PrintTicketRequest): Result<Unit> =
+        printTicket(ticket) { true }
+
+    /**
+     * Como [printTicket], y [sigueVigente] (D661 · Ruling 107) se pregunta JUSTO antes de `startPrint`, ya preparada la impresora y
+     * cargados los renglones (lo que más tarda). `false` = no arranca, se suelta la impresora y regresa [ImpresionNoEmpezada]: nada salió.
+     */
+    suspend fun printTicket(
+        ticket: com.angelpay.angelpaysdk.models.PrintTicketRequest,
+        sigueVigente: () -> Boolean,
+    ): Result<Unit> =
         withContext(receiptPrintDispatcher) {
             val owner = Any()
             if (!receiptPrintMutex.tryLock(owner)) {
@@ -61,6 +71,7 @@ class AngelPaySdkGateway() {
                 checkPrinterResult(printer.initPrinter())
                 for (row in rows) row(printer)
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (!sigueVigente()) return@withContext Result.failure(ImpresionNoEmpezada())
                 kotlinx.coroutines.suspendCancellableCoroutine<Result<Unit>> { continuation ->
                     if (!continuation.isActive) return@suspendCancellableCoroutine
                     val completionLock = Any()
@@ -543,3 +554,6 @@ class AngelPayAuthExpiredError(cause: Throwable? = null) :
  */
 class AngelPayNetworkError(cause: Throwable? = null) :
     RuntimeException("AngelPay network error", cause)
+
+/** D661 · Ruling 107: [AngelPaySdkGateway.printTicket] no arrancó porque, justo antes de `startPrint`, ya no tocaba. Nada salió. */
+class ImpresionNoEmpezada : Exception("La impresión no se empezó: ya no tocaba al arrancar")

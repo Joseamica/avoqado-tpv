@@ -32,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -93,6 +94,8 @@ fun MaintenanceOverlay(
             modifier = Modifier
                 .fillMaxSize()
                 .background(scrimColor)
+                // D665: el velo detiene el dedo (ver LockScreenOverlay). «Salir de mantenimiento» sigue funcionando.
+                .pointerInput(Unit) {}
                 .zIndex(90f),  // Below lock (100), above content
             contentAlignment = Alignment.Center
         ) {

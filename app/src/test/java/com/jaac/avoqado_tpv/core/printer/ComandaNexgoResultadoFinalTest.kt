@@ -3,6 +3,8 @@ package com.jaac.avoqado_tpv.core.printer
 import com.angelpay.angelpaysdk.AngelPaySDK
 import com.jaac.avoqado_tpv.features.onlineorders.data.ComandaDeApoyo
 import com.jaac.avoqado_tpv.features.onlineorders.data.FoliosRepository
+import com.jaac.avoqado_tpv.features.onlineorders.data.ReclamoDeComanda
+import com.jaac.avoqado_tpv.features.onlineorders.data.ResultadoDeComanda
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.FolioProducto
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
@@ -20,7 +22,9 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -49,7 +53,7 @@ class ComandaNexgoResultadoFinalTest {
         gateway.receiptPrinterFactory = { printer }
         manager = PrinterManager(mockk(relaxed = true), mockk(relaxed = true), javax.inject.Provider { gateway })
         PrinterManager::class.java.getDeclaredField("esHardwarePax").apply { isAccessible = true }.setBoolean(manager, false)
-        coEvery { folios.reclamarImpresion("v1", "ord-1") } returns Result.success(true)
+        coEvery { folios.reclamarImpresion("v1", "ord-1") } returns Result.success(ReclamoDeComanda(true))
         coEvery { folios.confirmarImpresion("v1", "ord-1") } returns Result.success(true)
     }
 
@@ -122,5 +126,133 @@ class ComandaNexgoResultadoFinalTest {
 
         verify(exactly = 0) { provider.get() }
         verify(exactly = 0) { AngelPaySDK.printTicket(any()) }
+    }
+
+    /** D661 · Ruling 9/37: el reclamo se concedió sobre otro que venció sin confirmarse: la cocina lo lee antes que nada. */
+    @Test fun `Ruling 9 una comanda posiblemente repetida dice POSIBLE REPETIDA arriba de todo`() {
+        val pax = PrinterManager(mockk(relaxed = true), mockk(relaxed = true), mockk())
+        val hardware = mockk<ImpresoraTermica>(relaxed = true)
+        every { hardware.start() } returns 0
+        val renglones = mutableListOf<String>()
+        every { hardware.printStr(capture(renglones), any()) } returns Unit
+        PrinterManager::class.java.getDeclaredField("esHardwarePax").apply { isAccessible = true }.setBoolean(pax, true)
+        PrinterManager::class.java.getDeclaredField("impresoraPax\$delegate").apply { isAccessible = true }.set(pax, lazyOf(hardware))
+
+        assertTrue(pax.printKitchenTicket("W5GZD", orderItems = listOf(mockk(relaxed = true)), esComandaDeFolio = true, posibleRepetida = true).isSuccess)
+        val marca = renglones.indexOfFirst { it.contains("POSIBLE REPETIDA") }
+        assertTrue("la marca sale: $renglones", marca >= 0)
+        assertTrue("antes del encabezado de la comanda", marca < renglones.indexOfFirst { it.contains("COMANDA DE COCINA") })
+        assertTrue(renglones.any { it.contains("revisa si ya salió") })
+
+        renglones.clear()
+        assertTrue(pax.printKitchenTicket("W5GZD", orderItems = listOf(mockk(relaxed = true)), esComandaDeFolio = true).isSuccess)
+        assertFalse("sin la marca, como siempre", renglones.any { it.contains("POSIBLE REPETIDA") })
+    }
+
+    /**
+     * D661 · Ruling 50 (enmendado): se pregunta justo antes del ARRANQUE físico (`start()`), con todo ya dictado y la impresora en mano;
+     * si ya no toca, no arranca: el dictado se tira y no sale nada.
+     */
+    @Test fun `Ruling 50 si ya no toca justo antes de arrancar la impresora no sale nada aunque ya este dictada`() {
+        val pax = PrinterManager(mockk(relaxed = true), mockk(relaxed = true), mockk())
+        val hardware = mockk<ImpresoraTermica>(relaxed = true)
+        every { hardware.start() } returns 0
+        val renglones = mutableListOf<String>()
+        every { hardware.printStr(capture(renglones), any()) } returns Unit
+        PrinterManager::class.java.getDeclaredField("esHardwarePax").apply { isAccessible = true }.setBoolean(pax, true)
+        PrinterManager::class.java.getDeclaredField("impresoraPax\$delegate").apply { isAccessible = true }.set(pax, lazyOf(hardware))
+        val candado = PrinterManager::class.java.getDeclaredField("candado").apply { isAccessible = true }.get(pax)!!
+        var dictadosAlPreguntar = -1
+        var conLaImpresora = false
+
+        val r = pax.printKitchenTicket(
+            "W5GZD", orderItems = listOf(mockk(relaxed = true)), esComandaDeFolio = true,
+            sigueVigente = {
+                dictadosAlPreguntar = renglones.size
+                conLaImpresora = Thread.holdsLock(candado)
+                false
+            },
+        )
+        assertTrue("se pregunta ya dictada, justo antes de arrancar: $dictadosAlPreguntar", dictadosAlPreguntar > 0)
+        assertTrue("con la impresora en mano", conLaImpresora)
+        assertTrue("regresa ComandaNoEmpezada: ${r.exceptionOrNull()}", r.exceptionOrNull() is ComandaNoEmpezada)
+        verify(exactly = 0) { hardware.start() }
+
+        assertTrue(pax.printKitchenTicket("W5GZD", orderItems = listOf(mockk(relaxed = true)), esComandaDeFolio = true, sigueVigente = { true }).isSuccess)
+        verify(exactly = 1) { hardware.start() }
+    }
+
+    /**
+     * Ruling 107 (Codex r2). En la Nexgo el camino es: vigencia → preparar e iniciar la impresora → cargar los renglones → `startPrint`.
+     * Si esa espera cruza el reclamo (y el SERVIDOR ya admitió la devolución), la comanda no debe arrancar. Se detiene el gateway a media
+     * carga de renglones, el reloj pasa el reclamo y se suelta: cero `startPrint`, cero confirmaciones, y el desenlace de hoy.
+     */
+    @Test fun `Ruling 107 en la Nexgo la vigencia se decide justo antes de startPrint - un reclamo que vence cargando los renglones no sale`() {
+        every { printer.status } returns SdkResult.Success
+        every { printer.initPrinter() } returns SdkResult.Success
+        every { printer.startPrint(any(), any()) } answers {
+            secondArg<OnPrintListener>().onPrintResult(SdkResult.Success)
+            SdkResult.Success
+        }
+        val cargando = CountDownLatch(1)
+        val soltar = CountDownLatch(1)
+        val primera = java.util.concurrent.atomic.AtomicBoolean(true)
+        every { printer.appendPrnStr(any<String>(), any<Int>(), any<com.nexgo.oaf.apiv3.device.printer.AlignEnum>(), any<Boolean>()) } answers {
+            if (primera.getAndSet(false)) {
+                cargando.countDown()
+                soltar.await(5, TimeUnit.SECONDS)
+            }
+            SdkResult.Success
+        }
+        val reloj = java.util.concurrent.atomic.AtomicLong(0L)
+        val executor = Executors.newSingleThreadExecutor()
+        val pendiente = executor.submit<ResultadoDeComanda> {
+            runBlocking {
+                ComandaDeApoyo(folios, manager, kotlin.coroutines.EmptyCoroutineContext) { reloj.get() }
+                    .intentar("v1", folio, ComandaDeApoyo.EDAD_MAXIMA_DEL_RECLAMO_MS)
+            }
+        }
+        try {
+            assertTrue("la comanda llega a cargar renglones", cargando.await(5, TimeUnit.SECONDS))
+            reloj.set(ComandaDeApoyo.EDAD_MAXIMA_DEL_RECLAMO_MS) // el reclamo envejeció mientras se cargaban (y se devolvió el pedido)
+            soltar.countDown()
+            assertEquals(ResultadoDeComanda.RECLAMO_VENCIDO, pendiente.get(5, TimeUnit.SECONDS))
+            verify(exactly = 0) { printer.startPrint(any(), any()) }
+            coVerify(exactly = 0) { folios.confirmarImpresion(any(), any()) }
+        } finally {
+            soltar.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    /**
+     * D661 · Ruling 69 (b), ronda 3: un arranque fallido de la impresora no se queda guardado, pero tampoco se reintenta en cada uso
+     * (`canPrintReceipt` se lee al pintar: sin tope, una PAX con la impresora mala reintentaba en cada recomposición). A lo más uno cada
+     * [REINTENTO_DE_ARRANQUE_MS]; uno bueno se guarda.
+     */
+    @Test fun `Ruling 69 un arranque fallido de la impresora se reintenta a lo mas cada 30 s y uno bueno se guarda`() {
+        var ahora = 1_000L
+        var intentos = 0
+        var arranca = false
+        val impresora by lazyQueReintenta(reloj = { ahora }) {
+            intentos++
+            if (arranca) "PAX" else null
+        }
+        assertNull("la primera falla", impresora)
+        assertEquals(1, intentos)
+
+        ahora += 10_000
+        arranca = true
+        assertNull("a los 10 s no se intenta otra vez", impresora)
+        assertNull(impresora)
+        assertEquals(1, intentos)
+
+        ahora += REINTENTO_DE_ARRANQUE_MS - 10_000
+        assertEquals("a los 30 s se intenta y arranca, sin reiniciar la app", "PAX", impresora)
+        assertEquals(2, intentos)
+
+        ahora += 10 * REINTENTO_DE_ARRANQUE_MS
+        assertEquals("PAX", impresora)
+        assertEquals("la buena se guarda", 2, intentos)
     }
 }

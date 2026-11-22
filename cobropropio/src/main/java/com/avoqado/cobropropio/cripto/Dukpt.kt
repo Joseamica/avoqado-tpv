@@ -9,15 +9,15 @@ import javax.crypto.spec.SecretKeySpec
  * llave de la transacción → variante de DATOS → 3DES de esa variante consigo misma → 3DES-ECB de la banda rellenada con F.
  * Rescatado del piloto (`lectorlab/Dukpt.kt`). Ningún mensaje de error lleva llaves, KSN ni la banda.
  */
-object Dukpt {
+internal object Dukpt {
 
     const val CONTADOR_MAXIMO = 0x1FFFFF
 
-    /** Sólo las pruebas lo usan: ve cada arreglo intermedio de llave justo antes de que se borre. */
-    @get:JvmSynthetic @set:JvmSynthetic @Volatile internal var antesDeBorrar: ((ByteArray) -> Unit)? = null
+    /** El borrador de siempre: pone el arreglo en cero. Las pruebas inyectan otro que además observa (D8). */
+    @get:JvmSynthetic internal val CEROS: (ByteArray) -> Unit = { it.fill(0) }
 
     /** La llave de la transacción para ese KSN (de 10 bytes, ya con contador), a partir de la IPEK de 16 bytes. */
-    @JvmSynthetic internal fun llaveDeTransaccion(ipek: ByteArray, ksn: ByteArray): ByteArray {
+    @JvmSynthetic internal fun llaveDeTransaccion(ipek: ByteArray, ksn: ByteArray, borrador: (ByteArray) -> Unit = CEROS): ByteArray {
         require(ipek.size == 16 && ksn.size == 10) { "IPEK o KSN de largo inválido" }
         val contador = contadorDe(ksn)
         require(contador in 1..CONTADOR_MAXIMO) { "contador fuera de rango" }
@@ -30,26 +30,26 @@ object Dukpt {
                 registro[5] = (registro[5].toInt() or ((bit shr 16) and 0x1F)).toByte()
                 registro[6] = (registro[6].toInt() or ((bit shr 8) and 0xFF)).toByte()
                 registro[7] = (registro[7].toInt() or (bit and 0xFF)).toByte()
-                val siguiente = noReversible(llave, registro)
-                if (llave !== ipek) borrar(llave) // la IPEK es del llamador; las intermedias, nuestras
+                val siguiente = noReversible(llave, registro, borrador)
+                if (llave !== ipek) borrar(borrador, llave) // la IPEK es del llamador; las intermedias, nuestras
                 llave = siguiente
             }
             bit = bit shr 1
         }
-        borrar(registro)
+        borrar(borrador, registro)
         return llave
     }
 
     /** Banda 2 en hex (tag 57, separador `D`) rellenada con F a 48 y cifrada con la llave de la transacción. Regresa hex. */
-    @JvmSynthetic internal fun cifrarTrack2(llave: ByteArray, track2Hex: String): String {
+    @JvmSynthetic internal fun cifrarTrack2(llave: ByteArray, track2Hex: String, borrador: (ByteArray) -> Unit = CEROS): String {
         require(llave.size == 16) { "llave de largo inválido" }
         require(HEX_HASTA_48.matches(track2Hex)) { "banda 2 inválida" }
-        val datos = llaveDeDatos(llave)
+        val datos = llaveDeDatos(llave, borrador)
         val banda = track2Hex.uppercase().padEnd(48, 'F').hexABytes()
         try {
-            return tdes(datos, banda).aHex()
+            return tdes(datos, banda, borrador = borrador).aHex()
         } finally {
-            borrar(datos, banda)
+            borrar(borrador, datos, banda)
         }
     }
 
@@ -82,7 +82,7 @@ object Dukpt {
 
     // ponytail: `SecretKeySpec` guarda su propia copia de la llave y no se puede borrar (su `destroy()` no está implementado);
     // es el techo conocido. Si hace falta más, cifrar con una llave del Keystore (sin bytes en el proceso).
-    @JvmSynthetic internal fun tdes(llave16: ByteArray, datos: ByteArray, cifrar: Boolean = true): ByteArray {
+    @JvmSynthetic internal fun tdes(llave16: ByteArray, datos: ByteArray, cifrar: Boolean = true, borrador: (ByteArray) -> Unit = CEROS): ByteArray {
         val k1 = llave16.copyOfRange(0, 8)
         val k = llave16 + k1
         try {
@@ -90,17 +90,17 @@ object Dukpt {
             c.init(if (cifrar) Cipher.ENCRYPT_MODE else Cipher.DECRYPT_MODE, SecretKeySpec(k, "DESede"))
             return c.doFinal(datos)
         } finally {
-            borrar(k1, k)
+            borrar(borrador, k1, k)
         }
     }
 
     /** Variante de DATOS (petición) y luego 3DES de esa llave consigo misma (Blumon: DUKPT.getVariantKey). */
-    @JvmSynthetic internal fun llaveDeDatos(llaveTx: ByteArray): ByteArray {
+    @JvmSynthetic internal fun llaveDeDatos(llaveTx: ByteArray, borrador: (ByteArray) -> Unit = CEROS): ByteArray {
         val variante = xor(llaveTx, MASCARA_DATOS)
         try {
-            return tdes(variante, variante)
+            return tdes(variante, variante, borrador = borrador)
         } finally {
-            borrar(variante)
+            borrar(borrador, variante)
         }
     }
 
@@ -115,7 +115,7 @@ object Dukpt {
 
     private fun xor(a: ByteArray, b: ByteArray) = ByteArray(a.size) { (a[it].toInt() xor b[it].toInt()).toByte() }
 
-    private fun noReversible(llave: ByteArray, registro: ByteArray): ByteArray {
+    private fun noReversible(llave: ByteArray, registro: ByteArray, borrador: (ByteArray) -> Unit): ByteArray {
         fun mitad(k: ByteArray): ByteArray {
             val izquierda = k.copyOfRange(0, 8)
             val derecha = k.copyOfRange(8, 16)
@@ -124,7 +124,7 @@ object Dukpt {
             try {
                 return xor(cifrada, derecha)
             } finally {
-                borrar(izquierda, derecha, entrada, cifrada)
+                borrar(borrador, izquierda, derecha, entrada, cifrada)
             }
         }
         val conMascara = xor(llave, MASCARA_C0)
@@ -133,16 +133,13 @@ object Dukpt {
         try {
             return alta + baja
         } finally {
-            borrar(conMascara, alta, baja)
+            borrar(borrador, conMascara, alta, baja)
         }
     }
 
-    /** Pone en cero cada arreglo intermedio de llave (r1 R1-9). */
-    private fun borrar(vararg arreglos: ByteArray) {
-        for (a in arreglos) {
-            antesDeBorrar?.invoke(a)
-            a.fill(0)
-        }
+    /** Pone en cero cada arreglo intermedio de llave (r1 R1-9), con el borrador que llegó (en producción, [CEROS]). */
+    private fun borrar(borrador: (ByteArray) -> Unit, vararg arreglos: ByteArray) {
+        for (a in arreglos) borrador(a)
     }
 
     private val HEX_HASTA_48 = Regex("^[0-9A-Fa-f]{1,48}$")

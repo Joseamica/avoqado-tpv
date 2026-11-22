@@ -102,6 +102,9 @@ class ColaDeResultadosTest {
 
     private fun guardado(estado: EstadoDelReversoEnServidor) = AcuseDelResultado.Guardado(estado, "cevt1", null)
 
+    /** Un id con la forma vieja (el UUID de 36 con guiones): Room lo lee, `AttemptId` lo rechaza. */
+    private val ID_DE_36 = "0f8fad5b-d9cb-469f-a165-b0867728950e"
+
     // ---- el mapeo del acuse ----
 
     @Test fun `guardado reversed marca entregado`() {
@@ -266,5 +269,45 @@ class ColaDeResultadosTest {
         assertEquals(EstadoDelReporte.ENTREGADO, e.fila!!.reporte)
         assertNull(runBlocking { cola.entregar(AttemptId.nuevo()) }.fila)
         assertEquals(1, servidor.reportados.size)
+    }
+
+    // ---- I3: la fila ilegible (fase 3, bloque 1) ----
+
+    /** I3: las dos causas; ninguna detiene el aviso de la buena, y las dos se quedan como estaban. */
+    @Test fun `una fila ilegible no detiene los avisos de las demas`() {
+        val enumRaro = conReporte()
+        val idViejo = conReporte()
+        val buena = conReporte()
+        val sql = db.openHelper.writableDatabase
+        sql.execSQL("UPDATE intentos SET marca = 'DISCOVER' WHERE attemptId = ?", arrayOf(enumRaro.valor))
+        sql.execSQL("UPDATE intentos SET attemptId = ? WHERE attemptId = ?", arrayOf(ID_DE_36, idViejo.valor))
+        servidor.acuses += guardado(EstadoDelReversoEnServidor.REVERSED)
+        assertEquals(setOf(buena), runBlocking { cola.entregarPendientes() }.keys)
+        assertEquals(1, servidor.reportados.size)
+        assertTrue(libreta.pendientesDeReporte().isEmpty())
+        sql.query("SELECT COUNT(*) FROM intentos WHERE reporte = 'PENDIENTE'").use { it.moveToFirst(); assertEquals(2, it.getInt(0)) }
+    }
+
+    /** I3: si entregar UNA fila lanza (un adaptador defectuoso), las demás se entregan igual. */
+    @Test fun `una excepcion al entregar una fila no detiene a las demas`() {
+        val primera = conReporte()
+        val segunda = conReporte()
+        var veces = 0
+        servidor.durante = { if (veces++ == 0) throw IllegalStateException("adaptador defectuoso") }
+        servidor.acuses += guardado(EstadoDelReversoEnServidor.REVERSED)
+        assertEquals(setOf(segunda), runBlocking { cola.entregarPendientes() }.keys)
+        assertEquals(EstadoDelReporte.PENDIENTE, libreta.buscar(primera)!!.reporte)
+    }
+
+    /** Codex r4 #2, salida «aviso al SERVIDOR»: un aviso CONFIRMADO cuyo reverso no está CONFIRMADO nunca sale como REVERSADA. */
+    @Test fun `un aviso confirmado sin reverso confirmado no se manda`() {
+        val id = conReporte() // CONFIRMADO con el reverso CONFIRMADO, como lo deja cerrarVuelta
+        db.openHelper.writableDatabase.execSQL("UPDATE intentos SET reverso = 'NO_CONCLUYENTE' WHERE attemptId = ?", arrayOf(id.valor))
+        assertTrue(runBlocking { cola.entregarPendientes() }.isEmpty())
+        assertTrue(servidor.reportados.isEmpty())
+        db.openHelper.readableDatabase.query("SELECT reporte FROM intentos WHERE attemptId = ?", arrayOf(id.valor)).use {
+            assertTrue(it.moveToFirst())
+            assertEquals("el aviso sigue pendiente", "PENDIENTE", it.getString(0))
+        }
     }
 }

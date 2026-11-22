@@ -47,12 +47,12 @@ class DukptTest {
 
     /**
      * R1-9: cada arreglo intermedio de llave queda en cero al terminar, el resultado no cambia, y ni la IPEK ni la llave de
-     * la transacción que entra a `cifrarTrack2` se tocan. El gancho ve cada arreglo justo ANTES de borrarlo: la copia dice qué
-     * era y la referencia, que quedó en cero.
+     * la transacción que entra a `cifrarTrack2` se tocan. El espía (el borrador que se inyecta) ve cada arreglo justo ANTES de
+     * borrarlo: la copia dice qué era y la referencia, que quedó en cero.
      */
     @Test fun `los arreglos intermedios de llave quedan en cero y la llave que entra no cambia`() {
         val track2 = "4761739001010010D2512201123456789"
-        // Lo que debe aparecer entre lo borrado, calculado ANTES de poner el gancho.
+        // Lo que debe aparecer entre lo borrado, calculado sin el espía.
         val intermedia = Dukpt.llaveDeTransaccion(ipek, Dukpt.ksnCon(base, 2)) // contador 3 = paso del bit 2 y luego del bit 1
         val registro = Dukpt.ksnCon(base, 3).copyOfRange(2, 10)
         val ipekConMascara = ipek.mapIndexed { i, b -> (b.toInt() xor "C0C0C0C000000000C0C0C0C000000000".hexABytes()[i].toInt()).toByte() }
@@ -64,18 +64,14 @@ class DukptTest {
         val ipekAntes = ipek.copyOf()
 
         val vistos = mutableListOf<Pair<ByteArray, ByteArray>>() // (la referencia, lo que tenía antes de borrarse)
-        Dukpt.antesDeBorrar = { vistos += it to it.copyOf() }
-        try {
-            val deTres = Dukpt.llaveDeTransaccion(ipek, Dukpt.ksnCon(base, 3))
-            val llave = Dukpt.llaveDeTransaccion(ipek, Dukpt.ksnCon(base, 1))
-            val llaveAntes = llave.copyOf()
-            assertEquals("9D90FCD37A1D006681EFACF98745FA7E01FFC9A13D5FCF35", Dukpt.cifrarTrack2(llave, track2))
-            assertArrayEquals(llaveAntes, llave) // la que entra no se modifica: la borra quien la pidió
-            assertArrayEquals(ipekAntes, ipek)
-            assertFalse(deTres.all { it == 0.toByte() }) // la llave que se regresa no se borra
-        } finally {
-            Dukpt.antesDeBorrar = null
-        }
+        val espia: (ByteArray) -> Unit = { vistos += it to it.copyOf(); Dukpt.CEROS(it) }
+        val deTres = Dukpt.llaveDeTransaccion(ipek, Dukpt.ksnCon(base, 3), espia)
+        val llave = Dukpt.llaveDeTransaccion(ipek, Dukpt.ksnCon(base, 1), espia)
+        val llaveAntes = llave.copyOf()
+        assertEquals("9D90FCD37A1D006681EFACF98745FA7E01FFC9A13D5FCF35", Dukpt.cifrarTrack2(llave, track2, espia))
+        assertArrayEquals(llaveAntes, llave) // la que entra no se modifica: la borra quien la pidió
+        assertArrayEquals(ipekAntes, ipek)
+        assertFalse(deTres.all { it == 0.toByte() }) // la llave que se regresa no se borra
         fun borrado(valor: ByteArray) = vistos.any { (_, antes) -> antes.contentEquals(valor) }
         assertTrue("llave intermedia del ciclo", borrado(intermedia))
         assertTrue("registro", borrado(registro))

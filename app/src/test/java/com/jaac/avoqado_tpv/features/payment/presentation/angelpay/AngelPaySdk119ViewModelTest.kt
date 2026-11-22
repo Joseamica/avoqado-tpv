@@ -44,6 +44,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.test.TestScope
@@ -53,6 +54,8 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -255,6 +258,20 @@ class AngelPaySdk119ViewModelTest {
         vm.onIntentLaunched()
         runCurrent()
         return vm to vm.attemptIdForTest()!!
+    }
+
+    /**
+     * D21 (21-nov): el registro corre en `Dispatchers.IO` (hilo real) y se publica la pantalla resuelta DESPUÉS de registrar.
+     * Se espera a esa pantalla en tiempo real, no a la llamada con `coVerify(timeout = 2_000)`, que con el CI cargado podía
+     * vencer antes de que el hilo llegara. Los 30 s sólo son red de seguridad: una regresión sale roja, no cuelga el CI.
+     */
+    private suspend fun esperarDesenlace(vm: AngelPayPaymentViewModel) = withContext(Dispatchers.Default) {
+        withTimeout(30_000) {
+            vm.state.first {
+                it is AngelPayPaymentState.Success || it is AngelPayPaymentState.Queued ||
+                    it is AngelPayPaymentState.Error || it is AngelPayPaymentState.Cancelled
+            }
+        }
     }
 
     private fun verificarSinEmision() = verify(exactly = 0) {
@@ -1081,7 +1098,8 @@ class AngelPaySdk119ViewModelTest {
             vm.onAngelPaySdkResult(delHost(intento, aprobado = true, codigo = AppErrorCatalog.Code.S000, codigoEmisor = "00", attempted = false))
             runCurrent()
 
-            coVerify(timeout = 2_000, exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
+            esperarDesenlace(vm)
+            coVerify(exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
             coVerify(exactly = 0) { paymentAttemptLedger.markSinAutorizacion(any(), any(), any()) }
             verify(atLeast = 1) { observabilityManager.logError("AngelPaySdkContradiccion", any(), any(), any()) }
         } finally {
@@ -1093,7 +1111,7 @@ class AngelPaySdk119ViewModelTest {
      * D5 (16-nov): el SDK trae en `cardType` el tipo del BIN que le contesta AngelPay («CREDITO»/«DEBITO»). Antes se tiraba y
      * toda venta de la Nexgo se registraba como CREDIT_CARD: el SERVIDOR calculaba la comisión de crédito también en débito.
      */
-    private fun TestScope.metodoRegistradoCon(cardType: String?): String {
+    private suspend fun TestScope.metodoRegistradoCon(cardType: String?): String {
         val tarjetas = mutableListOf<com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails>()
         coEvery { recordPaymentUseCase(any(), capture(tarjetas), any(), any()) } returns Result.success(
             PaymentReceipt(paymentId = "pay-1", receiptUrl = "", accessKey = "", amount = java.math.BigDecimal("100.00"), tipAmount = java.math.BigDecimal.ZERO),
@@ -1104,7 +1122,8 @@ class AngelPaySdk119ViewModelTest {
                 delHost(intento, aprobado = true, codigo = AppErrorCatalog.Code.S000, codigoEmisor = "00").copy(cardBin = "411111", cardType = cardType),
             )
             runCurrent()
-            coVerify(timeout = 2_000, exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
+            esperarDesenlace(vm)
+            coVerify(exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
             return tarjetas.single().toPaymentMethod()
         } finally {
             vm.viewModelScope.cancel()

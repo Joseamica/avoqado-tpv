@@ -29,8 +29,8 @@ android {
         applicationId = "com.jaac.avoqado_tpv"
         minSdk = 27  // Android 8.1 (required by Blumon PAX SDK EMV module)
         targetSdk = 34
-        versionCode = 135
-        versionName = "2.22.2"
+        versionCode = 136
+        versionName = "2.22.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -672,6 +672,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.0")
     implementation("androidx.lifecycle:lifecycle-livedata-ktx:2.9.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.0")
+    // D661 (Ruling 45): «¿la app está al frente?» (ProcessLifecycleOwner). Ya venía en el APK por transitividad, a la misma versión:
+    // declararla sólo la deja usar desde el código.
+    implementation("androidx.lifecycle:lifecycle-process:2.9.0")
 
     // Material Design
     implementation(libs.material)

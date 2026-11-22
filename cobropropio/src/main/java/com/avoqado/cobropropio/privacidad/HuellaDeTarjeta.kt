@@ -10,7 +10,7 @@ import javax.crypto.SecretKey
  * Ola final, 4ª parte (R24-4): ya no hay puerto (`HuellaDeTarjeta`). Era una interfaz pública: quien la implementara recibía
  * el PAN y el criptograma, y lo que devolviera se escribía tal cual en la libreta. Clase final; la app sólo le pasa la llave.
  */
-class HuellaHmac(private val llave: SecretKey) {
+internal class HuellaHmac(private val llave: SecretKey) {
     @JvmSynthetic internal fun de(dato: String): String =
         Mac.getInstance("HmacSHA256").run { init(llave); doFinal(dato.toByteArray(Charsets.UTF_8)) }.aHex()
 

@@ -25,7 +25,10 @@ class CommandInbox @Inject constructor(private val storage: SecureStorage) {
         val rows = read()
         val existing = rows.find { it.command.commandId == command.commandId }
         if (existing != null) {
-            check(existing.command.type == command.type && existing.command.payload == command.payload) { "Command identity changed" }
+            // D665 r2: releído del almacén un número vuelve como Double y el que llega del servidor es LazilyParsedNumber; como
+            // JSON (JsonPrimitive compara números por valor) el mismo comando sigue siendo el mismo.
+            check(existing.command.type == command.type &&
+                gson.toJsonTree(existing.command.payload) == gson.toJsonTree(command.payload)) { "Command identity changed" }
             return true
         }
         // ponytail: retain 100 receipts; only server-confirmed ones may be pruned.

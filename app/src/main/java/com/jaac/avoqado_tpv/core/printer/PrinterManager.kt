@@ -1,12 +1,14 @@
 package com.jaac.avoqado_tpv.core.printer
 
 import android.content.Context
+import android.os.SystemClock
 import android.graphics.Bitmap
 import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.R
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.util.VenueTimeZone
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.ImpresionNoEmpezada
 import com.pax.dal.IDAL
 import com.pax.neptunelite.api.NeptuneLiteUser
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -105,10 +107,10 @@ class PrinterManager @Inject constructor(
             "Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado."
         }
 
-    private val dal: IDAL? by lazy {
+    private val dal: IDAL? by lazyQueReintenta {
         if (!esHardwarePax) {
             Timber.i("🖨️ [Printer] Terminal sin hardware PAX — impresora nativa no disponible")
-            return@lazy null
+            return@lazyQueReintenta null
         }
         try {
             val instance = NeptuneLiteUser.getInstance().getDal(context)
@@ -121,8 +123,9 @@ class PrinterManager @Inject constructor(
         }
     }
 
-    private val impresoraPax: ImpresoraTermica? by lazy {
-        if (!esHardwarePax) return@lazy null
+    // D661 (Ruling 69 b): un arranque fallido no se queda guardado hasta reiniciar la app: el siguiente papel lo intenta otra vez.
+    private val impresoraPax: ImpresoraTermica? by lazyQueReintenta {
+        if (!esHardwarePax) return@lazyQueReintenta null
         try {
             dal?.getPrinter()?.also {
                 it.init()
@@ -1669,6 +1672,9 @@ class PrinterManager @Inject constructor(
      * @param staffName Optional staff name who sent the ticket
      * @param cliente 🧾 Tienda híbrida: a quién se le entrega («Para: Ana»); null = no se imprime
      * @param notaDelPedido 🧾 Tienda híbrida: la nota del pedido entero («Nota: sin azúcar»); null = no se imprime
+     * @param posibleRepetida 🧾 Ruling 9: el reclamo se concedió sobre otro que venció sin confirmarse; arriba sale «POSIBLE REPETIDA»
+     * @param sigueVigente 🧾 D661 · Ruling 50 (enmendado): se pregunta justo antes de ARRANCAR la impresora (`start()`), con todo dictado
+     *   y la impresora en mano; `false` = no arranca, el dictado se tira y regresa [ComandaNoEmpezada]. null = sin condición, como siempre.
      * @return Result.success if printed, Result.failure if error
      */
     fun printKitchenTicket(
@@ -1679,12 +1685,19 @@ class PrinterManager @Inject constructor(
         cliente: String? = null,
         notaDelPedido: String? = null,
         esComandaDeFolio: Boolean = false,
+        posibleRepetida: Boolean = false,
+        sigueVigente: (() -> Boolean)? = null,
     ): Result<Unit> {
         return synchronized(candado) { try {
+            // 🧾 D661 · Ruling 107: en la Nexgo la pregunta decisiva va DENTRO del gateway, justo antes de `startPrint`, ya preparada la
+            // impresora y cargados los renglones (la de abajo, antes de `start()`, no cubre esa espera).
+            var noEmpezo = false
             // Sólo la comanda automática acredita papel; las reimpresiones conservan las guardas del SDK.
             val printerInstance = (if (!esHardwarePax && esComandaDeFolio) {
                 ImpresoraAngelPay.paraEstaTerminal { ticket ->
-                    kotlinx.coroutines.runBlocking { angelPaySdkGateway.get().printTicket(ticket) }
+                    kotlinx.coroutines.runBlocking {
+                        angelPaySdkGateway.get().printTicket(ticket, sigueVigente = { sigueVigente?.invoke() != false })
+                    }.also { noEmpezo = it.exceptionOrNull() is ImpresionNoEmpezada }
                 }
             } else printer) ?: return Result.failure(
                 Exception(motivoSinImpresora)
@@ -1698,6 +1711,14 @@ class PrinterManager @Inject constructor(
 
             // Reset printer state
             printerInstance.init()
+
+            // 🧾 Ruling 9: la comanda pudo haber salido ya en otra caja (su reclamo venció sin confirmarse). Lo primero que lee la cocina.
+            if (posibleRepetida) {
+                printerInstance.printStr("********************************\n", null)
+                printerInstance.printStr("    *** POSIBLE REPETIDA ***\n", null)
+                printerInstance.printStr("      revisa si ya salió\n", null)
+                printerInstance.printStr("********************************\n", null)
+            }
 
             // ========================================
             // HEADER
@@ -1767,8 +1788,14 @@ class PrinterManager @Inject constructor(
             printerInstance.printStr("================================\n", null)
             printerInstance.printStr("\n\n\n", null) // Feed paper
 
+            // 🧾 D661 · Ruling 50 (enmendado): todo lo de arriba pudo esperar (otra impresión tenía la impresora; en la Nexgo `printStr`
+            // sólo junta texto). Justo antes de ARRANCAR se pregunta si todavía toca: si no, no arranca y el dictado se tira (el
+            // `init()` del siguiente papel lo borra; en la Nexgo era de este ticket).
+            if (sigueVigente?.invoke() == false) return Result.failure(ComandaNoEmpezada())
+
             // Execute print
             val result = printerInstance.start()
+            if (noEmpezo) return Result.failure(ComandaNoEmpezada())
 
             if (result == 0) {
                 Timber.i("✅ [Printer] Kitchen ticket printed successfully")
@@ -2169,6 +2196,35 @@ class PrinterManager @Inject constructor(
         return status.isReady && status.hasPaper
     }
 }
+
+/**
+ * D661 (Ruling 69 b): como `lazy`, pero un arranque fallido (null) no se guarda: se vuelve a intentar, a lo más una vez cada
+ * [cadaMs] según [reloj] (monótono).
+ */
+internal fun <T : Any> lazyQueReintenta(
+    cadaMs: Long = REINTENTO_DE_ARRANQUE_MS,
+    reloj: () -> Long = SystemClock::elapsedRealtime,
+    crear: () -> T?,
+): Lazy<T?> = object : Lazy<T?> {
+    @Volatile private var listo: T? = null
+    /** Cuándo falló el último intento (reloj monótono); null = nunca se ha intentado. */
+    private var fallidoEn: Long? = null
+    override val value: T?
+        get() = listo ?: synchronized(this) {
+            listo ?: run {
+                val ahora = reloj()
+                val antes = fallidoEn
+                if (antes != null && ahora - antes < cadaMs) null else crear().also { if (it != null) listo = it else fallidoEn = ahora }
+            }
+        }
+    override fun isInitialized(): Boolean = listo != null
+}
+
+/** D661 (Ruling 69 b): cada cuánto se vuelve a intentar arrancar la impresora que falló. */
+internal const val REINTENTO_DE_ARRANQUE_MS = 30_000L
+
+/** D661 · Ruling 50: quien pidió la comanda dijo, ya con la impresora libre, que ya no tocaba (su reclamo envejeció esperándola). */
+class ComandaNoEmpezada : Exception("La comanda no se empezó: su reclamo envejeció esperando la impresora")
 
 /**
  * Result of printer status check.

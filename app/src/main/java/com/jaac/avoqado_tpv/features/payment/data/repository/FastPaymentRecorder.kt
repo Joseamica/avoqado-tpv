@@ -286,7 +286,7 @@ class FastPaymentRecorder @Inject constructor(
             isOfflineReplay = context.isOfflineReplay.takeIf { it },
             // Sólo efectivo: en una fila de tarjeta `createdAt` es la hora del encolado tras fallar el registro, no la del cobro.
             createdAtLocal = context.createdAtLocal.takeIf { context.isOfflineReplay && cardDetails.isCash },
-            capturadoEnAparato = context.capturadoEnAparato.takeIf { !cardDetails.isCash },
+            edadDelIntentoMs = context.capturadoEnAparato?.takeIf { !cardDetails.isCash }?.let { (System.currentTimeMillis() - it).coerceAtLeast(0L) },
 
             // Card details from Blumon SDK
             authorizationNumber = authorizationNumber,
@@ -363,7 +363,7 @@ class FastPaymentRecorder @Inject constructor(
             isOfflineReplay = context.isOfflineReplay.takeIf { it },
             // Sólo efectivo: en una fila de tarjeta `createdAt` es la hora del encolado tras fallar el registro, no la del cobro.
             createdAtLocal = context.createdAtLocal.takeIf { context.isOfflineReplay && cardDetails.isCash },
-            capturadoEnAparato = context.capturadoEnAparato.takeIf { !cardDetails.isCash },
+            edadDelIntentoMs = context.capturadoEnAparato?.takeIf { !cardDetails.isCash }?.let { (System.currentTimeMillis() - it).coerceAtLeast(0L) },
             authorizationNumber = authorizationNumber,
             referenceNumber = referenceNumber,
             merchantAccountId = context.merchantAccountId,

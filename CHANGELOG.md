@@ -8,7 +8,7 @@
 ## [Unreleased]
 
 ### **Fixed**
-- **Tarjeta aprobada tarde en Pago rápido (D7, encargo a25cd7)**: cuando la libreta registra sola un «Aprobado» que quedó por confirmar, manda la hora en que se abrió el intento (`capturadoEnAparato`). El SERVIDOR la usa para avisar al dueño (`LATE_CARD_AFTER_CASH`) si en medio esa terminal cobró lo mismo en efectivo. No cambia el cobro ni la pantalla; un SERVIDOR viejo ignora el campo.
+- **Tarjeta aprobada tarde en Pago rápido (D7, encargo a25cd7)**: cuando la libreta registra sola un «Aprobado» que quedó por confirmar, manda cuánto tiempo pasó desde que se abrió el intento (`edadDelIntentoMs`, medido con el reloj de la terminal). El SERVIDOR la usa para avisar al dueño (`LATE_CARD_RECORDED`) que esa tarjeta se confirmó tarde, por si la venta se cobró también de otra forma. No cambia el cobro ni la pantalla; un SERVIDOR viejo ignora el campo.
 
 ### **Changed**
 - **Interno, sin efecto en la app · `cobropropio`, bloque 1 de la fase 3 del SDK propio**: el módulo sigue sin conectarse (`:app` no depende de él).

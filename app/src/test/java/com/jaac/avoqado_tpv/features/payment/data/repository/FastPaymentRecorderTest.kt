@@ -313,7 +313,7 @@ class FastPaymentRecorderTest {
     }
 
     @Test
-    fun `D7 la tarjeta recuperada manda la hora de su intento y una venta normal o el efectivo no`() = runTest {
+    fun `D7 la tarjeta recuperada manda la edad de su intento y una venta normal o el efectivo no`() = runTest {
         val captured = mutableListOf<FastPaymentRequest>()
         coEvery { apiService.recordFastPayment(any(), capture(captured)) } returns successResponse()
         val tarjeta = CardDetails(
@@ -332,7 +332,10 @@ class FastPaymentRecorderTest {
             "CASH-1",
         )
 
-        assertThat(captured.map { it.capturadoEnAparato }).containsExactly(1_763_830_000_000L, null, null).inOrder()
+        // Una DURACIÓN con el reloj de la terminal (ahora − intento), nunca la hora: el servidor la resta a su propia llegada.
+        val edad = captured[0].edadDelIntentoMs!!
+        assertThat(edad).isAtLeast(System.currentTimeMillis() - 1_763_830_000_000L - 60_000L)
+        assertThat(captured.drop(1).map { it.edadDelIntentoMs }).containsExactly(null, null).inOrder()
     }
 
     @Test

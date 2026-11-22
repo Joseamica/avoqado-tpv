@@ -71,10 +71,11 @@ data class FastPaymentRequest(
     @SerializedName("createdAtLocal")
     val createdAtLocal: Long? = null,
 
-    // D7 (encargo a25cd7): epoch ms en que se abrió el intento de tarjeta; sólo lo manda la recuperación de la libreta (el
-    // «Aprobado» que se registra tarde). El servidor sólo lo usa para avisar de un efectivo en medio. Nulo se omite.
-    @SerializedName("capturadoEnAparato")
-    val capturadoEnAparato: Long? = null,
+    // D7 (encargo a25cd7): cuántos ms pasaron, con el reloj de ESTA terminal, desde que se abrió el intento de tarjeta hasta este
+    // envío; sólo lo manda la recuperación de la libreta (el «Aprobado» que se registra tarde). Una duración, no una hora: un reloj
+    // desfasado no la cambia. El servidor sólo la usa para avisar al dueño (LATE_CARD_RECORDED). Nulo se omite.
+    @SerializedName("edadDelIntentoMs")
+    val edadDelIntentoMs: Long? = null,
 
     // Datos de Blumon SDK
     @SerializedName("authorizationNumber")

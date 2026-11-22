@@ -1745,14 +1745,13 @@ fun AppNavigation(
                                 conexionCompleta = connectionStateManager.isFullyConnected(),
                             ),
                         )
+                    // D36: la venta ya existe en el SERVIDOR; si su pantalla de cobro nunca abre, se pide retirarla. Cobrar olvida la llave
+                    // al confirmar la orden, así que cada toque es OTRA orden: la que no abre nunca la abre nadie más (Codex r2 #1).
+                    val orden = (payload as? com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Order)?.orderId
                     val lanzado = abrirUnSoloCobro(
                         envio, checkoutScope, navController, getPaymentRoute(), soloEfectivo,
                         lectorListo = {
-                            // D36: la venta ya existe en el SERVIDOR y su pantalla de cobro nunca abrió si la cajera sale de Cobrar
-                            // mientras se espera el lector (la corrutina se cancela) o si el lector no queda listo: se pide retirarla.
-                            // Lo que el candado de D671 ignora (otro toque, un turno viejo) NO se retira: con el mismo carrito es la
-                            // MISMA orden (o la misma llave de una venta local) que sí se abre.
-                            val orden = (payload as? com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Order)?.orderId
+                            // La cajera sale de Cobrar mientras se espera el lector (la corrutina se cancela), o el lector no queda listo.
                             val listo = try {
                                 awaitPaxPaymentReady(context, initializationManager, "Checkout payment")
                             } catch (salio: kotlinx.coroutines.CancellationException) {
@@ -1761,6 +1760,10 @@ fun AppNavigation(
                             }
                             if (!listo && orden != null) retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), orden)
                             listo
+                        },
+                        // D671 (Codex r2 #1 y #2): otro toque mientras uno espera, un turno viejo o el cobro del POS arriba.
+                        alNoAbrirse = {
+                            if (orden != null) retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), orden)
                         },
                     ) { handle ->
                         escribirArgumentosDeCobrar(handle, payload, soloEfectivo)
@@ -3600,6 +3603,9 @@ internal class EnvioDePagoRapido(private val origen: String) {
  * entrada del primer cobro y apilaba otro encima. Ahora pasa por [EnvioDePagoRapido]: un envío a la vez, sólo el último turno
  * abre y sólo si la pantalla de origen sigue arriba. [soloEfectivo] (sin red) no espera al lector ni respeta el candado.
  * [lectorListo] es `awaitPaxPaymentReady`. Devuelve false si se ignoró (quien llama avisa).
+ * [alNoAbrirse] corre UNA vez por cada envío que el candado no deja abrir: ignorado mientras otro espera, sustituido por un turno
+ * más nuevo, o con otra pantalla arriba (Codex r2 #1 y #2). No corre si el lector falla o se sale de la pantalla: eso lo ve
+ * [lectorListo]. Cobrar lo usa para retirar con D36 la orden que ya creó y que nunca tendrá pantalla de cobro.
  */
 internal fun abrirUnSoloCobro(
     envio: EnvioDePagoRapido,
@@ -3608,12 +3614,17 @@ internal fun abrirUnSoloCobro(
     rutaDelCobro: String,
     soloEfectivo: Boolean,
     lectorListo: suspend () -> Boolean,
+    alNoAbrirse: () -> Unit = {},
     escribir: (SavedStateHandle) -> Unit,
-): Boolean = envio.lanzar(sinEspera = soloEfectivo) { turno ->
-    scope.launch {
-        if (!soloEfectivo && !lectorListo()) return@launch
-        envio.abrir(turno, navController, rutaDelCobro, escribir)
+): Boolean {
+    val lanzado = envio.lanzar(sinEspera = soloEfectivo) { turno ->
+        scope.launch {
+            if (!soloEfectivo && !lectorListo()) return@launch
+            if (!envio.abrir(turno, navController, rutaDelCobro, escribir)) alNoAbrirse()
+        }
     }
+    if (!lanzado) alNoAbrirse()
+    return lanzado
 }
 
 /** Lo que «Cobrar» le deja a la pantalla de cobro (movido tal cual de `onNavigateToPayment`, D671). */

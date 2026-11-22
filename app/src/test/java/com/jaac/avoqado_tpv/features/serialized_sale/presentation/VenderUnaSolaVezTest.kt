@@ -50,6 +50,21 @@ class VenderUnaSolaVezTest {
     }
 
     @Test
+    fun `P1 crear una categoria mientras la venta va en camino no vuelve a dejar vender (Codex r2 #3)`() {
+        val respuesta = CompletableDeferred<Result<QuickSellResult>>()
+        coEvery { repo.quickSell(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers { respuesta.await() }
+        coEvery { repo.createCategory(any(), any(), any()) } returns Result.success(mockk(relaxed = true))
+        val v = vm()
+
+        v.onConfirmSale {}
+        v.createCategory("SIM nueva") // su respuesta apaga el `isLoading` que también usaba la venta
+        v.onConfirmSale {}
+        respuesta.complete(Result.success(mockk(relaxed = true)))
+
+        coVerify(exactly = 1) { repo.quickSell(any(), any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
     fun `tras una venta que fallo se puede volver a vender`() {
         coEvery { repo.quickSell(any(), any(), any(), any(), any(), any(), any(), any()) } returns Result.failure(Exception("x"))
         val v = vm()

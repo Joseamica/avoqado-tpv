@@ -215,6 +215,46 @@ class UnSoloCobroTest {
         assertFalse(nav.currentBackStackEntry!!.savedStateHandle.contains("orderId"))
     }
 
+    /**
+     * Codex r2 #1 y #2: Cobrar crea la orden ANTES de pedir el cobro y olvida su llave al confirmarse, así que cada toque es otra
+     * orden. Una que el candado no deja abrir (otro toque, un turno viejo, otra pantalla arriba) se le avisa a quien llama
+     * (`alNoAbrirse`) para que D36 la retire; la que sí abre, nunca.
+     */
+    @Test
+    fun `P1 cada envio que no llega a abrir avisa una vez y el que abre nunca`() = runTest {
+        val nav = en(NavRoute.Checkout)
+        val envio = EnvioDePagoRapido(NavRoute.Checkout.route)
+        val noAbrieron = mutableListOf<String>()
+        fun cobrar(id: String, listo: CompletableDeferred<Boolean>, soloEfectivo: Boolean = false) =
+            abrirUnSoloCobro(
+                envio, this, nav, NavRoute.Payment.route, soloEfectivo,
+                lectorListo = { listo.await() },
+                alNoAbrirse = { noAbrieron += id },
+            ) { escribirArgumentosDeCobrar(it, orden(id, "100.00"), soloEfectivo) }
+
+        // 1) Otro toque mientras A espera al lector: B nunca abre.
+        val lector = CompletableDeferred<Boolean>()
+        assertTrue(cobrar("A", lector))
+        advanceUntilIdle()
+        assertFalse(cobrar("B", lector))
+        assertEquals(listOf("B"), noAbrieron)
+
+        // 2) Se cae la red: el efectivo C abre ya y A, que esperaba al lector, ya no abre al quedar listo.
+        assertTrue(cobrar("C", CompletableDeferred(), soloEfectivo = true))
+        advanceUntilIdle()
+        lector.complete(true)
+        advanceUntilIdle()
+        assertEquals(listOf("B", "A"), noAbrieron)
+        assertEquals(1, nav.cobrosEnLaPila())
+        assertEquals("C", nav.getBackStackEntry(NavRoute.Checkout.route).savedStateHandle.get<String>("orderId"))
+
+        // 3) Otra pantalla arriba (el cobro del POS): D tampoco abre.
+        assertTrue(cobrar("D", CompletableDeferred(true)))
+        advanceUntilIdle()
+        assertEquals(listOf("B", "A", "D"), noAbrieron)
+        assertEquals(1, nav.cobrosEnLaPila())
+    }
+
     private fun texto(ruta: String) = File("src/main/java/com/jaac/avoqado_tpv/$ruta").readText()
 
     private fun bloque(texto: String, desde: String, hasta: String): String {
@@ -242,6 +282,12 @@ class UnSoloCobroTest {
             assertTrue("«$pantalla» debe avisar cuando se ignora", cuerpo.contains("if (!lanzado) avisarQueYaSeAbreUnCobro(context)"))
             assertFalse("«$pantalla» no debe navegar al cobro por fuera del candado", cuerpo.contains("navController.navigate(getPaymentRoute())"))
         }
+        // Codex r2 #1 y #2: en Cobrar, la orden que el candado no deja abrir se retira con D36.
+        val cobrarBloque = bloque(navegacion, "composable(NavRoute.Checkout.route)", "// 🪑 Mesas — Plan C, Task 6")
+        assertTrue(
+            "Cobrar debe pedir el retiro de D36 de la orden que el candado no deja abrir",
+            cobrarBloque.substringAfter("alNoAbrirse = {").substringBefore("},").contains("retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), orden)"),
+        )
         // Codex r1 #1: Cobrar NO pregunta antes de preparar la venta: con el SERVIDOR caído ese segundo toque pasa a venta local en
         // sólo efectivo. La Venta de SIMs sí (vender no tiene camino sin red y una venta ignorada dejaría su orden sin cobro).
         assertFalse(

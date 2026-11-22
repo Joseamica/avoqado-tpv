@@ -65,15 +65,21 @@ class RegresoDeCobrarTest {
         // D671: la espera del lector de Cobrar vive en el `lectorListo` de `abrirUnSoloCobro` (sólo corre si el toque no va en sólo
         // efectivo); el retiro de D36 va ahí, con la orden del payload.
         val cobrar = navegacion.substring(navegacion.indexOf("composable(NavRoute.Checkout.route)")).substringBefore("// 🪑 Mesas — Plan C, Task 6")
-        val espera = cobrar.substringAfter("lectorListo = {").substringBefore(") { handle ->")
-        assertThat(espera).contains("val orden = (payload as? com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Order)?.orderId")
+        assertThat(cobrar.substringBefore("abrirUnSoloCobro(")).contains(
+            "val orden = (payload as? com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Order)?.orderId",
+        )
+        val espera = cobrar.substringAfter("lectorListo = {").substringBefore("alNoAbrirse = {")
         // La cajera sale de Cobrar mientras se espera el lector: la corrutina se cancela y se pide retirar antes de re-lanzar.
         val alSalir = espera.substringAfter("catch (salio: kotlinx.coroutines.CancellationException) {").substringBefore("throw salio")
         assertThat(alSalir).contains("retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), orden)")
         // El lector no quedó listo: tampoco hubo pantalla de cobro.
         assertThat(espera).contains("if (!listo && orden != null) retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), orden)")
-        // Lo que el candado de D671 ignora no se retira: el retiro sólo vive dentro de la espera.
-        assertThat(cobrar.substringAfter(") { handle ->")).doesNotContain("alRegresarSinCobrar")
+        // D671 (Codex r2): lo que el candado no deja abrir también se retira (`alNoAbrirse`); lo que SÍ abre (el escritor de los
+        // argumentos del cobro) nunca.
+        assertThat(cobrar.substringAfter("alNoAbrirse = {").substringBefore("},")).contains(
+            "retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), orden)",
+        )
+        assertThat(cobrar.substringAfter(") { handle ->").substringBefore("if (!lanzado)")).doesNotContain("alRegresarSinCobrar")
     }
 
     @Test

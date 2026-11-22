@@ -339,19 +339,28 @@ class CajaTrabadaSinPermisoRoomTest {
         coVerify(exactly = 0) { api.openShiftConPin(any(), any(), any()) }
     }
 
-    /** Codex r1 #6: si la respuesta se perdió, el reintento (otro PIN) repite la MISMA operación y no abre otra caja. */
-    @Test fun `el reintento de abrir con PIN repite la misma llave`() = runTest {
+    /** Codex r2 #2: el servidor lee la abierta y la conocida por separado; si en medio se cerró la de aquí, no se confirma. */
+    @Test fun `si el servidor ve abierta la de aqui pero ya la vio cerrar no se confirma`() = runTest {
+        val a = repo.registrarCajaRemotaConocida(venue, caja(vieja, drawer = "c00000000000000000000000a")).getOrThrow()
         entraCocina()
-        val pedidos = mutableListOf<OpenShiftRequest>()
-        coEvery { api.openShiftConPin(venue, capture(pedidos), "tok-1") } throws IOException("se perdió")
-        coEvery { api.openShiftConPin(venue, capture(pedidos), "tok-2") } returns
-            Response.success(ShiftResponse(true, caja(nueva).copy(openingDisposition = "OWN")))
+        sinCifras(identidad(vieja), KnownShiftState(vieja, venue, "CLOSED"), conocida = vieja)
 
-        repo.abrirCajaConPin(venue, "cocina", BigDecimal("800.00"), "tok-1")
-        repo.abrirCajaConPin(venue, "cocina", BigDecimal("800.00"), "tok-2").getOrThrow()
+        val r = repo.getCurrentShift(venue)
 
-        assertThat(pedidos).hasSize(2)
-        assertThat(pedidos[1].operationId).isEqualTo(pedidos[0].operationId)
-        assertThat(db.localShiftSessionDao().abierta(venue)!!.serverShiftId).isEqualTo(nueva)
+        assertThat(((r as Result.Error).exception as ApiException.HttpError).code).isEqualTo(403)
+        assertThat(db.localShiftSessionDao().abierta(venue)).isEqualTo(a)
+    }
+
+    /** Codex r2 #6: con Caja apagada tampoco se guarda la caja del negocio después de un cierre observado. */
+    @Test fun `con Caja apagada tras un cierre observado Cocina no guarda la caja nueva`() = runTest {
+        cajaDeAyerVistaCerrada()
+        entraCocina()
+        every { storage.getBoolean("enable_shifts", true) } returns false
+        sinCifras(identidad())
+
+        repo.getCurrentShift(venue)
+
+        assertThat(db.localShiftSessionDao().abierta(venue)).isNull()
+        coVerify(exactly = 0) { api.getShiftIdentity(any(), any()) }
     }
 }

@@ -103,9 +103,6 @@ class ShiftRepository(
 
     private val _shiftChanges = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
-    /** D24 (Codex r1 #6): «sucursal|persona|fondo» → llave de la apertura con PIN cuya respuesta no llegó. Sólo en memoria. */
-    @Volatile private var aperturaConPinSinRespuesta: Pair<String, String>? = null
-
     /**
      * Avisa cada vez que ESTE aparato abre o cierra el turno con éxito, sin importar desde qué
      * pantalla (QA Nexgo N86, 7-sep-2026): cada pantalla tiene su propio `ShiftViewModel` —el de
@@ -165,28 +162,26 @@ class ShiftRepository(
      * pasa solo a ella.
      * - Barrera (Codex r1 #3): con una apertura o un cierre de este aparato todavía por enviar no se abre: el cierre pendiente va
      *   primero, como en la cola de siempre.
-     * - Reintento (Codex r1 #6): si la respuesta se perdió, el siguiente intento con el mismo fondo repite la MISMA llave; el
-     *   servidor contesta lo que ya hizo en vez de abrir otra caja. Otro PIN, la misma operación.
+     * - Límite (Codex r2 #1, regla de parada): cada intento lleva su propia llave. Si la respuesta se perdió y, antes del
+     *   reintento, otro aparato cerró la caja que sí se abrió, el reintento abre otra con el mismo fondo. Repetir la llave no
+     *   bastaba (el servidor compara también la hora de apertura y contesta 409); queda escrito en la promesa.
      */
     suspend fun abrirCajaConPin(venueId: String, staffId: String, startingCash: BigDecimal, overrideToken: String): Result<Shift> {
         val saved = resultadoLocal {
             val cash = canonicalCashCount(startingCash) ?: error("El fondo no es válido.")
             val authority = autoridadLocal(venueId, *VER_CAJA_DEL_NEGOCIO)
             check(authority.staffId == staffId && authority.shiftsEnabled == true) { "Verifica la sesión y la configuración de Caja." }
+            // Codex r2 #5: enviar ese cierre pide permiso de cerrar; esperar con la sesión de Cocina no lo destraba.
             check(database.localShiftSessionDao().porReproducir(venueId).isEmpty()) {
-                "Hay una apertura o un cierre de caja guardado en este aparato que todavía no se envía. Espera a que se envíe y vuelve a intentar."
+                "Hay una apertura o un cierre de caja de este aparato que todavía no se envía. Pide a un cajero o gerente que entre para enviarlo y luego abre la caja."
             }
-            val intento = "$venueId|$staffId|$cash"
-            val llave = aperturaConPinSinRespuesta?.takeIf { it.first == intento }?.second ?: CuidV1.next()
-            aperturaConPinSinRespuesta = intento to llave
+            val llave = CuidV1.next()
             val request = OpenShiftRequest(venueId, staffId, cash.toDouble(), null, operationId = llave, localId = llave,
                 openedAt = java.time.Instant.now().toString(), isOfflineReplay = false)
             val response = try {
                 apiService.openShiftConPin(venueId, request, overrideToken)
             } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
               catch (error: java.io.IOException) { throw ApiException.NetworkError(error) }
-            // Una respuesta del servidor (sí o no) cierra el intento; sin respuesta (red, 5xx) se conserva la llave.
-            if (response.code() < 500) aperturaConPinSinRespuesta = null
             val body = response.body()?.data?.takeIf { response.isSuccessful && response.body()?.success == true }
                 ?: throw ApiException.HttpError(response.code(), "Apertura con PIN HTTP ${response.code()}",
                     if (response.code() == 403) "El PIN ya no sirve. Toca «Abrir nueva caja» y que lo vuelvan a poner." else null)
@@ -641,6 +636,8 @@ class ShiftRepository(
         val evidencia: String get() = localGson.toJson(completa ?: abierta)
     }
 
+    private fun cajaApagada() = secureStorage.contains("enable_shifts") && !secureStorage.getBoolean("enable_shifts", true)
+
     /** D24: la ruta sin cifras (permiso de cobrar). null = no se supo (sin red, 403, o un SERVIDOR sin la ruta: 404). */
     private suspend fun cajaSinCifras(venueId: String, conocida: String?): CajaDelNegocio? =
         apiService.getShiftIdentity(venueId, conocida).takeIf { it.isSuccessful }?.body()?.let { CajaDelNegocio(it.shift, it.known, null) }
@@ -651,7 +648,8 @@ class ShiftRepository(
      */
     private suspend fun preguntarCajaDelNegocio(venueId: String, conocida: String?): CajaDelNegocio? {
         val actual = apiService.getCurrentShift(venueId)
-        if (actual.code() == 403) return cajaSinCifras(venueId, conocida)
+        // D24: con Caja apagada no se pregunta por la caja sin cifras (Codex r1 #9 y r2 #6: también tras un cierre observado).
+        if (actual.code() == 403) return if (cajaApagada()) null else cajaSinCifras(venueId, conocida)
         if (!actual.isSuccessful) return null
         val completa = actual.body()?.shift
         val estado = if (conocida != null && completa?.status == "OPEN" && completa.id != conocida)
@@ -687,7 +685,7 @@ class ShiftRepository(
         val vieja = abiertaAqui?.serverShiftId
         when {
             // Codex r1 #9: con Caja apagada no se guarda ninguna caja.
-            secureStorage.contains("enable_shifts") && !secureStorage.getBoolean("enable_shifts", true) -> null
+            cajaApagada() -> null
             abiertaAqui != null && vieja == null -> null
             else -> cajaSinCifras(venueId, vieja)?.let { usarCajaSinCifras(venueId, abiertaAqui, vieja, it) }
         }
@@ -702,8 +700,11 @@ class ShiftRepository(
     ): Result<Shift?>? {
         val remote = caja.abierta?.takeIf { it.venueId == venueId }
         if (abiertaAqui != null && vieja != null) {
-            // Codex r1 #1: la de aquí sigue siendo la abierta del negocio. Se confirma (sin cifras) y el cobro sigue.
-            if (remote?.id == vieja && remote.status == "OPEN") return Result.Success(proyectar(abiertaAqui))
+            // Codex r1 #1: la de aquí sigue siendo la abierta del negocio. Se confirma (sin cifras) y el cobro sigue. Codex r2 #2:
+            // el servidor lee la abierta y la conocida por separado; si en medio se cerró, la conocida lo dice y no se confirma.
+            val conocida = caja.conocida
+            if (remote?.id == vieja && remote.status == "OPEN" && conocida?.id == vieja && conocida.status == "OPEN")
+                return Result.Success(proyectar(abiertaAqui))
             if (pasarSiLaViejaCerro(venueId, abiertaAqui, vieja, caja))
                 return database.localShiftSessionDao().abierta(venueId)?.takeIf { it.serverShiftId == remote?.id }?.let { Result.Success(proyectar(it)) }
             // Codex r1 #2: la de aquí se cerró y el negocio no tiene otra: se ve cerrada, con «Abrir nueva caja».

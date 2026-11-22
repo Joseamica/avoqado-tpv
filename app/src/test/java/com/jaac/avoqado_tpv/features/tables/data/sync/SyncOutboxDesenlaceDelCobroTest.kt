@@ -19,6 +19,8 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.spyk
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -300,6 +302,12 @@ class SyncOutboxDesenlaceDelCobroTest {
         var siguio = false
         trabajador = launch {
             outbox.replayNow(VENUE) { intent, _ ->
+                // Como el aviso de producción (`TableSyncCoordinator.handleAck` entra con `withContext`), revisa la
+                // cancelación al entrar. D674: sin esto la prueba dependía de una carrera de hilos. Room 2.7 corre cada
+                // consulta bajo su propio trabajo, así que la cancelación sólo sale de `dao.resolve` si la consulta hizo
+                // pausa; si el hilo de Room terminaba antes, la pasada seguía hasta el final y `siguio` quedaba en true
+                // (CI del PR #120 de la TPV, corrida 44952419420).
+                currentCoroutineContext().ensureActive()
                 avisados += intent.id
                 if (intent.id == ronda) trabajador.cancel() // WorkManager lo detiene
             }
@@ -307,9 +315,9 @@ class SyncOutboxDesenlaceDelCobroTest {
         }
         trabajador.join()
 
-        // Como en `main`: la cancelación sale y lo que seguía después de `replayNow` no corre. Cuántos avisos alcanzan a salir
-        // depende de en qué suspensión la note (una consulta de Room puede terminar sin suspender): eso no se fija aquí.
-        assertThat(avisados.first()).isEqualTo(ronda)
+        // Como en `main`: la cancelación sale y lo que seguía después de `replayNow` no corre. Sale en `dao.resolve` del cobro
+        // si Room hizo pausa, o en su aviso si no: en los dos casos el cobro ya no se avisa.
+        assertThat(avisados).containsExactly(ronda)
         assertThat(siguio).isFalse()
         assertThat(trabajador.isCancelled).isTrue()
     }

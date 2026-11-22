@@ -19,6 +19,9 @@
   - Superficie pública cerrada con `explicitApi()`: la app sólo ve 35 nombres (los puertos de Blumon, del transporte y del SERVIDOR ya no); una venta con importe fuera de rango no se construye.
   - Ola de arreglos tras la revisión final y Codex r1 sobre el código: una cancelación que una cancelación hermana ilegible frena antes de anotar su fila suelta a la cajera con «por confirmar» y después deja su veto: el folio contesta «No salió» y nunca sale (ahora con su prueba del motor); la fábrica se prueba por lo que arma (endpoints e identidad de Blumon por ambiente, pines del SERVIDOR, y lo rechazado no abre la libreta); `pendientesDeReporte()` vuelve a revisar que cada aviso siga pendiente al leerlo; las guardias de lectura cruda, del DAO, de la superficie pública con sangría, del borrador de DUKPT y de las `var` se cierran; la prueba de `salud()` y la instrumentada del TLS (cabeceras y cuerpo leídos aparte) se endurecen.
 
+### **Fixed**
+- **Interno, sólo pruebas · prueba inestable de la cola de Mesas (D674)**: `SyncOutboxDesenlaceDelCobroTest` «una cancelacion a media respuesta…» fallaba a veces en el CI (`siguio` en true). Room 2.7 corre cada consulta bajo su propio trabajo, así que la cancelación sólo salía si la consulta hacía pausa: dependía de qué hilo ganaba. Su aviso ahora revisa la cancelación al entrar, como el de producción (`TableSyncCoordinator.handleAck`), y vuelve a afirmar que el cobro no se avisa. La app no cambia.
+
 ---
 
 ## [2.22.3] - 2026-11-21

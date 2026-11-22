@@ -8,13 +8,19 @@ plugins {
 android {
     namespace = "com.avoqado.cobropropio"
     compileSdk = 36
-    defaultConfig { minSdk = 27 }
+    defaultConfig {
+        minSdk = 27
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
 }
+
+// Fase 3, bloque 1: la superficie pública es una lista cerrada (GuardasTest); cada declaración pública lleva `public` escrito.
+kotlin { explicitApi() }
 
 // La libreta (Room) exporta su esquema: es el DDL canónico para cualquier migración futura.
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }
@@ -25,6 +31,10 @@ tasks.withType<Test>().configureEach {
         outputs.upToDateWhen { false }
         outputs.cacheIf { false }
     }
+    // Las guardias (GuardasTest, SuperficieTest) leen estos archivos como TEXTO: quitar `explicitApi()` no cambia el bytecode,
+    // y sin declararlos la prueba saldría verde del caché.
+    inputs.file("build.gradle.kts").withPropertyName("guardasBuildScript").withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.dir("src/main/java").withPropertyName("guardasFuentes").withPathSensitivity(PathSensitivity.RELATIVE)
     // Ola final, 6ª parte: si una prueba truena, el log del CI dice por qué (el mensaje del assert y su pila completa).
     testLogging {
         events(org.gradle.api.tasks.testing.logging.TestLogEvent.FAILED)
@@ -48,4 +58,9 @@ dependencies {
     testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
     testImplementation("org.robolectric:robolectric:4.11.1")
     testImplementation("androidx.test:core:1.5.0")
+
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.espresso.core) // sólo trae el AndroidJUnitRunner, con la versión de :app
+    androidTestImplementation("com.squareup.okhttp3:okhttp:4.12.0")
+    androidTestImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
 }

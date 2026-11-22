@@ -73,11 +73,126 @@ class GuardasTest {
         ),
     )
 
+    /**
+     * Fase 3, bloque 1 (Codex r3 #3, vara 2): toda fila de la libreta se lee por UN punto validado; ninguna lectura cruda más.
+     * Codex b1 r1 (C3): también por `db.dao()`, y el DAO no tiene otra forma de entregar la entidad que esas tres.
+     */
+    @Test fun `la libreta lee filas por un solo punto validado`() {
+        // `apariciones` ya salta comentarios: cuenta líneas de código, una por lectura cruda (por `dao.` o por `dao().`).
+        for (lectura in listOf("buscar", "cancelacionesDe", "porRowid")) {
+            val cruda = Regex("""\bdao(?:\(\))?\.$lectura\(""")
+            assertEquals("lecturas crudas «$lectura»", listOf("libreta/Libreta.kt"), apariciones(cruda).map { it.first })
+        }
+        // C3 (b): los métodos del DAO que devuelven la entidad (sola, anulable o en lista) son EXACTAMENTE esos tres.
+        val dao = Class.forName("com.avoqado.cobropropio.libreta.LibretaDao")
+        assertEquals(
+            setOf("buscar", "cancelacionesDe", "porRowid"),
+            dao.declaredMethods.filter { "libreta.IntentoEntity" in it.genericReturnType.typeName }.map { it.name }.toSet(),
+        )
+        assertTrue("dao::buscar volvió", apariciones(Regex("""dao::buscar""")).isEmpty())
+        val fuera = apariciones(Regex("""\bdao\b""")).filterNot { it.first.startsWith("libreta/") }
+        assertTrue("el dao fuera de la libreta: $fuera", fuera.isEmpty())
+    }
+
     @Test fun `motor y libreta no tocan Gson`() {
         for (carpeta in listOf("motor", "libreta")) {
             val conGson = File(raiz, carpeta).walk().filter { it.extension == "kt" && "com.google.gson" in it.readText() }.toList()
             assertEquals(carpeta, emptyList<File>(), conGson)
         }
+    }
+
+    /** D8: ningún gancho de prueba mutable vive en el código de cifrado de producción. */
+    @Test fun `cripto no guarda ganchos de prueba`() {
+        val dukpt = File(raiz, "cripto/Dukpt.kt").readText()
+        assertTrue("antesDeBorrar volvió", "antesDeBorrar" !in dukpt)
+        // Sólo miembros del objeto (4 espacios): las `var` locales de las funciones (8 espacios) no cuentan. m5: con cualquier
+        // visibilidad, y también `lateinit`.
+        val mutable = Regex("""^ {4}(?:@\S+ )*(?:(?:internal|private|public|protected|lateinit) )*var """, RegexOption.MULTILINE)
+        assertTrue("una variable mutable en Dukpt", mutable.find(dukpt) == null)
+    }
+
+    /**
+     * Fase 3, bloque 1 (revisión de una tarea anterior): ningún llamador de producción le pasa a `Dukpt` un borrador que no
+     * borre. El parámetro `borrador` sólo se nombra dentro de `cripto/Dukpt.kt`; las pruebas inyectan el suyo.
+     */
+    @Test fun `borrador no aparece en src main fuera de Dukpt`() {
+        val fuera = apariciones(Regex("""\bborrador\b""")).filterNot { it.first == "cripto/Dukpt.kt" }
+        assertTrue("borrador fuera de cripto/Dukpt.kt: $fuera", fuera.isEmpty())
+        // Ronda 1 de la revisión de la tarea 7: el borrador es el último parámetro y de tipo función, así que una lambda final
+        // (`Dukpt.llaveDeTransaccion(ipek, ksn) { }`) lo cambia sin nombrarlo. Cada llamada a las cuatro funciones que lo reciben
+        // (o una referencia `Dukpt::`) es EXACTAMENTE uno de estos renglones: una lambda final, un argumento de más o una llamada
+        // partida en líneas cambian el renglón y lo ponen rojo.
+        val llamadas = apariciones(Regex("""Dukpt\.(?:llaveDeTransaccion|cifrarTrack2|llaveDeDatos|tdes)\b|Dukpt::"""))
+            .filterNot { it.first == "cripto/Dukpt.kt" }
+        assertEquals(
+            listOf(
+                "blumon/ArmadoDelMensaje.kt" to "val llave = Dukpt.llaveDeTransaccion(dukpt.ipek, ksn)",
+                "blumon/ArmadoDelMensaje.kt" to "try { cifrada = Dukpt.cifrarTrack2(llave, banda) } finally { llave.fill(0) }",
+                "blumon/ClienteBlumon.kt" to "val material = MaterialDeSesion(Dukpt.tdes(tk, llave.hexABytes(), cifrar = false), base.hexABytes())",
+            ).sortedBy { it.toString() },
+            llamadas.sortedBy { it.toString() },
+        )
+        // C5 (Codex b1 r1): y quien no lo nombra recibe el que borra: las cuatro lo declaran con `CEROS` por defecto.
+        val dukpt = File(raiz, "cripto/Dukpt.kt").readLines()
+        for (f in listOf("llaveDeTransaccion", "cifrarTrack2", "llaveDeDatos", "tdes")) {
+            val firma = dukpt.single { "fun $f(" in it }
+            assertTrue("$f: el borrador por defecto no es CEROS: $firma", "borrador: (ByteArray) -> Unit = CEROS)" in firma)
+        }
+    }
+
+    /**
+     * Fase 3, bloque 1: lo que la app puede tocar es ESTA lista (los puertos de Blumon, del transporte y del SERVIDOR ya no).
+     * Con `explicitApi()`, cada declaración pública lleva `public` escrito: aquí se leen las de primer nivel. `FilaIlegible`
+     * entra porque `Libreta.buscar` la lanza y la app la tiene que poder atrapar.
+     */
+    @Test fun `la superficie publica es la lista cerrada`() {
+        // Un renglón de código, no un comentario: sin `//` antes de la llamada.
+        val explicito = Regex("""^[^/\n]*\bexplicitApi\(\)""", RegexOption.MULTILINE)
+        assertTrue("explicitApi() en el módulo", explicito.containsMatchIn(File("build.gradle.kts").readText()))
+        // Ronda 1: toda línea de primer nivel que empieza con `public` (con anotaciones antes, o no) se tiene que leer aquí; la
+        // que no se lee truena, para que una forma que nadie pensó no se cuele.
+        val publico = Regex("""^(?:@.*?\s+)?public\b""")
+        val declaracion = Regex(
+            """^(?:@.*?\s+)?public\b[^(=:{]*?\b(?:class|interface|object|fun|val|var|typealias)\s+(?:<[^>]*>\s*)?(?:\w+\.)?(\w+)""",
+        )
+        // C3 (Codex b1 r1): «de primer nivel» es por profundidad, no por columna: una declaración con sangría fuera de toda llave
+        // y paréntesis también cuenta.
+        val lineas = raiz.walk().filter { it.extension == "kt" }.flatMap { f -> primerNivel(f).map { f.relativeTo(raiz).path to it } }
+            .filter { publico.containsMatchIn(it.second) }.toList()
+        val sinLeer = lineas.filter { declaracion.find(it.second) == null }
+        assertTrue("líneas públicas que la guardia no sabe leer: $sinLeer", sinLeer.isEmpty())
+        val publicas = lineas.map { declaracion.find(it.second)!!.groupValues[1] }.toSet()
+        assertEquals(
+            setOf(
+                "AttemptId", "Marca", "Medio", "Entrada", "Operacion", "Ambiente", "ResultadoKernel", "Cvm", "Identidad", "Lectura",
+                "ResultadoDeLectura", "LectorDeTarjeta", "Red", "Origen", "Solicitud", "SolicitudDeVenta", "SolicitudDeCancelacion",
+                "EventoDeCobro", "MotivoNoSalio", "MotivoNoAdmitida", "ResultadoDelCorte", "MotorDeCobro", "crearMotorDeCobro",
+                "Libreta", "SaludDeLaLibreta", "FilaIlegible", "IntentoEntity", "EstadoDelIntento", "EstadoDelReverso",
+                "EstadoDelReporte", "ResultadoParaReportar", "OrigenDeLaAprobacion", "EstadoDelReversoEnServidor",
+                "CredencialDelCliente", "CredencialDelServidor",
+            ),
+            publicas,
+        )
+    }
+
+    /**
+     * Las líneas de [f] que empiezan fuera de toda llave y paréntesis, sin su sangría. Las líneas de comentario y lo que va
+     * después de ` // ` no cuentan para la profundidad. Si la cuenta se pierde (baja de cero, o el archivo no cierra en cero:
+     * p. ej. una llave suelta en una cadena), truena: la guardia no sabe leer ese archivo.
+     */
+    private fun primerNivel(f: File): List<String> {
+        var nivel = 0
+        val fuera = mutableListOf<String>()
+        for (linea in f.readLines()) {
+            val t = linea.trim()
+            if (nivel == 0) fuera += t
+            if (t.startsWith("*") || t.startsWith("/*") || t.startsWith("//")) continue
+            val codigo = linea.substringBefore(" // ")
+            nivel += codigo.count { it == '{' || it == '(' } - codigo.count { it == '}' || it == ')' }
+            assertTrue("${f.name}: la cuenta de llaves bajó de cero", nivel >= 0)
+        }
+        assertEquals("${f.name}: la cuenta de llaves no cierra", 0, nivel)
+        return fuera
     }
 
     /**
@@ -113,7 +228,7 @@ class GuardasTest {
 
         // 2ª parte: las otras clases que guardan el token, la credencial Basic, la IPEK, la llave derivada o la banda cifrada.
         for ((nombre, cerrados) in listOf(
-            "com.avoqado.cobropropio.cripto.Dukpt" to listOf("llaveDeTransaccion", "cifrarTrack2", "llaveDeDatos", "tdes", "getAntesDeBorrar", "setAntesDeBorrar"),
+            "com.avoqado.cobropropio.cripto.Dukpt" to listOf("llaveDeTransaccion", "cifrarTrack2", "llaveDeDatos", "tdes", "getCEROS", "CEROS"),
             // 3ª parte (Codex r23): los `internal` que Java todavía veía.
             "com.avoqado.cobropropio.motor.MotorDeCobro" to listOf("tokenNuevo"),
             "com.avoqado.cobropropio.red.EnvioUnico" to listOf("getBase"),
@@ -130,6 +245,9 @@ class GuardasTest {
             "com.avoqado.cobropropio.blumon.CuerpoDeBlumon" to listOf("json"),
             "com.avoqado.cobropropio.dominio.Lectura" to listOf("tags"),
             "com.avoqado.cobropropio.blumon.MaterialDukpt" to listOf("ipek"),
+            // Fase 3, bloque 1 (A3): con la base, cualquiera escribe una fila sin pasar por el motor.
+            "com.avoqado.cobropropio.libreta.Libreta" to listOf("getDb", "db"),
+            "com.avoqado.cobropropio.libreta.LibretaDatabase\$Companion" to listOf("constructor"),
         )) {
             val clase = Class.forName(nombre)
             for (m in cerrados) assertTrue("${clase.simpleName}.$m lo ve Java", m !in publicos(clase))

@@ -19,7 +19,7 @@ internal abstract class LibretaDatabase : RoomDatabase() {
 
     internal companion object {
         /** El archivo va donde diga el llamador; [Libreta.abrir] lo pone en `noBackupFilesDir`. */
-        fun constructor(context: Context, archivo: File): Builder<LibretaDatabase> =
+        @JvmSynthetic fun constructor(context: Context, archivo: File): Builder<LibretaDatabase> =
             Room.databaseBuilder(context.applicationContext, LibretaDatabase::class.java, archivo.absolutePath)
                 .setJournalMode(JournalMode.TRUNCATE)
                 .addCallback(object : Callback() {

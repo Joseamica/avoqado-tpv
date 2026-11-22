@@ -268,6 +268,9 @@ class SerializedSaleViewModel @Inject constructor(
      */
     fun onConfirmSale(onSuccess: (QuickSellResult) -> Unit) {
         val state = _uiState.value
+        // D671 (Codex r1 #2): un segundo toque antes de repintar «Procesando…» mandaba otro quick-sell, y el SERVIDOR crea una orden
+        // PENDIENTE por cada uno (la SIM sólo se marca vendida al cobrar): la que no llega al cobro se queda sin cobro.
+        if (state.isLoading) return
         val price = state.enteredPrice.ifEmpty { "0" }.toBigDecimalOrNull() ?: BigDecimal.ZERO
 
         if (price < BigDecimal.ZERO) {

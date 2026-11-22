@@ -191,13 +191,27 @@ class DeclaracionDesdeElAviso @Inject constructor(
         val anterior = ultimoRefrescado
         val cobro = enOrden.firstOrNull { anterior == null || it.identidad > anterior } ?: enOrden.firstOrNull() ?: return
         ultimoRefrescado = cobro.identidad
-        try {
-            withTimeoutOrNull(TOPE_DEL_REFRESCO_MS) { consultar(venueId, cobro) }
-        } catch (cancelada: CancellationException) {
-            throw cancelada
-        } catch (error: Exception) {
-            Timber.w(error, "🧾 [NoSeCobro] no se pudo refrescar %s", cobro.identidad)
-        }
+        consultarConTope(venueId, cobro)
+    }
+
+    /**
+     * hz:248b195b:D20 (21-nov): al MOSTRARSE la lista (y al volver a la pantalla o de segundo plano) se consulta TODA una vez, en su orden
+     * y con el tope de [refrescarUno]. Una duda que el gerente firmó en la tablet mientras la terminal estaba en otra pantalla se va al
+     * abrirla, no cuando le toque su turno en la rueda (antes, hasta N × 15 s). Sólo lee: nunca declara. La primera sin respuesta (sin
+     * red, tope o 5xx) detiene el barrido: no insiste fila por fila, y lo que falte lo pone al día la rueda cuando vuelva la red.
+     */
+    suspend fun refrescarAlMostrarse(venueId: String, cobros: List<CobroDeclarable>) {
+        for (cobro in cobros) if (!consultarConTope(venueId, cobro)) return
+    }
+
+    /** Una consulta con [TOPE_DEL_REFRESCO_MS]. true = Avoqado contestó; sin respuesta, tope o un fallo inesperado, false. */
+    private suspend fun consultarConTope(venueId: String, cobro: CobroDeclarable): Boolean = try {
+        withTimeoutOrNull(TOPE_DEL_REFRESCO_MS) { consultar(venueId, cobro) }?.sinRespuesta == false
+    } catch (cancelada: CancellationException) {
+        throw cancelada
+    } catch (error: Exception) {
+        Timber.w(error, "🧾 [NoSeCobro] no se pudo refrescar %s", cobro.identidad)
+        false
     }
 
     private suspend fun declararPorElServidor(
@@ -331,7 +345,10 @@ class DeclaracionDesdeElAviso @Inject constructor(
         if (attemptId == null) {
             // 🔴 Codex final r2 #2: lo que Avoqado contestó de ESA solicitud ya no se tira antes de elegir el mensaje.
             val respuesta = bandeja.conciliar(venueId, soloLaSolicitud = cobro.requestId)
-            return LedgerServerRecovery.LecturaDelIntento(null, evidenciaPositivaSinRegistro = respuesta.conDinero)
+            return LedgerServerRecovery.LecturaDelIntento(
+                null, evidenciaPositivaSinRegistro = respuesta.conDinero,
+                sinRespuesta = respuesta.sinRespuesta + respuesta.conErrorDelServidor > 0,
+            )
         }
         val lectura = recuperacion.recoverOne(venueId, attemptId, estampar = false)
         lectura.bandejaResueltaJson?.let(socket.get()::emitDurableTerminalPaymentResult)

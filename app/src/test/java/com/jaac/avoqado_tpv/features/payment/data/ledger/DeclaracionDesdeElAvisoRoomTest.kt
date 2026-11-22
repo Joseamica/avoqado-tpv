@@ -1440,6 +1440,108 @@ class DeclaracionDesdeElAvisoRoomTest {
             .doesNotContain("volver a cobrar")
     }
 
+    // ── hz:248b195b:D20 (21-nov) · «Por revisar» se pone al día al mostrarse ─────────────────────────────────────────────────
+
+    /** Una duda POS → TPV de la PAX de ESTE proceso cuyo lector ya regresó (como A2 tras [Seguir] y la sonda de cese). */
+    private suspend fun dudaDeLaPax(id: String, requestId: String, haceMin: Long) {
+        val creado = System.currentTimeMillis() - haceMin * 60_000
+        dao.insert(
+            PaymentAttemptEntity(
+                attemptId = id, venueId = venue, processor = "BLUMON", state = "INDETERMINADO", amountCents = 2_000, tipCents = 0,
+                recordingRoute = "FAST", paymentContextJson = """{"terminalPaymentRequestId":"$requestId"}""",
+                terminalPaymentRequestId = requestId, processToken = ledger.tokenDelProceso(), sdkReturnedAt = creado + 1_000,
+                createdAt = creado, updatedAt = creado,
+            ),
+        )
+    }
+
+    private fun solicitudSinResolver(requestId: String) = Response.success(
+        Gson().fromJson(
+            """{"success":true,"requestId":"$requestId","resuelta":false,"request":{"requestId":"$requestId","venueId":"$venue","status":"PROCESSING"}}""",
+            TerminalRequestStatusResponse::class.java,
+        ),
+    )
+
+    /** El GET por solicitud del SERVIDOR de F1 tras la firma del gerente en la D3 (`POST …/release`, A2 de la segunda pasada). */
+    private fun solicitudFirmadaEnLaTablet(requestId: String) = Response.success(
+        Gson().fromJson(
+            """{"success":true,"requestId":"$requestId","resuelta":true,"request":{"requestId":"$requestId","venueId":"$venue","status":"FAILED",""" +
+                """"failureCode":"OPERATOR_RECONCILED_NO_CHARGE","outcome":"NOT_CHARGED","outcomeEvidence":"OPERATOR_RECONCILED"},""" +
+                """"declarationReceipt":{"id":"39ec9ea5","kind":"UNCHARGED_VERIFIED","by":"SUPERVISOR_PIN","staffId":"gerente",""" +
+                """"acceptedAt":"2026-11-21T15:21:39.137Z","scope":"REQUEST","attemptId":null,"requestId":"$requestId","humanSignature":true,""" +
+                """"alreadyStored":true}}""",
+            TerminalRequestStatusResponse::class.java,
+        ),
+    )
+
+    private fun enLaTabletSeFirmo(requestId: String) {
+        coEvery { api.getAttemptStatus(venue, any()) } answers { s6Limpia(secondArg()) }
+        coEvery { api.getRequestStatus(venue, any()) } answers { solicitudSinResolver(secondArg()) }
+        coEvery { api.getRequestStatus(venue, requestId) } returns solicitudFirmadaEnLaTablet(requestId)
+    }
+
+    /**
+     * hz:248b195b:D20 (segunda pasada de F1, fila 23): el gerente firmó en la D3 la duda de A2 y la PAX la siguió enseñando en «Por
+     * revisar» hasta que le tocó su turno en la rueda de 15 s (una por vuelta). Al MOSTRARSE, la lista se consulta entera una vez: la
+     * firmada sale aunque sea la última de la rueda, y las demás siguen. Sólo lee: ningún POST, y sin gastar el turno de la recuperación.
+     */
+    @Test fun `D20 tablet - al mostrarse Por revisar consulta toda la lista y quita la que el gerente firmo en la D3`() = runBlocking<Unit> {
+        dudaDeLaPax("a-1", "r-1", haceMin = 1)
+        dudaDeLaPax("a-2", "r-2", haceMin = 5)
+        dudaDeLaPax("a-3", "r-3", haceMin = 23)
+        enLaTabletSeFirmo("r-3")
+        val enPantalla = declarables()
+        assertThat(enPantalla.map { it.clave }).containsExactly("a-1", "a-2", "a-3").inOrder()
+
+        declaracion.refrescarAlMostrarse(venue, enPantalla)
+
+        assertThat(declarables().map { it.clave }).containsExactly("a-1", "a-2").inOrder()
+        val firmada = dao.getById("a-3")!!
+        assertThat(firmada.state).isEqualTo("DESCARTADA")
+        assertThat(firmada.serverOutcome).isEqualTo(PaymentAttemptEntity.SERVER_OPERATOR_NO_INSTRUMENT)
+        assertThat(firmada.serverCheckCount).isEqualTo(0)
+        for (id in listOf("a-1", "a-2", "a-3")) coVerify(exactly = 1) { api.getAttemptStatus(venue, id) }
+        coVerify(exactly = 1) { api.getRequestStatus(venue, "r-3") }
+        coVerify(exactly = 0) { api.declararSinCobro(any(), any(), any()) }
+        coVerify(exactly = 0) { api.resolveNoInstrument(any(), any(), any()) }
+    }
+
+    /**
+     * D20 sin red: la PAX no puede saber que la tablet firmó. No quita ni inventa nada, y la primera consulta sin respuesta detiene el
+     * barrido (no 3 × 5 s con «WiFi sin datos»). Con la red de vuelta, la siguiente vez que se muestra la firmada sale sola.
+     */
+    @Test fun `D20 sin red al mostrarse no quita ni inventa nada ni insiste - con la red de vuelta se pone al dia`() = runBlocking<Unit> {
+        dudaDeLaPax("a-1", "r-1", haceMin = 1)
+        dudaDeLaPax("a-2", "r-2", haceMin = 5)
+        dudaDeLaPax("a-3", "r-3", haceMin = 23)
+        coEvery { api.getAttemptStatus(venue, any()) } throws java.io.IOException("sin red")
+
+        declaracion.refrescarAlMostrarse(venue, declarables())
+
+        assertThat(declarables().map { it.clave }).containsExactly("a-1", "a-2", "a-3").inOrder()
+        assertThat(declarables().all { it.declarable }).isTrue()
+        for (id in listOf("a-1", "a-2", "a-3")) assertThat(dao.getById(id)!!.state).isEqualTo("INDETERMINADO")
+        coVerify(exactly = 1) { api.getAttemptStatus(any(), any()) }
+        coVerify(exactly = 0) { api.getRequestStatus(any(), any()) }
+
+        enLaTabletSeFirmo("r-3")
+        declaracion.refrescarAlMostrarse(venue, declarables())
+
+        assertThat(declarables().map { it.clave }).containsExactly("a-1", "a-2").inOrder()
+    }
+
+    /** D20: una solicitud del POS sin intento (la bandeja) que no contesta también detiene el barrido. */
+    @Test fun `D20 una solicitud sin intento sin respuesta detiene el barrido`() = runBlocking<Unit> {
+        enBandeja("r-a")
+        enBandeja("r-b")
+        coEvery { api.getRequestStatus(venue, any()) } throws java.io.IOException("sin red")
+
+        declaracion.refrescarAlMostrarse(venue, declarables())
+
+        coVerify(exactly = 1) { api.getRequestStatus(any(), any()) }
+        assertThat(declarables().map { it.clave }).containsExactly("r-a", "r-b")
+    }
+
     /** Lo que firma una persona dice eso: que una persona revisó; nunca «el banco dijo que no». */
     @Test fun `firma_humana_no_dice_negativa_del_banco`() {
         for (r in listOf(ResultadoDeLaDeclaracion.DeclaradoEnAvoqado, ResultadoDeLaDeclaracion.YaDeclaradoEnAvoqado,

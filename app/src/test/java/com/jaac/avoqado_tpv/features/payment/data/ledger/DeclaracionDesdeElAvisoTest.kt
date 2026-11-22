@@ -57,6 +57,27 @@ class DeclaracionDesdeElAvisoTest {
         coVerify(exactly = 1) { recuperacion.recoverOne(venue, "b", any(), false) }
     }
 
+    /** hz:248b195b:D20: al mostrarse, cada una en el orden de la lista y con el mismo tope; la primera sin respuesta detiene el barrido. */
+    @Test fun `D20 al mostrarse consulta todas en su orden con el tope y se detiene en la primera sin respuesta`() = runTest {
+        contesta("a", "b")
+        coEvery { recuperacion.recoverOne(venue, "c", any(), false) } coAnswers {
+            delay(6_000)
+            LecturaDelIntento(null, servidorContesto = true)
+        }
+
+        val inicio = currentTime
+        declaracion.refrescarAlMostrarse(venue, listOf(intento("b"), intento("a"), intento("c"), intento("d")))
+
+        assertThat(currentTime - inicio).isEqualTo(DeclaracionDesdeElAviso.TOPE_DEL_REFRESCO_MS)
+        coVerify(ordering = io.mockk.Ordering.ORDERED) {
+            recuperacion.recoverOne(venue, "b", any(), false)
+            recuperacion.recoverOne(venue, "a", any(), false)
+            recuperacion.recoverOne(venue, "c", any(), false)
+        }
+        coVerify(exactly = 0) { recuperacion.recoverOne(venue, "d", any(), any()) }
+        coVerify(exactly = 0) { recuperacion.recoverOne(any(), any(), any(), true) }
+    }
+
     @Test fun `una identidad por llamada, y nunca gasta el turno de la recuperacion`() = runTest {
         contesta("a", "b", "c")
 

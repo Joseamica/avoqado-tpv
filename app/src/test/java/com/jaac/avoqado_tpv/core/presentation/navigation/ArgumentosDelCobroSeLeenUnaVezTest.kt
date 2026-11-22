@@ -98,7 +98,7 @@ class ArgumentosDelCobroSeLeenUnaVezTest {
             "La entrada desde Cobrar debe decidir con cobrarSaltaElLector(…) y la regla de la tarjeta tarjetaSinRed(…) " +
                 "(su comportamiento se prueba en SoloEfectivoSinRedTest), y saltarse awaitPaxPaymentReady con soloEfectivo.",
             cuerpo.contains("cobrarSaltaElLector(") && cuerpo.contains("tarjetaSinRed(") &&
-                cuerpo.contains("lectorListo = { awaitPaxPaymentReady(") &&
+                cuerpo.contains("lectorListo = {") && cuerpo.contains("awaitPaxPaymentReady(context, initializationManager, \"Checkout payment\")") &&
                 cuerpoDeLaFuncion("internal fun abrirUnSoloCobro(").contains("if (!soloEfectivo && !lectorListo()) return@launch"),
         )
         assertTrue(

@@ -3,14 +3,14 @@ package com.avoqado.cobropropio.dominio
 import com.avoqado.cobropropio.admision.MotivoNoAdmitida
 
 /** Lo que el SDK le dice a la app. Sin textos de pantalla: la app los pone. Ningún campo lleva PAN, banda ni tags. */
-sealed interface EventoDeCobro {
-    data class Iniciado(val id: AttemptId, val identidad: Identidad, val operacion: Operacion, val importeCentavos: Long) :
+public sealed interface EventoDeCobro {
+    public data class Iniciado(val id: AttemptId, val identidad: Identidad, val operacion: Operacion, val importeCentavos: Long) :
         EventoDeCobro
-    data object PideTarjeta : EventoDeCobro
-    data object Autorizando : EventoDeCobro
-    data object RevisandoConElBanco : EventoDeCobro
+    public data object PideTarjeta : EventoDeCobro
+    public data object Autorizando : EventoDeCobro
+    public data object RevisandoConElBanco : EventoDeCobro
 
-    data class Aprobado(
+    public data class Aprobado(
         val operationNumber: Long?,
         val autorizacion: String?,
         val paymentId: String?,
@@ -20,12 +20,12 @@ sealed interface EventoDeCobro {
         val ultimos4: String?,
         val paisEmisor: String?,
     ) : EventoDeCobro
-    data class Cancelada(val operationNumber: Long) : EventoDeCobro
-    data class Rechazado(val codigo: String, val leyenda: String) : EventoDeCobro
-    data class NoSalioAlBanco(val motivo: MotivoNoSalio, val admision: MotivoNoAdmitida?) : EventoDeCobro
-    data object NoSeCobro : EventoDeCobro
+    public data class Cancelada(val operationNumber: Long) : EventoDeCobro
+    public data class Rechazado(val codigo: String, val leyenda: String) : EventoDeCobro
+    public data class NoSalioAlBanco(val motivo: MotivoNoSalio, val admision: MotivoNoAdmitida?) : EventoDeCobro
+    public data object NoSeCobro : EventoDeCobro
     /** En una cancelación, `importeCentavos = 0` es «importe todavía desconocido»: la pantalla no debe pintar «$0.00». */
-    data class PorConfirmar(val importeCentavos: Long) : EventoDeCobro
+    public data class PorConfirmar(val importeCentavos: Long) : EventoDeCobro
 
     /**
      * Ese folio ya existe con OTRO contrato (otro importe, otra operación, otra venta original, otro venue u otro ámbito). Se
@@ -33,17 +33,17 @@ sealed interface EventoDeCobro {
      * aprobarse.** La app no lo trata como «no salió» ni ofrece cobrar de nuevo por esto: pide un folio nuevo.
      * (Ola final, 4ª parte, R24-2: antes era `NoSalioAlBanco(CONTRATO_DISTINTO)`, que se podía leer como «no se cobró».)
      */
-    data object ContratoDistinto : EventoDeCobro
+    public data object ContratoDistinto : EventoDeCobro
 
     /** Sin `else`: un evento nuevo obliga a decidir si cierra el intento. */
-    val esTerminal: Boolean
+    public val esTerminal: Boolean
         get() = when (this) {
             is Iniciado, PideTarjeta, Autorizando, RevisandoConElBanco -> false
             is Aprobado, is Cancelada, is Rechazado, is NoSalioAlBanco, NoSeCobro, is PorConfirmar, ContratoDistinto -> true
         }
 }
 
-enum class MotivoNoSalio {
+public enum class MotivoNoSalio {
     SIN_RED,
     LECTURA_CORTADA,
     LECTURA_VENCIDA,

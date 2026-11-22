@@ -97,6 +97,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.cobrarSaltaElLector
 import com.jaac.avoqado_tpv.features.payment.domain.rutaDePagoEsperaAlLector
 import com.jaac.avoqado_tpv.features.payment.domain.tarjetaSinRed
 import com.jaac.avoqado_tpv.features.payment.presentation.PaymentScreen
+import com.jaac.avoqado_tpv.features.payment.presentation.PaymentViewModel
 import com.jaac.avoqado_tpv.features.payment.presentation.CobroRemotoDelPos
 import com.jaac.avoqado_tpv.features.ordering.domain.TableRepository
 import com.jaac.avoqado_tpv.features.tables.presentation.TableCheckoutScreen
@@ -157,6 +158,7 @@ interface AppNavigationEntryPoint {
     fun maintenanceManager(): com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
     fun connectionStateManager(): com.jaac.avoqado_tpv.core.util.ConnectionStateManager
     fun tpvSettingsRepository(): com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
+    fun retiroDeVentaSinCobro(): com.jaac.avoqado_tpv.features.checkout.data.RetiroDeVentaSinCobro
 
     // 🛡️ A5 — AngelPay refunds must resolve the merchant that OWNS the original
     // payment and authenticate as ITS AngelPay account before refunding.
@@ -487,6 +489,8 @@ fun AppNavigation(
     val vigiaDeFolios = remember { kioskEntryPoint.vigiaDeFolios() }
     // 🎁 Tienda híbrida, parte 2: el cobro con saldo de un folio (lo mira el cobro remoto del POS antes de entrar).
     val cobroConSaldo = remember { kioskEntryPoint.cobroConSaldo() }
+    // 🛒 D36: «atrás» antes de cobrar en «Cobrar» retira la venta que se creó en el SERVIDOR (si nunca se intentó cobrar).
+    val retiroDeVentaSinCobro = remember { kioskEntryPoint.retiroDeVentaSinCobro() }
     LaunchedEffect(vigiaDeFolios) {
         vigiaDeFolios.iniciar(
             kotlinx.coroutines.CoroutineScope(activityOwner.lifecycleScope.coroutineContext + kotlinx.coroutines.Dispatchers.IO)
@@ -1713,6 +1717,8 @@ fun AppNavigation(
         // amount + orderId + orderNumber forwarded to Payment).
         composable(NavRoute.Checkout.route) {
             val checkoutScope = rememberCoroutineScope()
+            // D36: un retiro que quedó anotado sin red sale al volver a abrir Cobrar.
+            LaunchedEffect(Unit) { retiroDeVentaSinCobro.reintentarPendientes() }
             // D671: un «Cobrar» a la vez mientras se prepara el lector, y el cobro sólo se abre si Cobrar sigue arriba.
             val envio = remember { EnvioDePagoRapido(NavRoute.Checkout.route) }
             CheckoutScreen(
@@ -1741,7 +1747,21 @@ fun AppNavigation(
                         )
                     val lanzado = abrirUnSoloCobro(
                         envio, checkoutScope, navController, getPaymentRoute(), soloEfectivo,
-                        lectorListo = { awaitPaxPaymentReady(context, initializationManager, "Checkout payment") },
+                        lectorListo = {
+                            // D36: la venta ya existe en el SERVIDOR y su pantalla de cobro nunca abrió si la cajera sale de Cobrar
+                            // mientras se espera el lector (la corrutina se cancela) o si el lector no queda listo: se pide retirarla.
+                            // Lo que el candado de D671 ignora (otro toque, un turno viejo) NO se retira: con el mismo carrito es la
+                            // MISMA orden (o la misma llave de una venta local) que sí se abre.
+                            val orden = (payload as? com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Order)?.orderId
+                            val listo = try {
+                                awaitPaxPaymentReady(context, initializationManager, "Checkout payment")
+                            } catch (salio: kotlinx.coroutines.CancellationException) {
+                                if (orden != null) retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), orden)
+                                throw salio
+                            }
+                            if (!listo && orden != null) retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), orden)
+                            listo
+                        },
                     ) { handle ->
                         escribirArgumentosDeCobrar(handle, payload, soloEfectivo)
                         Timber.d("💳 Checkout → Payment: origin=${payload.origin} amount=${payload.amountPesosString}")
@@ -1907,6 +1927,8 @@ fun AppNavigation(
                 LaunchedEffect(Unit) {
                     val ready = awaitPaxPaymentReady(context, initializationManager, "Payment route")
                     if (!ready) {
+                        // D36 (Codex r2 #1): aquí NO se pide retirar. Esta espera también vuelve a salir DESPUÉS de tocar Tarjeta (la
+                        // reparación del lector lo marca «no listo» antes de escribir la libreta): la venta queda como hoy.
                         val popped = navController.safePopBackStack()
                         if (!popped) {
                             navController.navigate(NavRoute.Home.route) {
@@ -2013,8 +2035,11 @@ fun AppNavigation(
                     .tableSession()
             }
             val coroutineScope = rememberCoroutineScope()
+            // D36: el MISMO ViewModel que usaría la pantalla (el de esta entrada): la navegación lee si alguna vez intentó cobrar.
+            val pagoVm: PaymentViewModel = hiltViewModel()
 
             PaymentScreen(
+                viewModel = pagoVm,
                 initialAmount = initialAmount,
                 orderId = orderId,
                 orderNumber = orderNumber,
@@ -2231,6 +2256,13 @@ fun AppNavigation(
                         // registrado (p. ej. «sin papel» al imprimir), y el carrito lleno invitaba a cobrar la misma venta otra vez.
                         // La orden ya creada queda en el SERVIDOR (cobrada, o abierta si nunca se cobró).
                         Timber.i("🛒 [Navigation] Atrás desde el cobro de Cobrar (orden %s): Cobrar nuevo, vacío", continueOrderId)
+                        // D36: si esta pantalla NUNCA intentó cobrar (la bandera del ViewModel, que no se borra con un reset ni un
+                        // error), se pide retirar la venta en el SERVIDOR; este camino también lo toman «Continuar pagando» y el «atrás»
+                        // tras un cobro, y ahí la bandera ya está encendida. Corre aparte y no frena la navegación; además deciden la
+                        // libreta y la cola de esta terminal y, bajo el candado, el SERVIDOR.
+                        if (!pagoVm.yaSeIntentoCobrar() && !wasPayLaterOrder) {
+                            retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), continueOrderId)
+                        }
                         navController.navigate(NavRoute.Checkout.route) {
                             popUpTo(NavRoute.Home.route) { inclusive = false }
                         }
@@ -3074,7 +3106,12 @@ fun AppNavigation(
             // 🧾 Tienda híbrida: el cobro de un folio (siempre por TODO lo que falta: Nexgo no cobra en partes).
             val folio = argumentosDelCobro.get<ComandaDeFolio>("folio")
 
+            // D36: el MISMO ViewModel que usaría la pantalla (el de esta entrada): la navegación lee si alguna vez intentó cobrar.
+            val angelVm: com.jaac.avoqado_tpv.features.payment.presentation.angelpay.AngelPayPaymentViewModel = hiltViewModel()
             com.jaac.avoqado_tpv.features.payment.presentation.angelpay.AngelPayPaymentScreen(
+                viewModel = angelVm,
+                // D36 (Codex r2 #7): sólo en una venta de Cobrar el atrás del sistema pasa por la misma salida que la flecha.
+                atrasDelSistemaComoLaFlecha = cameFromCheckout && folio == null,
                 initialAmount = initialAmount,
                 orderId = orderId,
                 orderNumber = orderNumber,
@@ -3092,6 +3129,12 @@ fun AppNavigation(
                 folio = folio,
                 onNavigateBack = {
                     paymentArgsHandle?.let(::clearPaymentArgs)
+                    // D36: «atrás» desde el cobro de una venta de Cobrar (Nexgo): si esta pantalla NUNCA intentó cobrar (la bandera del
+                    // ViewModel), se retira en el SERVIDOR. Esta salida también la toman el error, el cancelado y el «sin confirmar»: ahí la
+                    // bandera ya está encendida. El carrito sigue en Cobrar; si la cajera vuelve a cobrar, nace otra venta.
+                    if (cameFromCheckout && folio == null && !angelVm.yaSeIntentoCobrar()) {
+                        retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), orderId)
+                    }
                     if (folio != null) {
                         volverALosFolios(navController, vigiaDeFolios, cobrado = false)
                     } else {

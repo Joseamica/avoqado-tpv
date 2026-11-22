@@ -235,7 +235,10 @@ class UnSoloCobroTest {
             val cuerpo = bloque(navegacion, pantalla, fin)
             assertTrue("«$pantalla» debe crear su candado con SU ruta de origen", cuerpo.contains("val envio = remember { EnvioDePagoRapido($origen) }"))
             assertTrue("«$pantalla» debe abrir el cobro con abrirUnSoloCobro(envio, …)", Regex("""abrirUnSoloCobro\(\s*envio,""").containsMatchIn(cuerpo))
-            assertTrue("«$pantalla» debe esperar al lector dentro de abrirUnSoloCobro", cuerpo.contains("lectorListo = { awaitPaxPaymentReady("))
+            assertTrue(
+                "«$pantalla» debe esperar al lector dentro de abrirUnSoloCobro",
+                Regex("""lectorListo = \{[^}]*?awaitPaxPaymentReady\(""", RegexOption.DOT_MATCHES_ALL).containsMatchIn(cuerpo),
+            )
             assertTrue("«$pantalla» debe avisar cuando se ignora", cuerpo.contains("if (!lanzado) avisarQueYaSeAbreUnCobro(context)"))
             assertFalse("«$pantalla» no debe navegar al cobro por fuera del candado", cuerpo.contains("navController.navigate(getPaymentRoute())"))
         }

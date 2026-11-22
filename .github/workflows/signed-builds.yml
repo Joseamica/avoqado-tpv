@@ -184,6 +184,14 @@ jobs:
         env:
           JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
 
+      # D12 (21-nov): este flujo también publica el APK de Nexgo, así que su carril de pruebas también es puerta. Va en
+      # su propio `./gradlew` (heap libre, como las compilaciones de abajo). ci.yml lo corre en paralelo, pero no
+      # detiene este flujo: sin esta puerta, un Nexgo en rojo salía firmado (pasó del 13 al 20-nov).
+      - name: Tests unitarios Nexgo (puerta)
+        run: ./gradlew testNexgoDebugUnitTest
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
+
       # Dos pasos separados, NO una sola invocación con los dos targets: el
       # OOM real (compileNexgoProdReleaseKotlin) fue el compilador de Kotlin
       # acumulando la presión de DOS compilaciones release+R8 en el mismo

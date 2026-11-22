@@ -702,6 +702,17 @@ class AngelPayPaymentViewModel @Inject constructor(
     // opens normally.
     private var ledgerOpenedAttemptId: String? = null
     private var authorizationWasLaunched = false
+
+    /**
+     * 🔴 D36 (hz:e82938e1:D36): esta pantalla de cobro YA intentó cobrar (tarjeta, efectivo o cripto) al menos una vez. A propósito
+     * NO se limpia en [resetPayment] ni en ningún otro lado: «atrás» desde Cobrar sólo pide anular la venta en el SERVIDOR si esta
+     * pantalla NUNCA intentó cobrarla, y cada cobro abre su propia pantalla (un ViewModel por entrada de navegación). Aquí la llave del
+     * intento NO sirve de señal: [ensurePaymentAttemptId] corre al preparar el cobro, antes de cualquier toque (Codex D36 r1 #4).
+     */
+    @Volatile private var seIntentoCobrar = false
+
+    /** D36: ¿esta pantalla intentó cobrar alguna vez? Lo lee la navegación ANTES de pedir que se anule la venta de Cobrar. */
+    fun yaSeIntentoCobrar(): Boolean = seIntentoCobrar
     // 🔴 T26 / H.3: desenlace final RETENIDO de un cobro remoto que falló ANTES de autorizar
     // (mensaje para el POS). Sale como `failed + PRE_AUTHORIZATION` sólo al cancelar/salir o al
     // vencer el reloj de abandono — nunca mientras la pantalla ofrezca reintentar.
@@ -1110,6 +1121,7 @@ class AngelPayPaymentViewModel @Inject constructor(
      */
     @VisibleForTesting
     internal suspend fun openLedgerAttemptAndMarkAuthorizing(paymentAttemptId: String): Boolean {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         return try {
             // 🔒 D6: ANTES del atajo de «ya abierto»: misma llave y mismo dinero no prueban la procedencia.
             if (!laIdentidadRemotaSigueIntacta()) {
@@ -2080,6 +2092,7 @@ class AngelPayPaymentViewModel @Inject constructor(
     }
 
     fun startCardPayment() {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         if (turnoSinConfirmar) {
             bloquearPorTurnoSinConfirmar()
             return
@@ -2883,6 +2896,7 @@ class AngelPayPaymentViewModel @Inject constructor(
     }
 
     fun startCashPayment() {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         val seleccionAlCobrar = _state.value as? AngelPayPaymentState.SelectingMerchant
         if (soloEfectivo && seleccionAlCobrar == null) return
         val ventaAlCobrar = ventaLocal
@@ -3035,6 +3049,7 @@ class AngelPayPaymentViewModel @Inject constructor(
      * Called by Screen when AngelPay returns via onActivityResult.
      */
     fun onAngelPayResult(resultCode: Int, data: Intent?) {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         viewModelScope.launch {
           // 🔴 El vigilante que arrancó en onIntentLaunched observa hasta que este
           // resultado (cualquiera que sea) queda resuelto. Cubre éxito, declinación,
@@ -3377,6 +3392,7 @@ class AngelPayPaymentViewModel @Inject constructor(
     }
 
     fun onAngelPaySdkResult(result: PaymentResult) {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         viewModelScope.launch {
           // 🔴 Mismo vigilante, mismo invariante que onAngelPayResult: observa desde
           // onIntentLaunched hasta que este resultado (incluida la relanzada por
@@ -5559,6 +5575,7 @@ class AngelPayPaymentViewModel @Inject constructor(
      * Initiate a B4Bit crypto payment. Caller must be in SelectingMerchant state.
      */
     fun processCryptoPayment(totalAmount: String) {
+        seIntentoCobrar = true  // D36: cualquier entrada al dinero cuenta como intento, aunque luego no pase nada
         if (turnoSinConfirmar) {
             bloquearPorTurnoSinConfirmar()
             return

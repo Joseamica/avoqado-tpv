@@ -142,4 +142,48 @@ class CobroRemotoDelPosTest {
             assertWithMessage(variante).that(vm).doesNotContain("message = \"Sin conexión a internet.\\n\\n¿Cobrar en efectivo?\"")
         }
     }
+
+    // D669: la terminal bloqueada (o en mantenimiento) desde Avoqado no inicia nada que mande el POS, y lo dice.
+    @Test fun `P2 D669 bloqueada o en mantenimiento - el cobro y la devolucion del POS dicen por que no se iniciaron`() {
+        assertThat(CobroRemotoDelPos.motivoDelCandado(bloqueada = true, enMantenimiento = false))
+            .isEqualTo("Está bloqueada desde Avoqado. Este cobro NO se inició.")
+        assertThat(CobroRemotoDelPos.motivoDelCandado(bloqueada = false, enMantenimiento = true))
+            .isEqualTo("Está en mantenimiento. Este cobro NO se inició.")
+        assertThat(CobroRemotoDelPos.motivoDelCandado(bloqueada = true, enMantenimiento = false, esDevolucion = true))
+            .isEqualTo("La terminal está bloqueada desde Avoqado. No se abrió la devolución.")
+        assertThat(CobroRemotoDelPos.motivoDelCandado(bloqueada = false, enMantenimiento = true, esDevolucion = true))
+            .isEqualTo("La terminal está en mantenimiento. No se abrió la devolución.")
+        // El bloqueo es el más fuerte: sólo Avoqado lo quita (el mantenimiento lo quita el cajero).
+        assertThat(CobroRemotoDelPos.motivoDelCandado(bloqueada = true, enMantenimiento = true)).contains("bloqueada")
+        assertThat(CobroRemotoDelPos.motivoDelCandado(bloqueada = false, enMantenimiento = false)).isNull()
+        assertThat(CobroRemotoDelPos.motivoDelCandado(bloqueada = false, enMantenimiento = false, esDevolucion = true)).isNull()
+    }
+
+    /**
+     * D669: la admisión del cobro del POS pregunta por el candado. Se lee la fuente (`AppNavigation` no se levanta en estas pruebas):
+     * sin este cableado, la prueba de la bandeja daría un verde falso (la lección de D665).
+     */
+    @Test fun `P2 D669 la navegacion le pasa el candado a la admision del cobro del POS`() {
+        val navegacion = java.io.File("src/main/java/com/jaac/avoqado_tpv/core/presentation/navigation/AppNavigation.kt").readText()
+        val admision = navegacion.substring(navegacion.indexOf("remotePaymentCoordinator.prepareSocketPaymentRequest("))
+            .substringBefore("when (admission)")
+        assertThat(admision).contains("motivoDelCandado = {")
+        assertThat(admision).contains("lockScreenManager.isCurrentlyLocked()")
+        assertThat(admision).contains("maintenanceManager.isCurrentlyInMaintenance()")
+    }
+
+    /**
+     * D669 (Codex r1 #2): un LOCK que ya se estaba aplicando cuando llegó la devolución termina antes de que la navegación la abra
+     * (`beginAction` espera al comando). La navegación vuelve a mirar el candado ANTES de abrir el detalle.
+     */
+    @Test fun `P2 D669 la navegacion vuelve a mirar el candado antes de abrir la devolucion del POS`() {
+        val navegacion = java.io.File("src/main/java/com/jaac/avoqado_tpv/core/presentation/navigation/AppNavigation.kt").readText()
+        val devolucion = navegacion.substring(navegacion.indexOf("remotePaymentCoordinator.refundRequests.collect"))
+            .substringBefore("NavRoute.Payments.createRoute(autoOpenPaymentId")
+        assertThat(devolucion).contains("commandWindow.beginAction()")
+        val mira = devolucion.indexOf("esDevolucion = true")
+        assertThat(mira).isGreaterThan(devolucion.indexOf("commandWindow.beginAction()"))
+        assertThat(devolucion).contains("lockScreenManager.isCurrentlyLocked()")
+        assertThat(devolucion).contains("maintenanceManager.isCurrentlyInMaintenance()")
+    }
 }

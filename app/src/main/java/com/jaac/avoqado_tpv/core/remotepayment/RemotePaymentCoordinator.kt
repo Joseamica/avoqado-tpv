@@ -140,7 +140,16 @@ class RemotePaymentCoordinator @Inject constructor(
         requestId: String,
         awaitReady: suspend () -> Boolean,
         currentVenueId: () -> String?,
+        motivoDelCandado: () -> String? = { null },
     ): RemotePaymentAdmission {
+        // D669: bloqueada o en mantenimiento desde Avoqado ⇒ se contesta YA, sin esperar ni preparar el lector (Codex r1 #3). Un
+        // LOCK nuevo no cae a media admisión (espera a Inicio sin acciones, `beginAction` del colector); UNLOCK sí, y sólo afloja.
+        motivoDelCandado()?.let { motivo ->
+            synchronized(queuedRequestIds) { queuedRequestIds.remove(requestId) }
+            // Sin sede activa (el latido borró la activación) no se cierra nada, como antes (Codex r2 #4).
+            if (currentVenueId().isNullOrBlank()) return RemotePaymentAdmission.NOT_CLAIMABLE
+            return rechazarPorCandado(requestId, motivo)
+        }
         // Cancellation can win while SDK initialization is suspended. Claim only once
         // readiness has returned, using the current activation and the durable venue.
         val ready = awaitReady()
@@ -154,6 +163,28 @@ class RemotePaymentCoordinator @Inject constructor(
         // collector owns the claim but has not opened any SDK, so it may fail safely.
         if (currentVenueId() != venueId) return RemotePaymentAdmission.VENUE_CHANGED
         return if (ready) RemotePaymentAdmission.READY else RemotePaymentAdmission.NOT_READY
+    }
+
+    /**
+     * D669: el «no» por candado se ESCRIBE en la misma operación que lo decide (CAS `RECEIVED → RESOLVED`, el de [RemotePaymentInbox.rejectUnclaimed]),
+     * antes de devolver `NotAdmitted`. Si se guardara después (como el de la caja, en la corrutina del socket), una reentrega con la
+     * terminal recién desbloqueada se reclamaría y el rechazo atrasado cerraría una solicitud ya reclamada (Codex r1 #1). Lo que no
+     * sigue RECEIVED (reclamado, ya resuelto) no se toca. El texto es el mismo que arma la navegación con «En la terminal: » (D8): la
+     * navegación sólo reproduce lo guardado.
+     */
+    private suspend fun rechazarPorCandado(requestId: String, motivo: String): RemotePaymentAdmission {
+        val contestar = try {
+            remotePaymentInbox.rejectUnclaimed(requestId, errorMessage = "En la terminal: $motivo") != null
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            // Codex r2 #1: callar dejaba al POS esperando hasta 5 min (con el socket vivo el SERVIDOR no sondea). La fila sigue RECEIVED,
+            // sin reclamar ni lector: la navegación lo vuelve a intentar por el camino de la caja (D8, `persistResult`).
+            Timber.e(error, "❌ [RemotePayment] No se pudo guardar el rechazo por candado de $requestId; se reintenta al contestar")
+            true
+        }
+        // false = la fila ya no está RECEIVED: otro ya la contestó (cancel, sonda) o la reclamó. No se toca.
+        return if (contestar) RemotePaymentAdmission.NotAdmitted(motivo) else RemotePaymentAdmission.NOT_CLAIMABLE
     }
 
     /** Remote cancellation never destroys the UI owner of a claimed SDK execution. */
@@ -191,6 +222,17 @@ class RemotePaymentCoordinator @Inject constructor(
 
     private val _refundRequests = MutableSharedFlow<RemoteRefundRequest>(extraBufferCapacity = 1)
     val refundRequests: SharedFlow<RemoteRefundRequest> = _refundRequests.asSharedFlow()
+
+    /**
+     * D669 (Codex r2 #2): `SocketManager.events` reentrega el ÚLTIMO evento a cada suscriptor nuevo (`replay = 1`), así que un
+     * `HomeViewModel` nuevo vuelve a recibir la última devolución. Una ya contestada (`opened`, o `rejected` con la terminal bloqueada)
+     * no se vuelve a abrir ni a contestar. En memoria, como el replay: los dos viven lo que vive el proceso. Sin id, se atiende siempre.
+     * ponytail: el conjunto crece con cada devolución del proceso (pocas al día); un tope si algún día son miles.
+     */
+    private val devolucionesContestadas = mutableSetOf<String>()
+
+    fun esDevolucionNueva(requestId: String): Boolean =
+        requestId.isBlank() || synchronized(devolucionesContestadas) { devolucionesContestadas.add(requestId) }
 
     /**
      * Un POS pidió abrir aquí la devolución de un cobro.

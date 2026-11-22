@@ -132,6 +132,8 @@ interface AppNavigationEntryPoint {
     fun initializationManager(): com.jaac.avoqado_tpv.features.payment.data.InitializationManager
     fun updateRequestManager(): UpdateRequestManager
     fun remotePaymentCoordinator(): com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator
+    fun lockScreenManager(): com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
+    fun maintenanceManager(): com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
     fun paymentAttemptLedger(): com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
     fun declaracionDesdeElAviso(): com.jaac.avoqado_tpv.features.payment.data.ledger.DeclaracionDesdeElAviso
     fun socketManager(): com.jaac.avoqado_tpv.core.data.realtime.SocketManager
@@ -357,6 +359,9 @@ fun AppNavigation(
     }
     val remotePaymentCoordinator = remember { kioskEntryPoint.remotePaymentCoordinator() }
     val socketManager = remember { kioskEntryPoint.socketManager() }
+    // D669: el candado que el dueño pone desde Avoqado (bloqueo o mantenimiento), guardado en la terminal.
+    val lockScreenManager = remember { kioskEntryPoint.lockScreenManager() }
+    val maintenanceManager = remember { kioskEntryPoint.maintenanceManager() }
 
     // 🧾 PEDIDOS POR PAGAR (tienda híbrida): el vigía vive con la actividad y, con sesión guardada, sondea solo
     // (también cuando SplashScreen restaura la sesión sin pasar por el login). Idempotente.
@@ -425,6 +430,13 @@ fun AppNavigation(
                 requestId = durableRequestId,
                 awaitReady = { awaitPaxPaymentReady(context, initializationManager, "remote (socket) payment") },
                 currentVenueId = { secureStorage.getVenueId() },
+                // D669: bloqueada o en mantenimiento desde Avoqado, el cobro del POS no se reclama ni abre el lector.
+                motivoDelCandado = {
+                    com.jaac.avoqado_tpv.features.payment.presentation.CobroRemotoDelPos.motivoDelCandado(
+                        bloqueada = lockScreenManager.isCurrentlyLocked(),
+                        enMantenimiento = maintenanceManager.isCurrentlyInMaintenance(),
+                    )
+                },
             )
             when (admission) {
                 com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NOT_CLAIMABLE -> {
@@ -572,6 +584,16 @@ fun AppNavigation(
             // está pagando manda sobre una devolución que puede esperar.
             if (paymentStateProvider.isCharging()) {
                 Timber.w("↩️ [Refund] Ignorada — hay un cobro en curso (paymentId=${request.paymentId})")
+                return@collect
+            }
+            // D669 (Codex r1 #2): `HomeViewModel` ya la rechaza con candado, pero un LOCK que se estaba aplicando al llegar termina
+            // antes de este punto (`beginAction` lo espera). Con candado no se abre nada; el `opened` que ya salió es el límite declarado.
+            com.jaac.avoqado_tpv.features.payment.presentation.CobroRemotoDelPos.motivoDelCandado(
+                bloqueada = lockScreenManager.isCurrentlyLocked(),
+                enMantenimiento = maintenanceManager.isCurrentlyInMaintenance(),
+                esDevolucion = true,
+            )?.let { motivo ->
+                Timber.w("↩️ [Refund] No se abre la devolución (paymentId=${request.paymentId}): $motivo")
                 return@collect
             }
             Timber.i("↩️ [Refund] Abriendo pago ${request.paymentId} para devolución")

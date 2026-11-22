@@ -68,6 +68,8 @@ class ShiftViewModelTest {
     private lateinit var refundQueueRepository: RefundQueueRepository
     /** El MISMO estado que pinta el aviso rojo («Sin conexión al servidor»): lo escribe el latido (D13). */
     private lateinit var connectionStateManager: com.jaac.avoqado_tpv.core.util.ConnectionStateManager
+    /** D24: el PIN de un cajero o gerente cuando el puesto no puede abrir la caja. */
+    private lateinit var autorizacion: com.jaac.avoqado_tpv.features.permissions.presentation.override.AutorizacionDeGerente
 
     // Flows we control
     private val fakeConnectionRestoredEvents = MutableSharedFlow<ConnectionRestoredEvent>()
@@ -105,6 +107,7 @@ class ShiftViewModelTest {
         permissionsRepository = mockk(relaxed = true)
         refundQueueRepository = mockk(relaxed = true)
         connectionStateManager = com.jaac.avoqado_tpv.core.util.ConnectionStateManager()
+        autorizacion = mockk(relaxed = true)
         // Default: la cola de reembolsos no bloquea nada (Fase 2).
         coEvery { refundQueueRepository.blockingForVenue(any()) } returns emptyList()
         coEvery { shiftRepository.pagosQueBloqueanCierre(any(), any()) } returns
@@ -150,6 +153,7 @@ class ShiftViewModelTest {
             permissionsRepository = permissionsRepository,
             refundQueueRepository = refundQueueRepository,
             connectionStateManager = connectionStateManager,
+            autorizacionDeGerente = autorizacion,
         )
     }
 
@@ -292,6 +296,79 @@ class ShiftViewModelTest {
         val state = viewModel.state.value
         assertThat(state).isInstanceOf(ShiftState.Error::class.java)
         assertThat((state as ShiftState.Error).message).contains("sesión")
+    }
+
+    // ========================================
+    // D24 · SIN PERMISO DE ABRIR: PIN DE UN CAJERO O GERENTE
+    // ========================================
+
+    private fun sinPermisoDeAbrir() {
+        coEvery { permissionsRepository.hasPermission("tpv-shifts:create") } returns false
+    }
+
+    @Test
+    fun `D24 sin permiso de abrir, Abrir caja pide el PIN y abre en linea con su token`() = runTest {
+        sinPermisoDeAbrir()
+        coEvery { autorizacion.paraPermiso("venue-123", "tpv-shifts:create", "tpv-shifts:create", any(), any(), any()) } returns
+            com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion.ConPin("tok-1")
+        coEvery { shiftRepository.abrirCajaConPin("venue-123", "staff-123", BigDecimal.valueOf(800.0), "tok-1") } returns Result.Success(testShift)
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+        assertThat(viewModel.canOpenShift.value).isFalse()
+
+        viewModel.openShift(800.0)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { shiftRepository.abrirCajaConPin("venue-123", "staff-123", BigDecimal.valueOf(800.0), "tok-1") }
+        coVerify(exactly = 0) { shiftRepository.openShift(any(), any(), any(), any()) }
+        assertThat(viewModel.state.value).isNotInstanceOf(ShiftState.Error::class.java)
+    }
+
+    @Test
+    fun `D24 con el PIN apagado en el negocio se dice a quien pedirselo, sin abrir nada`() = runTest {
+        sinPermisoDeAbrir()
+        coEvery { autorizacion.paraPermiso(any(), any(), any(), any(), any(), any()) } returns
+            com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion.Negada("Lo autoriza un gerente con su sesión")
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.openShift(800.0)
+        advanceUntilIdle()
+
+        val state = viewModel.state.value as ShiftState.Error
+        assertThat(state.message).isEqualTo("Tu puesto no puede abrir la caja. Pide a un cajero, gerente o al dueño que entre y la abra.")
+        coVerify(exactly = 0) { shiftRepository.abrirCajaConPin(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { shiftRepository.openShift(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `D24 si cancelan el PIN no se abre nada ni cambia la pantalla`() = runTest {
+        sinPermisoDeAbrir()
+        coEvery { autorizacion.paraPermiso(any(), any(), any(), any(), any(), any()) } returns
+            com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion.Cancelada
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+        val antes = viewModel.state.value
+
+        viewModel.openShift(800.0)
+        advanceUntilIdle()
+
+        assertThat(viewModel.state.value).isEqualTo(antes)
+        coVerify(exactly = 0) { shiftRepository.abrirCajaConPin(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { shiftRepository.openShift(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `D24 con permiso propio no se pide PIN`() = runTest {
+        coEvery { shiftRepository.openShift("venue-123", "staff-123", 500.0) } returns Result.Success(testShift)
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.openShift(500.0)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { autorizacion.paraPermiso(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { shiftRepository.openShift("venue-123", "staff-123", 500.0) }
     }
 
     // ========================================

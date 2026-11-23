@@ -66,7 +66,7 @@ AngelPay is a **completely separate** payment flow from Blumon. Never mix them.
 **Rules:**
 - NEVER modify `PaymentViewModel` for AngelPay changes — use `AngelPayPaymentViewModel`
 - Payment routing uses `BuildConfig.ENABLE_PAX_SDK`, NOT `Build.MODEL` (hardware detection failed on Nexgo)
-- AngelPay doesn't return card details (maskedPan, brand, entryMode) — recorded as UNKNOWN
+- AngelPay's SDK (1.0.23) returns `cardBin`, `cardLast4` and `cardEntryMode`: the card payment is recorded with the BIN brand, `************<last4>` and CHIP/CONTACTLESS/SWIPE (`TarjetaDeAngelPay`, D27, 23-nov). The old app-to-app path still has no card details (UNKNOWN / OTHER)
 - QA creds auto-provisioned in `AvoqadoTPVApplication.onCreate()` when `ENABLE_PAX_SDK=false`
 
 Before working on AngelPay, read: `docs/ANGELPAY_INTEGRATION.md`

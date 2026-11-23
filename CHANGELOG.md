@@ -9,6 +9,8 @@
 
 ### **Added**
 - **Interno, sin efecto en la app · `motorlab`, bloque 4-L (L-a) de la fase 3 del SDK propio**: app de pruebas APARTE para la PAX del laboratorio (`com.jaac.avoqado_tpv.sandbox.motorlab`, versión `0.1.0-sandbox`, sólo depurable): el módulo `:motorlab` con `:cobropropio`, los módulos de PAX y los AAR de Blumon de sandbox, su manifiesto y texto claro sólo hacia `127.0.0.1`. Todavía no cobra; `:app` no cambia y la app de laboratorio no entra a los builds de los negocios.
+- **Interno, sin efecto en la app · `motorlab`, bloque 4-L (L-c) de la fase 3 del SDK propio**: el lector sin contacto de la PAX para el motor (`LectorPax`), todavía sin cobrar; `:app` y `:cobropropio` no cambian.
+  - Un solo folio es dueño del lector desde que se apunta hasta que su intento cierra (otro folio se rechaza). Prepara con el importe real, sondea sólo el lector sin contacto y entrega los tags tal como los da el kernel (con un código del kernel distinto de 0 no lee tags: serían de la tarjeta anterior). El cierre dice si el intento no abrió el lector, si lo cerró o si quedó sin acreditar; uno sin acreditar se reintenta antes del siguiente intento. Sin red no sondea; sólo ventas.
 
 ### **Changed**
 - **Interno, sin efecto en la app · `cobropropio`, bloque 1 de la fase 3 del SDK propio**: el módulo sigue sin conectarse (`:app` no depende de él).

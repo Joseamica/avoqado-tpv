@@ -35,6 +35,8 @@ dependencies {
     implementation(project(":cobropropio"))
     // El motor trae OkHttp como `compileOnly` (cobropropio/build.gradle.kts): quien lo usa pone la de verdad, la misma versión.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // El lector es `suspend` y se cancela con la espera del motor (bloque 4-L · L-c): la misma versión que :app y :cobropropio.
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
     implementation(project(":emv"))
     implementation(project(":sdk"))
     implementation(project(":commonlib"))
@@ -45,4 +47,6 @@ dependencies {
     // :emv trae annotation-jvm 1.7.1 y otra dependencia la 1.3.0: subir a 1.7.1 las une (como lectorlab).
     implementation("androidx.annotation:annotation:1.7.1")
     implementation(libs.material) // los recursos del AAR de Blumon usan Theme.Material3.*
+
+    testImplementation(libs.junit)
 }

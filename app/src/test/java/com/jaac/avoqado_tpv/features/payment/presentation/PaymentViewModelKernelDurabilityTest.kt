@@ -356,6 +356,7 @@ class PaymentViewModelKernelDurabilityTest {
             mockk(relaxed = true),
         apiService: com.jaac.avoqado_tpv.core.data.network.ApiService = mockk(relaxed = true),
         cryptoHandle: androidx.lifecycle.SavedStateHandle = androidx.lifecycle.SavedStateHandle(),
+        saleCtlsUseCase: com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_ctls.SaleCtlsUseCase = mockk(relaxed = true),
     ): PaymentViewModel {
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyShiftFixture(mockShiftRepository)
         com.jaac.avoqado_tpv.features.shift.data.bridgeLegacyLedgerFixture(mockPaymentAttemptLedger)
@@ -370,7 +371,7 @@ class PaymentViewModelKernelDurabilityTest {
             continueConfirmCardUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.continue_confirm_card.ContinueConfirmCardUseCase>(relaxed = true),
             setSelectAppCodeUseCase = mockSetSelectAppCodeUseCase,
             saleIccUseCase = mockk<com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccUseCase>(relaxed = true),
-            saleCtlsUseCase = mockk<com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_ctls.SaleCtlsUseCase>(relaxed = true),
+            saleCtlsUseCase = saleCtlsUseCase,
             cancelIccUseCase = cancelIccUseCase,
             validateCancelUseCase = validateCancelUseCase,
             transProcessRepository = mockTransProcessRepository,
@@ -625,8 +626,12 @@ class PaymentViewModelKernelDurabilityTest {
             vm.startPayment("100.00")
             esperarA { vm.state.value is PaymentState.Error }
             assertThat((vm.state.value as PaymentState.Error).canRetry).isFalse()
-            assertThat(mockPaymentAttemptLedger.retencionDelAparato()?.state).isEqualTo("PREPARANDO")
-            assertThat(mockPaymentAttemptLedger.openAttempt("next-sale", testVenueId, "BLUMON", 32000, 0, "FAST", "{}")).isFalse()
+            // D26 (22-nov): el lector ya no está en uso (el flujo terminó), así que la reserva que no se pudo cerrar no aparta la
+            // terminal: sigue en la libreta (no se borra) y cerca SU venta, pero otra venta entra.
+            esperarA { !mockPaymentAttemptLedger.hayLectorEnUso() }
+            assertThat(filas(db).map { it.second }).contains("PREPARANDO")
+            assertThat(mockPaymentAttemptLedger.retencionDelAparato()).isNull()
+            assertThat(mockPaymentAttemptLedger.openAttempt("next-sale", testVenueId, "BLUMON", 32000, 0, "FAST", "{}")).isTrue()
         } finally { vm.viewModelScope.cancel(); db.close() }
     }
 
@@ -934,6 +939,51 @@ class PaymentViewModelKernelDurabilityTest {
             mensajeEsperado = "Error procesando resultado contactless",
             motivoEsperado = "kernel_sin_veredicto:resultado_nulo",
         )
+    }
+
+    /**
+     * D26 (22-nov, founder: «si dice rechazado, ¿por qué congelar el pago?»): una EXCEPCIÓN en el camino sin contacto (el kernel, o la
+     * autorización en línea) terminaba el flujo con la fila `KERNEL_ACTIVO`, o `INDETERMINADO` sin el fin del SDK, y la terminal
+     * contestaba «viva» o no admitía otra venta hasta reiniciar la app. Una excepción a media llamada no prueba que la llamada nativa
+     * terminó (Codex r1 #2): con la fila a media llamada el lector cuenta hasta el TOPE, y ahí se suelta solo. La fila NO se reescribe
+     * (sigue cercando SU venta y la ve el barrido), pero ya no aparta la terminal: la siguiente venta reserva y entra al lector en el
+     * MISMO proceso, sin reiniciar.
+     */
+    private suspend fun excepcionSinContacto(kernel: com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase,
+        saleCtls: com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_ctls.SaleCtlsUseCase = mockk(relaxed = true),
+        estadoQueDeja: String,
+        vecesQueCorrio: () -> Int,
+    ) {
+        val db = baseEnMemoria()
+        val dao = db.paymentAttemptDao()
+        var reloj = 1_000_000L
+        mockPaymentAttemptLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository).apply { relojMonotonico = { reloj } }
+        val vm = createViewModel(startDetectCardUseCase = detectQueDevuelveUnToque(mutableListOf()), startCtlssTransUseCase = kernel, saleCtlsUseCase = saleCtls)
+        try {
+            vm.selectMerchant(testMerchantA)
+            esperarA { vm.currentMerchant.value != null }
+            vm.startPayment("100.00")
+            esperarA { vecesQueCorrio() > 0 }
+            assertWithMessage("el arnés debe ALCANZAR la llamada que lanza; estado = ${vm.state.value}").that(vecesQueCorrio()).isEqualTo(1)
+            esperarA { vm.state.value is PaymentState.Error }
+            assertWithMessage("la llamada pudo seguir dentro: el lector cuenta hasta el tope").that(mockPaymentAttemptLedger.hayLectorEnUso()).isTrue()
+            reloj += com.jaac.avoqado_tpv.features.payment.data.ledger.TOPE_LECTOR_EN_USO_MS + 1
+            assertWithMessage("pasado el tope, el intento ya no tiene el lector").that(mockPaymentAttemptLedger.hayLectorEnUso()).isFalse()
+            val fila = dao.findUnresolvedCharge()
+            assertWithMessage("la fila no se reescribe; fila = $fila").that(fila?.state).isEqualTo(estadoQueDeja)
+            assertThat(mockPaymentAttemptLedger.retencionDelAparato()).isNull()
+            assertWithMessage("la siguiente venta reserva en el mismo proceso")
+                .that(mockPaymentAttemptLedger.openAttempt("siguiente-venta", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isTrue()
+            assertWithMessage("…y llega al lector").that(mockPaymentAttemptLedger.markKernelEntered("siguiente-venta")).isTrue()
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
+    @Test
+    fun `D26 una excepcion del kernel sin contacto suelta el lector al tope y la siguiente venta entra sin reiniciar`() = runTest {
+        val kernel = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>()
+        val veces = java.util.concurrent.atomic.AtomicInteger(0)
+        coEvery { kernel.run(any()) } answers { veces.incrementAndGet(); throw IllegalStateException("kernel roto") }
+        excepcionSinContacto(kernel, estadoQueDeja = PaymentAttemptEntity.STATE_KERNEL_ACTIVO, vecesQueCorrio = { veces.get() })
     }
 
     @Test

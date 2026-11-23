@@ -741,6 +741,11 @@ class PaymentViewModel @Inject constructor(
         viewModelScope.launch {
             state.collect { s ->
                 if (authorizationUnresolved && s is PaymentState.Error) {
+                    // 🔓 D26 (22-nov, Testarudo): en la DUDA con el SDK ya regresado y sin aprobación conocida, la pantalla no aparta la
+                    // terminal: aparta su VENTA (el SERVIDOR cerca la orden sin desenlace y la libreta la cerca con dinero conocido).
+                    // Con la bandera arriba la bandeja nunca certificaba el cese y la terminal contestaba «viva» hasta reiniciar.
+                    // «Cobrado. Sincronización pendiente» (aprobado) sigue apartando, como siempre.
+                    if (authorizationReturned && !authorizationApproved) paymentStateHolder.setChargeAttemptActive(false)
                     showUnresolvedAuthorization()
                     return@collect
                 }
@@ -4416,6 +4421,11 @@ class PaymentViewModel @Inject constructor(
                     _isPaymentInProgress.value = false
                     _state.value = error
                 }
+            } finally {
+                // 🔒 D26 (22-nov): el flujo terminó SIN cancelarse: este intento suelta el lector, salvo que su fila diga que una llamada
+                // al SDK pudo quedar dentro sin regreso comprobado (una excepción a media llamada; Codex r1 #2): ésa cuenta hasta el tope.
+                // Cancelado no se suelta: la llamada nativa pudo seguir.
+                if (isActive && preparationAttemptId != null) paymentAttemptLedger.sueltaElLectorAlTerminarElFlujo(preparationAttemptId)
             }
         }
     }
@@ -5709,6 +5719,8 @@ class PaymentViewModel @Inject constructor(
                     // que para un fallo de estado del SDK. Sin el cuerpo, son indistinguibles.
                     //
                     // La descripción ya se extrae aquí arriba por reflexión; sólo faltaba mandarla.
+                    // D26: el código y el httpCode de Momentum deciden si es rechazo o duda (`blumonRechazoDefinitivo`).
+                    val (codigoDelHost, httpDelHost) = blumonCodigoYHttp(failure)
                     observability.logWarning(
                         tag = TAG_PAYMENT_TRACE,
                         message = "Autorización rechazada: ${specificErrorDescription ?: "motivo no extraído"}",
@@ -5717,6 +5729,8 @@ class PaymentViewModel @Inject constructor(
                             "failureClass" to failure.javaClass.name,
                             "descripcion" to specificErrorDescription,
                             "attemptId" to sessionSnapshot.paymentAttemptId,
+                            "codigo" to codigoDelHost,
+                            "httpCode" to httpDelHost,
                         ),
                     )
 
@@ -10652,6 +10666,9 @@ class PaymentViewModel @Inject constructor(
         super.onCleared()
         // 🛑 Ruling 96: una salida sin resetPayment() no se lleva el desenlace retenido de un cobro del POS.
         enviarDesenlaceRetenidoAlSalir()
+        // 🔓 D26: la pantalla dueña se fue: se suelta la propiedad de SU solicitud (la vinculada, que sobrevive a `resetPayment` y a
+        // emitir; Codex r2 #7) y la terminal le dice al SERVIDOR lo que diría la sonda (con un final ya emitido, sólo lo repite).
+        socketManager.alMorirUnaPantallaDeCobro(solicitudVinculada, currentVenueId)
         // 🔒 The state collector died with viewModelScope — never leave the singleton flags stuck
         // true. A stuck money-window flag would refuse every future POS cancel; a stuck
         // charge-active flag would refuse every future POS CHARGE («La terminal tiene otro cobro en curso…»)

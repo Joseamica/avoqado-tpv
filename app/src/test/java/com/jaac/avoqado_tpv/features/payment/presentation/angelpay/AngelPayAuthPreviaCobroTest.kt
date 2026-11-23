@@ -111,6 +111,8 @@ class AngelPayAuthPreviaCobroTest {
             coEvery { cobroSinResolver() } returns null
             coEvery { openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns true
             coEvery { markAuthorizing(any()) } returns true
+            // D26: el relanzamiento tras la sesión vencida conserva el lector (un relajado diría false: nunca relanzaría).
+            coEvery { relanzaConElLector(any()) } returns true
             // C.5: por defecto la solicitud no está cercada y el efectivo/cripto puede arrancar.
             coEvery { cercaDeSolicitud(any()) } returns com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud.LIBRE
             coEvery { iniciarEjecucionNoTarjeta(any()) } returns com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud.LIBRE

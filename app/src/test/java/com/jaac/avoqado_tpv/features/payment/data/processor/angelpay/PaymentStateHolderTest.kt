@@ -126,4 +126,12 @@ class PaymentStateHolderTest {
             assertFalse(variante, vm.contains("recordingInFlight = false\n                paymentStateHolder.setCharging(false)"))
         }
     }
+
+    @Test fun `D26 la ventana de un cobro cuya pantalla murio con el SDK lanzado se apaga sola al tope`() {
+        val estado = PaymentStateHolder()
+        val tope = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(com.jaac.avoqado_tpv.features.payment.data.ledger.TOPE_LECTOR_EN_USO_MS)
+        estado.marcarCobroSinPantalla(ahoraNanos = 1_000L)
+        assertTrue(estado.cobroSinPantallaEnCurso(1_000L + tope - 1))
+        assertFalse(estado.cobroSinPantallaEnCurso(1_000L + tope))
+    }
 }

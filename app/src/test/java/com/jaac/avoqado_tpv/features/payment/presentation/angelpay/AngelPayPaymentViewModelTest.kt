@@ -215,6 +215,8 @@ class AngelPayPaymentViewModelTest {
             coEvery { intentoDeLaSolicitud(any()) } returns null
             coEvery { openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns true
             coEvery { markAuthorizing(any()) } returns true
+            // D26: el relanzamiento tras la sesión vencida conserva el lector (un relajado diría false: nunca relanzaría).
+            coEvery { relanzaConElLector(any()) } returns true
             // C.5: por defecto la solicitud no está cercada y el efectivo/cripto puede arrancar.
             coEvery { cercaDeSolicitud(any()) } returns CercaDeSolicitud.LIBRE
             coEvery { iniciarEjecucionNoTarjeta(any()) } returns CercaDeSolicitud.LIBRE
@@ -904,6 +906,47 @@ class AngelPayPaymentViewModelTest {
             coVerify(exactly = 0) { paymentStateHolder.setCharging(false) }
             // Recovered silently — nothing terminal happened, so nothing to report.
             verify(exactly = 0) { observabilityManager.logWarning(any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D26 Codex r1-1 D308 no relanza si el intento ya no tiene el lector o su solicitud se cerro mientras se renovaba la sesion`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            coEvery { paymentAttemptLedger.relanzaConElLector(any()) } returns false   // la sonda ya certificó el cese
+            vm.prepararSesionSdkValida()
+            vm.primeSdkLaunch()
+            runCurrent()
+
+            vm.onAngelPaySdkResult(sdkFailureResult("D308"))
+            runCurrent()
+
+            coVerify(exactly = 1) { paymentAttemptLedger.relanzaConElLector(any()) }
+            // No se relanza: el rechazo por sesión vencida es el final (no se movió dinero) y la pantalla lo dice.
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            coVerify(atLeast = 1) { paymentAttemptLedger.marcarSdkRegreso(any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D26 Codex r2-1 la pantalla no lanza el SDK si en medio vencio el lector o se cerro la solicitud`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            vm.prepararSesionSdkValida()
+            vm.primeSdkLaunch()
+            runCurrent()
+            assertThat(vm.confirmarLanzamientoDelSdk()).isTrue()   // con el lector vigente se lanza
+
+            coEvery { paymentAttemptLedger.relanzaConElLector(any()) } returns false
+            coEvery { paymentAttemptLedger.markSinAutorizacion(any(), any(), any()) } returns true
+            assertThat(vm.confirmarLanzamientoDelSdk()).isFalse()
+            coVerify(exactly = 1) { paymentAttemptLedger.markSinAutorizacion(any(), any(), "no_lanzado:lector_vencido") }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
         } finally {
             vm.viewModelScope.cancel()
         }
@@ -4291,7 +4334,9 @@ class AngelPayPaymentViewModelTest {
             coVerify(atLeast = 1) { ledgerServerRecovery.recoverOne("v1", any(), any(), false) }   // el sondeo NO gasta el turno de E3 (Task 8 · S37b)
             val s = vm.state.value as AngelPayPaymentState.ResultadoIncierto
             assertThat(s.esperandoAlServidor).isTrue(); assertThat(s.puedeDeclarar).isTrue()
-            assertThat(publicado.last()).isTrue()   // ESTA pantalla sigue ocupada mientras espera (rechaza un segundo cobro remoto)
+            // D26 (Codex r0 #7): la duda llega con el SDK ya fuera: aparta su venta, no la terminal. El siguiente cobro del POS puede
+            // abrir su pantalla encima; esta duda sigue en la libreta y en el aviso de Inicio.
+            assertThat(publicado.last()).isFalse()
         } finally { vm.viewModelScope.cancel() }
     }
 

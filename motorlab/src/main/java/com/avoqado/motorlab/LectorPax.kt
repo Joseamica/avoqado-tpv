@@ -98,7 +98,7 @@ internal data class Informe(
  * la lectura de los tags, y con el candado tomado, para que nunca le caiga al sondeo de otro folio). Al volver del sondeo, si ya
  * está marcado no se llama al kernel; una marca que cae después de esa revisión deja correr el kernel. La decisión final va
  * después del cierre y la marca manda sobre toda salida anterior al sondeo: un folio detenido nunca entrega una `Lectura`. Sale
- * `Cancelada`, salvo que la marca caiga después de volver del sondeo y el intento termine sin lectura (kernel ≠ 0, sin banda,
+ * `Cancelada`, salvo que el intento ya haya sondeado y termine sin lectura (kernel ≠ 0, sin banda,
  * error o vencido): ése sale `Cortada` o `Vencida`. Que la PAX obedezca una parada que cae justo cuando empieza a sondear se mide
  * en el aparato.
  */

@@ -13,6 +13,7 @@
     <uses-permission android:name="com.pax.permission.PED" />
 
     <application
+        android:name="com.avoqado.motorlab.AppDelLaboratorio"
         android:allowBackup="false"
         android:label="Motor de cobro · laboratorio"
         android:networkSecurityConfig="@xml/network_security_config">

@@ -70,6 +70,15 @@ internal class Apariciones private constructor(
         r.firstOrNull() == Segmento.Clave(clave) && (r.size > 1 || (v != Escalar.Nulo && v != Escalar.Compuesto))
     }
 
+    /**
+     * Bloque 1b · fila 13: como [tieneAlgoBajo], pero [clave] en CUALQUIER lugar de la ruta (anidada o dentro de una lista), no
+     * sólo en la raíz. Mismas reglas de vacío: AUSENTE es la clave que no viene, `null`, `{}` o `[]`; lo demás es PRESENTE.
+     */
+    fun tieneAlgoBajoEnCualquierRuta(clave: String): Boolean = todas.any { (r, v) ->
+        val i = r.indexOf(Segmento.Clave(clave))
+        i >= 0 && (r.size > i + 1 || (v != Escalar.Nulo && v != Escalar.Compuesto))
+    }
+
     /** Ronda 4 · X: los segmentos que cuelgan DIRECTAMENTE de la clave raíz [clave] (claves de un objeto, o elementos de una lista). */
     fun segmentosDirectosBajo(clave: String): List<Segmento> =
         todas.filter { (r, _) -> r.size == 2 && r.first() == Segmento.Clave(clave) }.map { it.first[1] }

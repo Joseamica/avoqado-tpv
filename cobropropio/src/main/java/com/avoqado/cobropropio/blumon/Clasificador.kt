@@ -62,7 +62,7 @@ internal class SobreDeBlumon private constructor(
     val simulation: Boolean?,
     /** `dataResponse.description`, sólo si es la única `description` del cuerpo. */
     val descripcion: String?,
-    /** P1: `error` (raíz) trae algo ([Apariciones.tieneAlgoBajo]). Un sobre así nunca es un éxito definitivo. */
+    /** P1: `error` trae algo en CUALQUIER lugar del sobre ([Apariciones.tieneAlgoBajoEnCualquierRuta], bloque 1b · fila 13). Un sobre así nunca es un éxito definitivo. */
     val conError: Boolean,
     /** P2: `dataResponse` (raíz) trae algo. Un sobre así nunca es un definitivo de error. */
     val conDatos: Boolean,
@@ -99,8 +99,8 @@ internal class SobreDeBlumon private constructor(
         private val HTTP = Regex("^[1-5][0-9]{2}$")
         /**
          * Ronda 4 · Y: los nombres que este clasificador busca por nombre exacto, sacados de todas sus búsquedas en el lector:
-         * `de`, `deSalvo`, `en`, `unico`, `unica`, `soloEn`, `tieneAlgoBajo`, `contenedorDirectoBajo`, `segmentosDirectosBajo`,
-         * `CAMPOS_DE_CODIGO` y `pideLlavesNuevas`. Uno nuevo se agrega aquí.
+         * `de`, `deSalvo`, `en`, `unico`, `unica`, `soloEn`, `tieneAlgoBajo`, `tieneAlgoBajoEnCualquierRuta`, `contenedorDirectoBajo`,
+         * `segmentosDirectosBajo`, `CAMPOS_DE_CODIGO` y `pideLlavesNuevas`. Uno nuevo se agrega aquí.
          */
         private val NOMBRES_QUE_SE_BUSCAN = CAMPOS_DE_CODIGO + listOf(
             "status", "error", "dataResponse", "httpStatusCode", "id", "authorization", "reference", "batch", "amount",
@@ -194,7 +194,7 @@ internal class SobreDeBlumon private constructor(
                 importesCentavos = importes,
                 simulation = simulation,
                 descripcion = descripcion,
-                conError = a.tieneAlgoBajo("error"),
+                conError = a.tieneAlgoBajoEnCualquierRuta("error"),
                 conDatos = a.tieneAlgoBajo("dataResponse"),
                 httpDelError = httpDelError,
                 httpDelErrorRaro = httpDelErrorRaro,
@@ -284,7 +284,7 @@ internal object Clasificador {
      * con el ECO de nuestro `AttemptId`: en `dataResponse.batch` o en una `reference` que no sea el folio de Blumon. Sin eco
      * nada lo ata a este intento (podría ser otra operación del mismo importe). `confiable` ya exige que todas sean la nuestra.
      * Falla cerrado: si producción no repite nuestro folio en ningún campo, TODA venta sale `NoSe` y se reversa.
-     * Ronda 2 · P1 (éxito puro): además, nada bajo `error` y todos los códigos de éxito. Un solo lugar para todos los éxitos;
+     * Ronda 2 · P1 (éxito puro): además, nada bajo `error` (en cualquier lugar del sobre desde el bloque 1b · fila 13) y todos los códigos de éxito. Un solo lugar para todos los éxitos;
      * el preflight, que no lleva eco, usa [exitoPuro].
      */
     private fun exitoAtado(s: SobreDeBlumon, exito: String = APROBADA) = s.referencias.isNotEmpty() && exitoPuro(s, exito)

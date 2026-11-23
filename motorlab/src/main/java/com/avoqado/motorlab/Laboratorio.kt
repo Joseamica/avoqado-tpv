@@ -37,7 +37,7 @@ internal interface Filas {
 }
 
 internal sealed interface EstadoDelMotor {
-    /** Al abrir, hasta que `arrancar()` leyó el archivo de la identidad: todavía no se sabe si falta (C). */
+    /** Al abrir, hasta que `arrancar()` leyó el archivo de la identidad: todavía no se sabe si falta, y «Guardar» se rechaza (C). */
     data object Comprobando : EstadoDelMotor
     data object SinIdentidad : EstadoDelMotor
     data object Armando : EstadoDelMotor
@@ -60,7 +60,10 @@ internal sealed interface Orden {
     data class Aviso(val texto: String) : Orden
 }
 
-/** Lo que publica el carril. [guardadaEsLaDelMotor]: null sin motor. [lecturaSeca]: el resultado de la última. */
+/**
+ * Lo que publica el carril. [guardadaEsLaDelMotor]: null sin motor. [lecturaSeca]: el resultado de la última.
+ * [identidadIlegible]: el archivo de la identidad está pero no se lee como una, y no se ha guardado otra.
+ */
 internal data class Situacion(
     val motor: EstadoDelMotor = EstadoDelMotor.SinIdentidad,
     val trabajo: Trabajo? = null,
@@ -69,6 +72,7 @@ internal data class Situacion(
     val guardadaEsLaDelMotor: Boolean? = null,
     val lecturaSeca: String? = null,
     val avisos: List<String> = emptyList(),
+    val identidadIlegible: Boolean = false,
 )
 
 /** null = «Cobrar» se acepta; si no, por qué no. */
@@ -98,6 +102,7 @@ internal fun textoDeLaSituacion(s: Situacion): String = buildString {
         "Identidad guardada: " + when {
             s.motor == EstadoDelMotor.Comprobando -> "comprobando" // todavía no se lee el archivo: ni «sí» ni «no»
             s.identidadGuardada -> "sí"
+            s.identidadIlegible -> "ilegible" // el archivo está pero no se lee: nunca «no»
             else -> "no"
         } + when (s.guardadaEsLaDelMotor) {
             null -> ""
@@ -114,6 +119,8 @@ internal fun textoDeLaSituacion(s: Situacion): String = buildString {
  * orden entra por [orden] y se acepta o se rechaza en [carril] (en la app, el hilo de la pantalla), el único que cambia el
  * estado; lo lento va a [alcance] y su resultado regresa al carril. Los folios los arma UN pintor, en orden ([folios]).
  * [alcance] vive todo el proceso y nunca se cancela: el `finally` de cada intento cuenta con él para terminar su COBRO.
+ * «Guardar identidad» va de una en una y sin fila: se rechaza mientras se comprueba el archivo al abrir (COMPROBANDO) y mientras
+ * se escribe otra; si no, UNA escritura, y sólo ya escrita arma a un motor SIN_IDENTIDAD.
  */
 internal class Laboratorio(
     private val historial: HistorialLocal,
@@ -140,9 +147,8 @@ internal class Laboratorio(
     private var motor: Motor? = null
     private var activa: IdentidadTecleada? = null
     private var guardada: IdentidadTecleada? = null
-    private var tecleada = false
+    private var archivoIlegible = false // al abrir, el archivo estaba pero no se leyó como identidad (2)
     private var escribiendo = false
-    private var porEscribir: IdentidadTecleada? = null
     private var armados = 0
     private var lecturas = 0
     private var ultimaLectura: String? = null
@@ -164,16 +170,19 @@ internal class Laboratorio(
     }
 
     /**
-     * Al abrir: la identidad guardada; si hay, arma (salvo que ya se haya tecleado otra, que gana). Hasta que el archivo se lee,
-     * el motor está COMPROBANDO; al regresar al carril pasa a SIN_IDENTIDAD si nadie lo armó mientras tanto (C).
+     * Al abrir: lee el archivo de la identidad fuera del carril. Mientras, el motor está COMPROBANDO y «Guardar» se rechaza, así
+     * que al regresar al carril nada lo cambió: arma con la leída o queda SIN_IDENTIDAD («ilegible» si el archivo está y no se lee).
      */
     fun arrancar() {
         alcance.launch {
             val t = archivo.leer()
+            val ilegible = t == null && archivo.existe()
             enCarril {
-                if (estadoDelMotor == EstadoDelMotor.Comprobando) estadoDelMotor = EstadoDelMotor.SinIdentidad
-                if (!tecleada) guardada = t
-                if (!tecleada && t != null) armar(t) else publicar()
+                guardada = t
+                archivoIlegible = ilegible
+                if (t != null) return@enCarril armar(t)
+                estadoDelMotor = EstadoDelMotor.SinIdentidad
+                publicar()
             }
         }
     }
@@ -202,46 +211,28 @@ internal class Laboratorio(
     private fun rechazo(que: String) = aviso("no se acepta «$que»: ${porQueNoCobra(_situacion.value) ?: "ahora no"}")
 
     /**
-     * Siempre se acepta y sólo escribe. Si el motor no tiene identidad (SIN_IDENTIDAD o COMPROBANDO), arma con ella cuando el
-     * archivo ya la tiene ([escribir]); con el motor armando, armado o en FALLO, sólo guarda (la activa es la del proceso).
+     * De una en una y sin fila: se rechaza en COMPROBANDO y mientras se escribe otra; si no, UNA escritura. Ya escrita: con el motor
+     * SIN_IDENTIDAD arma con ella; armando, armado o en FALLO sólo queda guardada (la del proceso no cambia). Si falla, el aviso y
+     * nada más cambia.
      */
     private fun guardar(o: Orden.Guardar) {
+        if (estadoDelMotor == EstadoDelMotor.Comprobando) return aviso("no se acepta «Guardar»: comprobando la identidad guardada")
+        if (escribiendo) return aviso("no se acepta «Guardar»: se está guardando otra identidad")
         val t = try {
             IdentidadTecleada.de(o.serie, o.posId, o.serieFisica)
         } catch (_: IllegalArgumentException) {
             return aviso("identidad sin forma: las series llevan de 4 a 32 letras o números y el posId de 1 a 9 números")
-        }
-        tecleada = true
-        escribir(t)
-    }
-
-    private fun sinIdentidad() = estadoDelMotor == EstadoDelMotor.SinIdentidad || estadoDelMotor == EstadoDelMotor.Comprobando
-
-    /**
-     * Un archivo a la vez; si llega otra mientras se escribe, se escribe después: queda la última aceptada. Un motor sin
-     * identidad arma SÓLO con una identidad ya escrita y sólo con la última aceptada: si hay otra en fila, arma ésa cuando se
-     * escriba (D). Si la escritura falla, el aviso, y el motor sigue sin identidad.
-     */
-    private fun escribir(t: IdentidadTecleada) {
-        if (escribiendo) {
-            porEscribir = t
-            return
         }
         escribiendo = true
         alcance.launch {
             val error = runCatching { archivo.guardar(t) }.exceptionOrNull()
             enCarril {
                 escribiendo = false
-                val siguiente = porEscribir
-                porEscribir = null
-                if (error != null) {
-                    aviso("la identidad no se pudo guardar: ${error.javaClass.simpleName}")
-                } else {
-                    guardada = t
-                    if (siguiente == null && sinIdentidad()) armar(t)
-                    aviso(if (activa == null || t == activa) "identidad guardada" else "identidad guardada: se usará al cerrar y abrir la app")
-                }
-                siguiente?.let { escribir(it) }
+                if (error != null) return@enCarril aviso("la identidad no se pudo guardar: ${error.javaClass.simpleName}")
+                guardada = t
+                if (estadoDelMotor != EstadoDelMotor.SinIdentidad) return@enCarril aviso("identidad guardada: se usará al cerrar y abrir la app")
+                armar(t)
+                aviso("identidad guardada")
             }
         }
     }
@@ -327,6 +318,7 @@ internal class Laboratorio(
     private fun publicar() {
         _situacion.value = Situacion(
             estadoDelMotor, trabajo, armados, guardada != null, motor?.let { guardada == activa }, ultimaLectura, avisos.toList(),
+            archivoIlegible && guardada == null,
         )
     }
 

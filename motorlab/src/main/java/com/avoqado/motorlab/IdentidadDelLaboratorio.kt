@@ -55,6 +55,9 @@ internal class ArchivoDeIdentidad(dir: File) {
         if (l.size == 4 && l[3].isEmpty()) IdentidadTecleada(l[0], l[1], l[2]) else null
     }.getOrNull()
 
+    /** Si el archivo está, se lea o no: así un `null` de [leer] con el archivo presente es «ilegible», no «no hay». Nunca lanza. */
+    fun existe(): Boolean = runCatching { archivo.exists() }.getOrDefault(true)
+
     fun guardar(t: IdentidadTecleada) =
         escribirEntero(archivo, "${t.serieBlumon}\n${t.posId}\n${t.serieFisica}\n".toByteArray(Charsets.US_ASCII))
 }

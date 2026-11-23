@@ -13,7 +13,7 @@ internal data class FolioDelHistorial(val folio: AttemptId, val importeCentavos:
 /**
  * El historial del laboratorio (Ruling 10): UN ARCHIVO POR FOLIO, `<nnnnnn>-<folio>`, con creación exclusiva; [anotarFolio]
  * escribe el búfer COMPLETO y sincroniza antes de regresar, o lanza. Uno a medias se lista sin importe y nunca se come a otro.
- * Las notas (cada evento del motor, el corte, el lector, las tardías) viven en memoria.
+ * Las notas (cada evento del motor, el corte, el lector, los finales publicados) viven en memoria.
  *
  * ponytail: sincroniza el archivo, no la carpeta; tras un apagón (no tras una caída del proceso) la entrada nueva podría no
  * estar. Basta para el laboratorio; si algún día importa, sincronizar también la carpeta.
@@ -41,10 +41,18 @@ internal class HistorialLocal(private val carpeta: File) {
         notas[folio]?.add(ms to texto.replace('\n', ' '))
     }
 
-    @Synchronized fun leer(): List<FolioDelHistorial> = archivos().sortedBy { it.name }.mapNotNull { a ->
-        val folio = runCatching { AttemptId(a.name.substringAfter('-')) }.getOrNull() ?: return@mapNotNull null
+    /**
+     * Bajo el monitor sólo se listan los nombres y se copian las notas; los archivos se leen FUERA, así el `anotarFolio` de un
+     * cobro nunca espera a la pantalla. Lo listado ya está completo: se escribe entero bajo el mismo monitor.
+     */
+    fun leer(): List<FolioDelHistorial> = synchronized(this) {
+        archivos().sortedBy { it.name }.mapNotNull { a ->
+            val folio = runCatching { AttemptId(a.name.substringAfter('-')) }.getOrNull() ?: return@mapNotNull null
+            Triple(a, folio, notas[folio].orEmpty().toList())
+        }
+    }.map { (a, folio, n) ->
         val importe = runCatching { a.readText(Charsets.US_ASCII) }.getOrNull()?.let { FORMATO.matchEntire(it)?.groupValues?.get(1)?.toLongOrNull() }
-        FolioDelHistorial(folio, importe, notas[folio].orEmpty().toList())
+        FolioDelHistorial(folio, importe, n)
     }
 
     private fun archivos(): List<File> = carpeta.listFiles()?.filter { it.isFile }.orEmpty()

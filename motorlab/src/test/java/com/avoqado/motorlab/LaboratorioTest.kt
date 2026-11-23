@@ -138,6 +138,8 @@ class LaboratorioTest {
     private fun esperar(l: Laboratorio = lab, c: (Situacion) -> Boolean) = espera { l.situacion.first(c) }
     private fun carrilVacio() = aguanta(CountDownLatch(1).also { l -> carril.execute { l.countDown() } })
     private fun armado(l: Laboratorio = lab) {
+        l.arrancar()
+        esperar(l) { it.motor == EstadoDelMotor.SinIdentidad } // «Guardar» se rechaza mientras se comprueba el archivo
         l.orden(Orden.Guardar("SERIE0099", "4321", ""))
         esperar(l) { it.motor == EstadoDelMotor.Armado }
     }
@@ -225,6 +227,8 @@ class LaboratorioTest {
     /** Si fabricar o el `recuperar()` al armar lanzan, FALLO con su clase (nunca ARMADO) y «Cobrar» no se acepta. */
     @Test fun `si fabricar o recuperar al armar lanza queda FALLO y no se cobra`() {
         motor.alRecuperar = { error("la libreta tronó") }
+        lab.arrancar()
+        esperar { it.motor == EstadoDelMotor.SinIdentidad } // «Guardar» se rechaza mientras se comprueba el archivo
         lab.orden(Orden.Guardar("SERIE0099", "4321", ""))
         val s = esperar { it.motor is EstadoDelMotor.Fallo && it.identidadGuardada }
         assertEquals(EstadoDelMotor.Fallo("IllegalStateException"), s.motor)
@@ -361,17 +365,28 @@ class LaboratorioTest {
         esperar { it.trabajo == null }
     }
 
-    /** Un proceso nuevo con folios de antes: arma solo con la identidad guardada y relee la libreta; sin fila ≠ ilegible ≠ fila. */
+    /**
+     * Un proceso nuevo con folios de antes: arma solo con la identidad guardada y relee la libreta; sin fila ≠ ilegible ≠ fila. Un
+     * «Guardar» mientras se comprueba el archivo (antes de leerlo) se rechaza, y arma la del archivo (1a).
+     */
     @Test fun `al abrir arma con la identidad guardada y relee la libreta sin depender de eventos`() {
-        ArchivoDeIdentidad(carpeta.root).guardar(IdentidadTecleada.de("SERIE0099", "4321", ""))
+        val delArchivo = IdentidadTecleada.de("SERIE0099", "4321", "")
+        ArchivoDeIdentidad(carpeta.root).guardar(delArchivo)
+        val usada = AtomicReference<Identidad?>()
+        fabrica = { usada.set(it); motor to filas }
         val (x, y, z) = List(3) { AttemptId.nuevo() }
         HistorialLocal(File(carpeta.root, "historial")).apply { anotarFolio(x, 100); anotarFolio(y, 200); anotarFolio(z, 300) }
         filas.filas[x] = IntentoEntity(x.valor, Operacion.VENTA, VENUE, 100, false, "1", "S1", Ambiente.SANDBOX, "x", Origen.LOCAL_SIN_SOLICITUD, estado = EstadoDelIntento.APROBADO, enviadoEnMs = 5)
         filas.ilegibles += z
         val otro = nuevo(HistorialLocal(File(carpeta.root, "historial")))
         espera { otro.folios.first { "— ${x.valor} \$1.00: la libreta se lee cuando el motor esté armado" in it } }
+        otro.orden(Orden.Guardar("SERIE0077", "1111", "")) // sin `arrancar()` todavía: COMPROBANDO
+        carrilVacio()
+        assertTrue(otro.situacion.value.avisos.any { "no se acepta «Guardar»: comprobando la identidad guardada" in it })
         otro.arrancar()
         val s = esperar(otro) { it.motor == EstadoDelMotor.Armado }
+        assertEquals(delArchivo.identidad(), usada.get()) // armó la del archivo
+        assertEquals(delArchivo, ArchivoDeIdentidad(carpeta.root).leer()) // y el archivo no cambió
         val texto = espera { otro.folios.first { "fila APROBADO" in it } }
         assertTrue(texto, "— ${y.valor} \$2.00: sin fila guardada por el motor" in texto)
         assertTrue(texto, "— ${z.valor} \$3.00: fila ILEGIBLE (IllegalStateException): por confirmar" in texto)
@@ -405,13 +420,29 @@ class LaboratorioTest {
         )
     }
 
+    /** Un archivo de identidad que está pero no se lee como una no es «no»: SIN_IDENTIDAD con «ilegible»; un «Guardar» lo reemplaza y arma (2). */
+    @Test fun `un archivo de identidad ilegible no se confunde con ninguno`() {
+        File(carpeta.root, "identidad-del-laboratorio.txt").writeText("SERIE 0099\n4321\nSERIE0099\n") // sin forma
+        lab.arrancar()
+        val s = esperar { it.motor == EstadoDelMotor.SinIdentidad }
+        assertEquals(
+            listOf("Motor: SIN_IDENTIDAD · motores armados: 0", "Identidad guardada: ilegible", "Cobrar: apagado: falta la identidad"),
+            textoDeLaSituacion(s).lines().take(3),
+        )
+        lab.orden(Orden.Guardar("SERIE0099", "4321", ""))
+        val armadoYa = esperar { it.motor == EstadoDelMotor.Armado }
+        assertEquals("Identidad guardada: sí (la del motor)", textoDeLaSituacion(armadoYa).lines()[1])
+        assertEquals(IdentidadTecleada("SERIE0099", "4321", "SERIE0099"), ArchivoDeIdentidad(carpeta.root).leer())
+    }
+
     /**
-     * La primera identidad arma SÓLO cuando ya está escrita (D): si el escritor truena, el aviso y el motor sigue sin identidad y
-     * sin fábrica; mientras el escritor no termina, «Cobrar» se rechaza y la fábrica no se llama; y la fábrica ya la encuentra en
-     * el disco.
+     * La primera identidad arma SÓLO cuando ya está escrita (D), de una en una (1). Si el escritor truena: el aviso, el motor sigue
+     * sin identidad y sin fábrica, y un «Guardar» después que sí se escribe arma (1c). Mientras el escritor no termina: otro
+     * «Guardar» se rechaza (1b), «Cobrar» también y la fábrica no se llama; al terminar arma UNA vez con la PRIMERA, la del disco.
      */
     @Test fun `la primera identidad arma solo cuando ya esta escrita`() {
-        val sinCarpeta = nuevo(ar = ArchivoDeIdentidad(File(carpeta.root, "no-existe"))).also { it.arrancar() }
+        val dir = File(carpeta.root, "no-existe")
+        val sinCarpeta = nuevo(ar = ArchivoDeIdentidad(dir)).also { it.arrancar() }
         esperar(sinCarpeta) { it.motor == EstadoDelMotor.SinIdentidad }
         sinCarpeta.orden(Orden.Guardar("SERIE0099", "4321", ""))
         val fallida = esperar(sinCarpeta) { it.avisos.any { a -> "la identidad no se pudo guardar: " in a } }
@@ -419,6 +450,11 @@ class LaboratorioTest {
         assertFalse(fallida.identidadGuardada)
         carrilVacio()
         assertEquals(0, fabricas.get())
+        assertTrue(dir.mkdir()) // ahora sí se puede escribir
+        sinCarpeta.orden(Orden.Guardar("SERIE0099", "4321", ""))
+        esperar(sinCarpeta) { it.motor == EstadoDelMotor.Armado }
+        assertEquals(1, fabricas.get())
+        fabricas.set(0)
         conHiloLento(armar = false) { l, hilo ->
             val enDisco = AtomicReference<IdentidadTecleada?>()
             fabrica = { enDisco.set(ArchivoDeIdentidad(carpeta.root).leer()); motor to filas }
@@ -427,14 +463,18 @@ class LaboratorioTest {
             val tapon = CountDownLatch(1)
             hilo.execute { aguanta(tapon) } // el escritor no corre hasta soltarlo
             l.orden(Orden.Guardar("SERIE0099", "4321", ""))
+            l.orden(Orden.Guardar("SERIE0088", "8765", "")) // con la primera escribiéndose
             l.orden(Orden.Cobrar(2_537))
             carrilVacio()
             assertEquals(EstadoDelMotor.SinIdentidad, l.situacion.value.motor)
+            assertTrue(l.situacion.value.avisos.any { "no se acepta «Guardar»: se está guardando otra identidad" in it })
             assertTrue(l.situacion.value.avisos.any { "no se acepta «Cobrar»: falta la identidad" in it })
             assertEquals(0, fabricas.get())
             tapon.countDown()
             esperar(l) { it.motor == EstadoDelMotor.Armado }
-            assertEquals(IdentidadTecleada("SERIE0099", "4321", "SERIE0099"), enDisco.get()) // la fábrica ya la vio escrita
+            val primera = IdentidadTecleada("SERIE0099", "4321", "SERIE0099")
+            assertEquals(primera, enDisco.get()) // la fábrica ya la vio escrita: la primera
+            assertEquals(primera, ArchivoDeIdentidad(carpeta.root).leer())
             assertEquals(1, fabricas.get())
             assertEquals(0, motor.cuantas("cobrar"))
         }
@@ -446,25 +486,27 @@ class LaboratorioTest {
      */
     @Test fun `cancelar justo despues de la decision de arrancar encuentra cobrar ya llamado`() {
         val dePrueba = Thread.currentThread()
-        val inyeccion = AtomicReference<Pair<() -> Unit, () -> Unit>?>(null)
+        val inyeccion = AtomicReference<((Runnable) -> Unit)?>(null)
         val inyectado = CountDownLatch(1)
-        // El carril de esta prueba: el primer encargo que le llega del intento es su decisión de arrancar; mete algo antes y algo
-        // justo después de ella.
+        // El carril de esta prueba: el primer encargo que le llega del intento es su decisión de arrancar, y la prueba decide cómo
+        // se encola.
         val conInyeccion = Executor { r ->
             val i = if (Thread.currentThread() !== dePrueba) inyeccion.getAndSet(null) else null
-            i?.first?.invoke()
-            carril.execute(r)
-            i?.second?.invoke()
+            if (i != null) i(r) else carril.execute(r)
         }
         conHiloLento(c = conInyeccion) { l, hilo ->
             val tapa = CountDownLatch(1)
-            inyeccion.set(
-                { hilo.execute { aguanta(tapa) } } to { // antes: la corrutina del intento no sigue hasta soltarla
-                    carril.execute { motor.llamadas += "cancelar" } // después: la marca de que el carril acepta «Cancelar» aquí
-                    l.orden(Orden.Cancelar)
-                    inyectado.countDown()
-                },
-            )
+            inyeccion.set { decision ->
+                // El tapón sólo entra al hilo cuando la corrutina del intento ya se suspendió en la decisión; la decisión espera a
+                // que entre. Así su `resumeWith` siempre despacha la corrutina, que queda detrás del tapón, y no puede seguir en la
+                // misma ejecución y adelantarse a la marca.
+                val dentro = CountDownLatch(1)
+                hilo.execute { dentro.countDown(); aguanta(tapa) }
+                carril.execute { aguanta(dentro); decision.run() }
+                carril.execute { motor.llamadas += "cancelar" } // la marca: el carril acepta «Cancelar» justo después
+                l.orden(Orden.Cancelar)
+                inyectado.countDown()
+            }
             l.orden(Orden.Cobrar(2_537))
             aguanta(inyectado)
             carrilVacio() // la decisión, la marca y «Cancelar» ya corrieron

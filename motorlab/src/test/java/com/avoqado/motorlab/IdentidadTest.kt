@@ -4,6 +4,7 @@ import com.avoqado.cobropropio.dominio.Ambiente
 import com.avoqado.cobropropio.dominio.Identidad
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -25,10 +26,13 @@ class IdentidadTest {
         assertEquals(Identidad(null, "4321", "FISICA01", "SERIE0099", "A910S", "motorlab-0.1.0", Ambiente.SANDBOX), IdentidadTecleada.de("SERIE0099", "4321", "FISICA01").identidad())
         val archivo = ArchivoDeIdentidad(carpeta.root)
         assertNull(archivo.leer())
+        assertFalse(archivo.existe()) // no hay
         archivo.guardar(t)
         assertEquals(t, ArchivoDeIdentidad(carpeta.root).leer())
+        assertTrue(archivo.existe())
         File(carpeta.root, "identidad-del-laboratorio.txt").writeText("SERIE 0099\n4321\nSERIE0099\n")
         assertNull(archivo.leer()) // sin forma: se vuelve a teclear
+        assertTrue(archivo.existe()) // pero está: ilegible, no «no hay»
     }
 
     @Test fun `la llave de huellas nace una vez y se relee igual`() {

@@ -260,7 +260,8 @@ internal class LectorPax(private val pax: Pax, private val red: Red) : LectorDeT
         h.resultado = resultadoDe(k.resultado)
         h.cvm = cvmDe(k.cvm)
         val tags = leerTags(pax)
-        h.tagsPresentes = tags.keys
+        // Una copia: `tags.keys` es una vista que retiene el mapa con los valores (la banda y el criptograma) en el informe.
+        h.tagsPresentes = tags.keys.toSet()
         h.importeDelKernel = tags[0x9F02]?.toLongOrNull()
         if (0x57 !in tags) return sale(Causa.SIN_BANDA, ResultadoDeLectura.Cortada(k.codigo))
         val lectura = Lectura(h.marca, Entrada.SIN_CONTACTO, h.resultado!!, k.codigo, h.cvm!!, tags)

@@ -119,6 +119,19 @@ class LectorPaxTest {
         for (secreto in listOf("4111111111111111", "D2912101", "A1B2C3D4E5F60718")) assertFalse(secreto, secreto in i.toString())
     }
 
+    /**
+     * El informe dice QUÉ tags llegaron, nunca sus valores: `tagsPresentes` es una copia de los números. La vista `keys` de un
+     * mapa es una clase interna del mapa y lo retiene entero (la banda 57 y el 9F26), aunque no se vea por la API.
+     */
+    @Test fun `el informe guarda una copia de los numeros de tag y no una vista del mapa`() {
+        val lector = lector(PaxDeMentira()) // la Visa sintética: varios tags, así que el mapa crudo no es de un solo elemento
+        assertTrue(lector.leerYa() is ResultadoDeLectura.Leida)
+        val i = lector.informes.value!!
+        assertEquals(VISA.keys, i.tagsPresentes)
+        val dueno = i.tagsPresentes.javaClass.enclosingClass
+        assertFalse("tagsPresentes no puede ser una vista del mapa de tags", dueno != null && Map::class.java.isAssignableFrom(dueno))
+    }
+
     /** Un solo dueño: mientras A es dueño, B se rechaza y A queda intacto; A se suelta al cerrar, o la app lo suelta si el motor no leyó. */
     @Test fun `un solo dueno del lector desde que se apunta el folio`() {
         val pax = PaxDeMentira()

@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Added**
+- **Interno, sin efecto en la app · `motorlab`, bloque 4-L (L-a) de la fase 3 del SDK propio**: app de pruebas APARTE para la PAX del laboratorio (`com.jaac.avoqado_tpv.sandbox.motorlab`, versión `0.1.0-sandbox`, sólo depurable): el módulo `:motorlab` con `:cobropropio`, los módulos de PAX y los AAR de Blumon de sandbox, su manifiesto y texto claro sólo hacia `127.0.0.1`. Todavía no cobra; `:app` no cambia y la app de laboratorio no entra a los builds de los negocios.
+
 ### **Changed**
 - **Interno, sin efecto en la app · `cobropropio`, bloque 1 de la fase 3 del SDK propio**: el módulo sigue sin conectarse (`:app` no depende de él).
   - Prueba instrumentada del transporte sobre el TLS de Android (SNI, un POST completo por HTTP/1.1, una escritura después del plazo no llega); se corre en la PAX aparte.

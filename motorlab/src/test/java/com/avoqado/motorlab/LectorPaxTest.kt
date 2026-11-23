@@ -11,7 +11,12 @@ import com.avoqado.cobropropio.dominio.ResultadoKernel
 import com.pax.jemv.clcommon.KernType
 import com.paxsz.module.emv.process.enums.CvmResultEnum
 import com.paxsz.module.emv.process.enums.TransResultEnum
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -19,6 +24,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Bloque 4-L · L-c: el adaptador con una PAX de mentira. Datos SINTÉTICOS: el PAN de prueba público de Visa (y el de Amex) y
@@ -308,6 +314,175 @@ class LectorPaxTest {
         assertFalse("4111111111111111" in i.toString())
         assertEquals(Cierre.ACREDITADO, i.cierre)
         assertEquals(listOf("preparar 2550", "sondear 30000", "kernel", "pararSondeo", "cerrarPicc"), pax.pasos())
+    }
+
+    private fun esperar(l: CountDownLatch) = assertTrue("la PAX de mentira no llegó", l.await(5, TimeUnit.SECONDS))
+
+    /** `leer` en otro hilo; [mientras] corre con la PAX de mentira parada donde la prueba quiera. */
+    private fun LectorPax.leerMientras(mientras: suspend () -> Unit): ResultadoDeLectura = runBlocking {
+        val leyendo = async(Dispatchers.Default) { leer(Operacion.VENTA, IMPORTE, ESPERA) }
+        mientras()
+        leyendo.await()
+    }
+
+    /**
+     * Momento 1: detener antes de que el motor pida la tarjeta (p. ej., mientras abre la sesión). No inicia el sondeo, y la marca
+     * manda sobre toda salida anterior al sondeo: también sin red o con `preparar` fallida sale `Cancelada`, no `Cortada`.
+     */
+    @Test fun `detener antes de leer y el sondeo no arranca`() {
+        val sinRed = object : Red { override fun hayRed() = false }
+        for ((nombre, red, preparacion) in listOf(Triple("con red", conRed, 0), Triple("sin red", sinRed, 0), Triple("preparar falla", conRed, -3))) {
+            val pax = PaxDeMentira().apply { codigoDePreparacion = preparacion }
+            val lector = lector(pax, red)
+            lector.detener(folio)
+            assertEquals(nombre, ResultadoDeLectura.Cancelada, lector.leerYa())
+            assertEquals(nombre, listOf("preparar 2550"), pax.pasos()) // ni sondeo, ni stopPolling, ni cierre
+            val i = lector.informes.value!!
+            assertEquals(nombre, Causa.DETENIDA, i.causa)
+            assertEquals(nombre, Cierre.NO_SE_ABRIO, i.cierre)
+            assertTrue(nombre, lector.siguienteFolio(AttemptId.nuevo())) // lo detuvieron sin haber leído: al regresar su leer, se suelta
+        }
+    }
+
+    /** Momento 2: detener mientras prepara; al terminar ya no sondea, y nadie llama `stopPolling` (no había sondeo). */
+    @Test fun `detener entre preparar y sondear y el sondeo no arranca`() {
+        val enPreparar = CountDownLatch(1)
+        val seguir = CountDownLatch(1)
+        val pax = PaxDeMentira().apply { alPreparar = { enPreparar.countDown(); seguir.await(5, TimeUnit.SECONDS) } }
+        val lector = lector(pax)
+        val r = lector.leerMientras {
+            esperar(enPreparar)
+            lector.detener(folio)
+            seguir.countDown()
+        }
+        assertEquals(ResultadoDeLectura.Cancelada, r)
+        assertEquals(listOf("preparar 2550"), pax.pasos())
+        val i = lector.informes.value!!
+        assertEquals(Causa.DETENIDA, i.causa)
+        assertEquals(Cierre.NO_SE_ABRIO, i.cierre)
+    }
+
+    /**
+     * Momento 3: con el sondeo ya decidido, detener ORDENA pararlo (`stopPolling`); al volver ya marcado, no se llama al kernel,
+     * y el lector se cierra. Mientras lee: otro folio se rechaza, el dueño no se suelta y una segunda `leer` no lo reclama (regresa
+     * sin tocar la PAX). (Que la PAX obedezca una parada que cae justo cuando empieza a sondear se mide en el aparato.)
+     */
+    @Test fun `detener con el sondeo activo lo para y cierra el lector`() {
+        val enSondeo = CountDownLatch(1)
+        val pax = PaxDeMentira()
+        pax.sondeo = { enSondeo.countDown(); pax.parado.await(2, TimeUnit.SECONDS); Sondeo.PARADO }
+        val lector = lector(pax)
+        val r = lector.leerMientras {
+            esperar(enSondeo)
+            assertFalse(lector.siguienteFolio(AttemptId.nuevo())) // mientras lee, otro folio se rechaza
+            assertFalse(lector.soltarFolio(folio)) // y el que lee no se suelta a media lectura
+            assertEquals(ResultadoDeLectura.Cancelada, lector.leer(Operacion.VENTA, IMPORTE, ESPERA)) // una segunda leer no reclama al dueño
+            assertEquals(Causa.SIN_FOLIO, lector.informes.value!!.causa)
+            assertEquals(listOf("preparar 2550", "sondear 30000"), pax.pasos()) // y no tocó la PAX
+            lector.detener(folio)
+        }
+        assertEquals(ResultadoDeLectura.Cancelada, r)
+        // El primer pararSondeo es la orden de detener; el segundo, el del cierre.
+        assertEquals(listOf("preparar 2550", "sondear 30000", "pararSondeo", "pararSondeo", "cerrarPicc"), pax.pasos())
+        val i = lector.informes.value!!
+        assertEquals(Causa.DETENIDA, i.causa)
+        assertEquals(Cierre.ACREDITADO, i.cierre)
+    }
+
+    /**
+     * Detener durante el sondeo, con la orden de parar perdida (la PAX de mentira no se despierta con ella): el sondeo dura hasta
+     * que hay tarjeta o vence su plazo; al volver ya marcado, no se llama al kernel. (Si la marca cayera DESPUÉS de esa revisión,
+     * el kernel correría y la frenaría la decisión final: `detener durante el kernel…`.)
+     */
+    @Test fun `detener durante el sondeo aunque se pierda la parada no llama al kernel`() {
+        val enSondeo = CountDownLatch(1)
+        val seguir = CountDownLatch(1)
+        val pax = PaxDeMentira().apply { sondeo = { enSondeo.countDown(); seguir.await(5, TimeUnit.SECONDS); Sondeo.TARJETA } }
+        val lector = lector(pax)
+        val r = lector.leerMientras {
+            esperar(enSondeo)
+            lector.detener(folio)
+            seguir.countDown()
+        }
+        assertEquals(ResultadoDeLectura.Cancelada, r)
+        assertFalse("kernel" in pax.llamadas)
+        assertEquals(listOf("preparar 2550", "sondear 30000", "pararSondeo", "pararSondeo", "cerrarPicc"), pax.pasos())
+    }
+
+    /** Detener mientras el kernel lee (o justo después del sondeo): el kernel corre, pero la lectura ya no se entrega. */
+    @Test fun `detener durante el kernel no entrega la lectura`() {
+        val enKernel = CountDownLatch(1)
+        val seguir = CountDownLatch(1)
+        val pax = PaxDeMentira().apply { alLeer = { enKernel.countDown(); seguir.await(5, TimeUnit.SECONDS) } }
+        val lector = lector(pax)
+        val r = lector.leerMientras {
+            esperar(enKernel)
+            lector.detener(folio)
+            seguir.countDown()
+        }
+        assertEquals(ResultadoDeLectura.Cancelada, r)
+        assertEquals(listOf("preparar 2550", "sondear 30000", "kernel", "pararSondeo", "pararSondeo", "cerrarPicc"), pax.pasos())
+        val i = lector.informes.value!!
+        assertEquals(Causa.DETENIDA, i.causa)
+        assertEquals(Cierre.ACREDITADO, i.cierre)
+    }
+
+    /** Detener mientras se cierra el lector: la decisión final va después del cierre, así que la lectura ya no se entrega. */
+    @Test fun `detener durante el cierre no entrega la lectura`() {
+        val enCierre = CountDownLatch(1)
+        val seguir = CountDownLatch(1)
+        val pax = PaxDeMentira().apply { alCerrar = { enCierre.countDown(); seguir.await(5, TimeUnit.SECONDS) } }
+        val lector = lector(pax)
+        val r = lector.leerMientras {
+            esperar(enCierre)
+            lector.detener(folio)
+            seguir.countDown()
+        }
+        assertEquals(ResultadoDeLectura.Cancelada, r)
+        // Cerrando, detener ya no llama stopPolling: sólo marca.
+        assertEquals(listOf("preparar 2550", "sondear 30000", "kernel", "pararSondeo", "cerrarPicc"), pax.pasos())
+        val i = lector.informes.value!!
+        assertEquals(Causa.DETENIDA, i.causa)
+        assertEquals(Cierre.ACREDITADO, i.cierre)
+    }
+
+    /** Detener le llega al dueño, y a un folio rechazado no le hace nada. */
+    @Test fun `detener le llega al dueno y no a un folio rechazado`() {
+        val pax = PaxDeMentira()
+        val lector = LectorPax(pax, conRed)
+        val a = AttemptId.nuevo()
+        val b = AttemptId.nuevo()
+        assertTrue(lector.siguienteFolio(a))
+        assertFalse(lector.siguienteFolio(b))
+        lector.detener(b) // B no es dueño: A queda intacto
+        assertTrue(lector.leerYa() is ResultadoDeLectura.Leida)
+        val c = AttemptId.nuevo()
+        assertTrue(lector.siguienteFolio(c))
+        assertFalse(lector.siguienteFolio(AttemptId.nuevo()))
+        lector.detener(c) // el dueño sí
+        assertEquals(ResultadoDeLectura.Cancelada, lector.leerYa())
+        val i = lector.informes.value!!
+        assertEquals(c, i.folio)
+        assertEquals(Causa.DETENIDA, i.causa)
+    }
+
+    /** El motor deja de esperar (vence su reloj de lectura o se cancela su `fondo`): el sondeo se para y el lector se cierra. */
+    @Test fun `el motor que deja de esperar para el sondeo y cierra el lector`() {
+        val enSondeo = CountDownLatch(1)
+        val pax = PaxDeMentira()
+        pax.sondeo = { enSondeo.countDown(); pax.parado.await(2, TimeUnit.SECONDS); Sondeo.PARADO }
+        val lector = lector(pax)
+        runBlocking {
+            val leyendo = launch(Dispatchers.Default) { lector.leer(Operacion.VENTA, IMPORTE, ESPERA) }
+            esperar(enSondeo)
+            leyendo.cancel()
+            val i = withTimeout(5_000) { lector.informes.first { it?.folio == folio }!! }
+            assertTrue(leyendo.isCancelled)
+            assertEquals(Causa.DETENIDA, i.causa)
+            assertEquals(Cierre.ACREDITADO, i.cierre)
+        }
+        assertFalse("kernel" in pax.llamadas)
+        assertEquals(listOf("preparar 2550", "sondear 30000", "pararSondeo", "pararSondeo", "cerrarPicc"), pax.pasos())
     }
 
     private companion object {

@@ -92,6 +92,13 @@ internal data class Informe(
  * `leer` no recibe el folio (`LectorDeTarjeta`): quien cobra llama [siguienteFolio] antes de cada `cobrar`, y ese folio es el
  * ÚNICO dueño del lector hasta que su `leer` cierra (o [soltarFolio], si el motor no llegó a leer). Fases bajo [candado]:
  * `APUNTADO → PREPARANDO → SONDEANDO → CERRANDO → CERRADO`. El informe sale DESPUÉS de cerrar el lector.
+ *
+ * [detener] y la cancelación de `leer` (el motor dejó de esperar) marcan al dueño. El adaptador no INICIA el sondeo de un folio
+ * marcado; si ya decidió iniciarlo, ORDENA pararlo (`stopPolling` sólo con el sondeo activo y con el candado tomado, para que
+ * nunca le caiga al sondeo de otro folio). Al volver del sondeo, si ya está marcado no se llama al kernel; una marca que cae
+ * después de esa revisión deja correr el kernel. La decisión final va después del cierre y la marca manda sobre toda salida
+ * anterior al sondeo: un folio detenido nunca entrega una `Lectura` y sale `Cancelada`. Que la PAX obedezca una parada que cae
+ * justo cuando empieza a sondear se mide en el aparato.
  */
 internal class LectorPax(private val pax: Pax, private val red: Red) : LectorDeTarjeta {
 
@@ -99,6 +106,7 @@ internal class LectorPax(private val pax: Pax, private val red: Red) : LectorDeT
 
     private class Turno(val folio: AttemptId) {
         var fase = Fase.APUNTADO
+        var detenido = false
     }
 
     private val candado = Any()
@@ -139,6 +147,17 @@ internal class LectorPax(private val pax: Pax, private val red: Red) : LectorDeT
         true
     }
 
+    /** Sin esperar: si ese folio es el dueño y no sondea todavía, ya no sondeará; si sondea, ordena pararlo; si no, nada. */
+    fun detener(folio: AttemptId) {
+        synchronized(candado) { turno?.takeIf { it.folio == folio }?.let { parar(it) } }
+    }
+
+    /** Bajo [candado]: marca al dueño, y ordena `stopPolling` sólo si sondea. */
+    private fun parar(t: Turno) {
+        t.detenido = true
+        if (t.fase == Fase.SONDEANDO) runCatching { pax.pararSondeo() }
+    }
+
     override suspend fun leer(operacion: Operacion, importeCentavos: Long, espera: Long): ResultadoDeLectura {
         val t = synchronized(candado) { turno?.takeIf { it.fase == Fase.APUNTADO }?.also { it.fase = Fase.PREPARANDO } }
         if (t == null) {
@@ -146,6 +165,8 @@ internal class LectorPax(private val pax: Pax, private val red: Red) : LectorDeT
             return ResultadoDeLectura.Cancelada
         }
         return suspendCancellableCoroutine { c ->
+            // El motor deja de esperar (su reloj de lectura o el fin de su `fondo`): igual que detener ese folio.
+            c.invokeOnCancellation { synchronized(candado) { parar(t) } }
             hilo.execute { c.resume(correr(t, operacion, importeCentavos, espera)) }
         }
     }
@@ -183,9 +204,19 @@ internal class LectorPax(private val pax: Pax, private val red: Red) : LectorDeT
         if (h.sondeo) cerrar(h)
         return synchronized(candado) {
             t.fase = Fase.CERRADO
+            // La decisión final va DESPUÉS del cierre y bajo el candado que suelta al dueño: un folio detenido nunca entrega una
+            // lectura, aunque el kernel haya alcanzado a leer o el detener haya llegado mientras se cerraba. Y la marca manda sobre
+            // toda salida anterior al sondeo (sin red, `preparar` fallida, cierre pendiente): `Cancelada`, no `Cortada`; el
+            // informe conserva su código y su cierre.
+            val resultado = if (t.detenido && (leida is ResultadoDeLectura.Leida || !h.sondeo)) {
+                h.causa = Causa.DETENIDA
+                ResultadoDeLectura.Cancelada
+            } else {
+                leida
+            }
             ultimo.value = h.informe(t.folio)
             if (turno === t) turno = null // el dueño se suelta con su cierre ya resuelto
-            leida
+            resultado
         }
     }
 
@@ -205,9 +236,17 @@ internal class LectorPax(private val pax: Pax, private val red: Red) : LectorDeT
         }
         // Otra vez justo antes de sondear: el motor la miró antes de la sesión, que puede tardar.
         if (!red.hayRed()) return sale(Causa.SIN_RED, ResultadoDeLectura.Cortada(SIN_CODIGO))
-        synchronized(candado) { t.fase = Fase.SONDEANDO }
+        val sondea = synchronized(candado) {
+            if (!t.detenido) t.fase = Fase.SONDEANDO
+            !t.detenido
+        }
+        if (!sondea) return sale(Causa.DETENIDA, ResultadoDeLectura.Cancelada)
         h.sondeo = true
-        when (pax.sondear(espera)) {
+        val sondeo = pax.sondear(espera)
+        // Un detener que llegó mientras sondeaba (aunque su stopPolling se haya perdido en la frontera) manda: no se llama al
+        // kernel. Uno que llegue después de esta revisión lo deja correr, y lo frena la decisión final de `correr`.
+        if (synchronized(candado) { t.detenido }) return sale(Causa.DETENIDA, ResultadoDeLectura.Cancelada)
+        when (sondeo) {
             Sondeo.TARJETA -> Unit
             Sondeo.VENCIO -> return sale(Causa.VENCIDA, ResultadoDeLectura.Vencida)
             Sondeo.PARADO, Sondeo.OTRO -> return sale(Causa.SONDEO, ResultadoDeLectura.Cortada(SIN_CODIGO))

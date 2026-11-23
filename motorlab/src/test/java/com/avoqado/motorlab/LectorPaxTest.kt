@@ -11,6 +11,7 @@ import com.avoqado.cobropropio.dominio.ResultadoKernel
 import com.pax.jemv.clcommon.KernType
 import com.paxsz.module.emv.process.enums.CvmResultEnum
 import com.paxsz.module.emv.process.enums.TransResultEnum
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
@@ -25,6 +26,7 @@ import org.junit.Test
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Bloque 4-L · L-c: el adaptador con una PAX de mentira. Datos SINTÉTICOS: el PAN de prueba público de Visa (y el de Amex) y
@@ -316,17 +318,84 @@ class LectorPaxTest {
         assertEquals(listOf("preparar 2550", "sondear 30000", "kernel", "pararSondeo", "cerrarPicc"), pax.pasos())
     }
 
-    /** Una excepción de la PAX no sube al motor ni deja ver su mensaje: el informe sólo trae su clase, y el lector se cierra. */
+    /**
+     * Una excepción de la PAX no sube al motor ni deja ver su mensaje: el informe sólo trae su clase. Al preparar todavía no se
+     * abrió el lector; desde el sondeo ya se abrió, y se cierra.
+     */
     @Test fun `un error de la PAX no deja salir su mensaje y cierra el lector`() {
-        val pax = PaxDeMentira().apply { alLeer = { throw IllegalStateException("banda 4111111111111111D2912101") } }
+        fun truena(): Nothing = throw IllegalStateException("banda 4111111111111111D2912101")
+        data class Punto(val donde: String, val arma: (PaxDeMentira) -> Unit, val pasos: List<String>, val cierre: Cierre)
+        val puntos = listOf(
+            Punto("al preparar", { it.alPreparar = { truena() } }, listOf("preparar 2550"), Cierre.NO_SE_ABRIO),
+            Punto("al sondear", { it.sondeo = { truena() } }, listOf("preparar 2550", "sondear 30000", "pararSondeo", "cerrarPicc"), Cierre.ACREDITADO),
+            Punto("en el kernel", { it.alLeer = { truena() } }, listOf("preparar 2550", "sondear 30000", "kernel", "pararSondeo", "cerrarPicc"), Cierre.ACREDITADO),
+        )
+        for (p in puntos) {
+            val pax = PaxDeMentira().also(p.arma)
+            val lector = lector(pax)
+            assertEquals(p.donde, ResultadoDeLectura.Cortada(SIN_CODIGO), lector.leerYa())
+            val i = lector.informes.value!!
+            assertEquals(p.donde, Causa.ERROR, i.causa)
+            assertEquals(p.donde, "IllegalStateException", i.error)
+            assertFalse(p.donde, "4111111111111111" in i.toString())
+            assertEquals(p.donde, p.cierre, i.cierre)
+            assertEquals(p.donde, p.pasos, pax.pasos())
+        }
+    }
+
+    /** El importe que llega a la PAX es el que pidió el motor y no uno fijo (todas las demás pruebas leen con 2550). */
+    @Test fun `el importe que llega a la PAX es el pedido`() {
+        val pax = PaxDeMentira()
         val lector = lector(pax)
-        assertEquals(ResultadoDeLectura.Cortada(SIN_CODIGO), lector.leerYa())
-        val i = lector.informes.value!!
-        assertEquals(Causa.ERROR, i.causa)
-        assertEquals("IllegalStateException", i.error)
-        assertFalse("4111111111111111" in i.toString())
-        assertEquals(Cierre.ACREDITADO, i.cierre)
-        assertEquals(listOf("preparar 2550", "sondear 30000", "kernel", "pararSondeo", "cerrarPicc"), pax.pasos())
+        assertTrue(runBlocking { lector.leer(Operacion.VENTA, 9_900L, ESPERA) } is ResultadoDeLectura.Leida)
+        assertEquals(listOf("preparar 9900", "sondear 30000", "kernel", "pararSondeo", "cerrarPicc"), pax.pasos())
+    }
+
+    /**
+     * Una espera ya agotada (0 o menos) no llega a la PAX: con 0 su sondeo no tiene plazo, y el folio se quedaría sondeando y
+     * rechazaría a todos los siguientes. Sale `Vencida`, sin abrir el lector, y el dueño se suelta.
+     */
+    @Test fun `una espera agotada no toca la PAX y suelta al dueno`() {
+        for (espera in listOf(0L, -1L)) {
+            val pax = PaxDeMentira()
+            val lector = lector(pax)
+            assertEquals("espera $espera", ResultadoDeLectura.Vencida, runBlocking { lector.leer(Operacion.VENTA, IMPORTE, espera) })
+            assertEquals("espera $espera", emptyList<String>(), pax.llamadas) // ni una llamada a la PAX, tampoco de tags
+            val i = lector.informes.value!!
+            assertEquals("espera $espera", Causa.VENCIDA, i.causa)
+            assertEquals("espera $espera", Cierre.NO_SE_ABRIO, i.cierre)
+            assertTrue("espera $espera", lector.siguienteFolio(AttemptId.nuevo()))
+        }
+    }
+
+    /**
+     * Quien escucha `informes` desde el hilo que publica ya encuentra al dueño suelto: puede apuntar el folio siguiente, y su
+     * `detener` del folio que terminó no cambia la lectura ya decidida. `Dispatchers.Unconfined` con `UNDISPATCHED`: el colector
+     * queda suscrito ANTES de leer, y el `StateFlow` lo reanuda en el hilo que asigna el valor (el del lector), dentro del
+     * candado, que es reentrante. Se anota el nombre del hilo, para que la prueba no pase si el colector corriera en otro lado.
+     */
+    @Test fun `al salir el informe el dueno ya esta suelto`() {
+        val lector = lector(PaxDeMentira())
+        val b = AttemptId.nuevo()
+        val visto = AtomicReference<Pair<String, Boolean>?>(null)
+        val r = runBlocking {
+            val observador = launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+                lector.informes.collect { i ->
+                    if (i?.folio == folio) {
+                        lector.detener(folio)
+                        visto.set(Thread.currentThread().name to lector.siguienteFolio(b))
+                    }
+                }
+            }
+            lector.leer(Operacion.VENTA, IMPORTE, ESPERA).also { observador.cancel() }
+        }
+        // Con el modo de depuración de corrutinas (activo con -ea) el nombre lleva « @coroutine#N»: se compara el principio.
+        val (hilo, siguienteDeB) = visto.get()!!
+        assertTrue("el colector corrió en «$hilo» y no en el hilo que publica", hilo.startsWith("motorlab-lector"))
+        assertTrue("al publicar el informe, el dueño seguía tomado y B se rechazó", siguienteDeB)
+        assertTrue(r is ResultadoDeLectura.Leida)
+        assertEquals(Causa.LEIDA, lector.informes.value!!.causa)
+        assertTrue(lector.soltarFolio(b)) // B no leyó: se suelta y no queda dueño
     }
 
     private fun esperar(l: CountDownLatch) = assertTrue("la PAX de mentira no llegó", l.await(5, TimeUnit.SECONDS))
@@ -479,8 +548,11 @@ class LectorPaxTest {
         assertEquals(Causa.DETENIDA, i.causa)
     }
 
-    /** El motor deja de esperar (vence su reloj de lectura o se cancela su `fondo`): el sondeo se para y el lector se cierra. */
-    @Test fun `el motor que deja de esperar para el sondeo y cierra el lector`() {
+    /**
+     * El motor deja de esperar (vence su reloj de lectura o se cancela su `fondo`). Sondeando: el sondeo se para y el lector se
+     * cierra. Preparando: ya no sondea ni abre el lector. La marca cae dentro de `cancel()`, donde corre `invokeOnCancellation`.
+     */
+    @Test fun `el motor que deja de esperar detiene al folio sondeando o preparando`() {
         val enSondeo = CountDownLatch(1)
         val pax = PaxDeMentira()
         pax.sondeo = { enSondeo.countDown(); pax.parado.await(2, TimeUnit.SECONDS); Sondeo.PARADO }
@@ -496,6 +568,23 @@ class LectorPaxTest {
         }
         assertFalse("kernel" in pax.llamadas)
         assertEquals(listOf("preparar 2550", "sondear 30000", "pararSondeo", "pararSondeo", "cerrarPicc"), pax.pasos())
+
+        // Preparando (p. ej., mientras el motor abre la sesión): la PAX de mentira se queda en `preparar` hasta que se cancela.
+        val enPreparar = CountDownLatch(1)
+        val seguir = CountDownLatch(1)
+        val paxPreparando = PaxDeMentira().apply { alPreparar = { enPreparar.countDown(); seguir.await(5, TimeUnit.SECONDS) } }
+        val preparando = lector(paxPreparando)
+        runBlocking {
+            val leyendo = launch(Dispatchers.Default) { preparando.leer(Operacion.VENTA, IMPORTE, ESPERA) }
+            esperar(enPreparar)
+            leyendo.cancel()
+            seguir.countDown()
+            val i = withTimeout(5_000) { preparando.informes.first { it?.folio == folio }!! }
+            assertTrue(leyendo.isCancelled)
+            assertEquals(Causa.DETENIDA, i.causa)
+            assertEquals(Cierre.NO_SE_ABRIO, i.cierre)
+        }
+        assertEquals(listOf("preparar 2550"), paxPreparando.pasos())
     }
 
     private companion object {

@@ -157,7 +157,7 @@ public class Libreta internal constructor(
                 datos.huellaLectura == null || dao.existeLectura(datos.huellaLectura, c.attemptId) ->
                     ResultadoDeEnviarCancelacion.LecturaRepetida
                 else -> {
-                    guardar(enviar(c, t0, datos))
+                    guardar(c, enviar(c, t0, datos))
                     ResultadoDeEnviarCancelacion.Enviada
                 }
             }
@@ -199,7 +199,7 @@ public class Libreta internal constructor(
                 val t = ahora()
                 dao.insertar(vetada(i).copy(procesoId = procesoId, creadoEnMs = t, actualizadoEnMs = t).also(::validar)) != -1L
             }
-            f.estado == EstadoDelIntento.ANOTADO -> guardar(vetada(f)).let { true }
+            f.estado == EstadoDelIntento.ANOTADO -> guardar(f, vetada(f)).let { true }
             else -> f.estado == EstadoDelIntento.NO_SALIO
         }
     }
@@ -212,7 +212,7 @@ public class Libreta internal constructor(
         val f = fila(id)
         if (f == null || f.operacion != Operacion.VENTA || f.estado != EstadoDelIntento.ANOTADO || f.cortarAntesDeSalir) false
         else {
-            guardar(enviar(f, t0, datos))
+            guardar(f, enviar(f, t0, datos))
             true
         }
     }
@@ -223,7 +223,7 @@ public class Libreta internal constructor(
             fila(id)?.takeIf { it.estado == desde }?.let { f ->
                 val n = cambio(f)
                 require(n.attemptId == f.attemptId) { "transicionar no cambia el id" }
-                guardar(n)
+                guardar(f, n)
             }
         }
 
@@ -238,10 +238,11 @@ public class Libreta internal constructor(
         when {
             f.estado == EstadoDelIntento.APROBADO && f.origenDeLaAprobacion == OrigenDeLaAprobacion.SERVIDOR &&
                 f.evidenciaTardiaOperacion == null && f.evidenciaTardiaAutorizacion == null ->
-                Arbitraje.YaResuelta(guardar(f.copy(evidenciaTardiaOperacion = operationNumber, evidenciaTardiaAutorizacion = autorizacion)))
+                Arbitraje.YaResuelta(guardar(f, f.copy(evidenciaTardiaOperacion = operationNumber, evidenciaTardiaAutorizacion = autorizacion)))
             f.estado in RESUELTOS -> Arbitraje.YaResuelta(f)
             f.estado == EstadoDelIntento.ENVIADO && f.reverso == EstadoDelReverso.NINGUNO -> {
                 guardar(
+                    f,
                     f.copy(
                         estado = EstadoDelIntento.APROBADO, operationNumber = operationNumber, autorizacion = autorizacion,
                         origenDeLaAprobacion = OrigenDeLaAprobacion.BANCO,
@@ -251,7 +252,7 @@ public class Libreta internal constructor(
             }
             else -> {
                 if (f.evidenciaTardiaOperacion == null) {
-                    guardar(f.copy(evidenciaTardiaOperacion = operationNumber, evidenciaTardiaAutorizacion = autorizacion))
+                    guardar(f, f.copy(evidenciaTardiaOperacion = operationNumber, evidenciaTardiaAutorizacion = autorizacion))
                 }
                 Arbitraje.Tardia
             }
@@ -264,7 +265,7 @@ public class Libreta internal constructor(
         when {
             f.estado in RESUELTOS -> Arbitraje.YaResuelta(f)
             f.estado == EstadoDelIntento.ENVIADO && f.reverso == EstadoDelReverso.NINGUNO -> {
-                guardar(f.copy(estado = EstadoDelIntento.RECHAZADO, codigo = codigo, leyenda = leyenda))
+                guardar(f, f.copy(estado = EstadoDelIntento.RECHAZADO, codigo = codigo, leyenda = leyenda))
                 Arbitraje.Vigente
             }
             else -> Arbitraje.Tardia
@@ -284,7 +285,7 @@ public class Libreta internal constructor(
                     evidenciaTardiaOperacion = f.evidenciaTardiaOperacion ?: operationNumber,
                     parcialImporteCentavos = f.parcialImporteCentavos ?: importeCentavos,
                 )
-                if (n == f) f else guardar(n)
+                if (n == f) f else guardar(f, n)
             }
         }
 
@@ -297,7 +298,7 @@ public class Libreta internal constructor(
         if (f.operacion == Operacion.VENTA && f.estado == EstadoDelIntento.ENVIADO && f.reverso == EstadoDelReverso.NINGUNO &&
             f.procesoId == procesoId
         ) {
-            guardar(f.copy(reverso = EstadoDelReverso.COMPROMETIDO))
+            guardar(f, f.copy(reverso = EstadoDelReverso.COMPROMETIDO))
             Arbitraje.Comprometido
         } else {
             Arbitraje.YaResuelta(f)
@@ -309,7 +310,7 @@ public class Libreta internal constructor(
         val f = fila(id)
         if (f?.reverso != EstadoDelReverso.COMPROMETIDO) false
         else {
-            if (!f.vinculoAcreditadoPorPermiso) guardar(f.copy(vinculoAcreditadoPorPermiso = true))
+            if (!f.vinculoAcreditadoPorPermiso) guardar(f, f.copy(vinculoAcreditadoPorPermiso = true))
             true
         }
     }
@@ -319,7 +320,7 @@ public class Libreta internal constructor(
         val f = fila(id)
         if (f == null || f.procesoId != procesoId || f.reverso !in RECLAMABLES) false
         else {
-            guardar(f.copy(reverso = EstadoDelReverso.RECLAMADO, reclamadoEnIso = relojDePared().toString()))
+            guardar(f, f.copy(reverso = EstadoDelReverso.RECLAMADO, reclamadoEnIso = relojDePared().toString()))
             true
         }
     }
@@ -352,7 +353,7 @@ public class Libreta internal constructor(
                         codigoParaReportar = n.ultimoCodigoReverso.takeIf { r == ResultadoParaReportar.RECHAZADO },
                     )
                 }
-                guardar(if (estado != null) n.copy(estado = estado) else n)
+                guardar(f, if (estado != null) n.copy(estado = estado) else n)
                 true
             }
         }
@@ -362,7 +363,7 @@ public class Libreta internal constructor(
         val f = fila(id)
         if (f?.reverso != EstadoDelReverso.COMPROMETIDO) false
         else {
-            guardar(f.copy(reverso = EstadoDelReverso.NO_CONCLUYENTE, estado = EstadoDelIntento.NO_SE))
+            guardar(f, f.copy(reverso = EstadoDelReverso.NO_CONCLUYENTE, estado = EstadoDelIntento.NO_SE))
             true
         }
     }
@@ -381,7 +382,7 @@ public class Libreta internal constructor(
     ): IntentoEntity? = escribir("aplicarAcuse") {
         require(reporte != EstadoDelReporte.PENDIENTE && reporte != EstadoDelReporte.NO_APLICA) { "un acuse cierra el reporte" }
         fila(id)?.takeIf { it.reporte == EstadoDelReporte.PENDIENTE && it.resultadoParaReportar == acusado }?.let { f ->
-            guardar(f.copy(estadoEnServidor = estadoEnServidor ?: f.estadoEnServidor, reporte = reporte, estado = estado ?: f.estado))
+            guardar(f, f.copy(estadoEnServidor = estadoEnServidor ?: f.estadoEnServidor, reporte = reporte, estado = estado ?: f.estado))
         }
     }
 
@@ -440,7 +441,7 @@ public class Libreta internal constructor(
      */
     internal fun recuperarAlArrancar(vivos: () -> Collection<AttemptId>): List<AttemptId> = escribir("recuperarAlArrancar") {
         dao.rowidsPorRecuperar(procesoId, vivos().map { it.valor })
-            .mapNotNull { r -> legible(r)?.let(::comoHuerfana)?.let { AttemptId(guardar(it).attemptId) } }
+            .mapNotNull { r -> legible(r)?.let { f -> comoHuerfana(f)?.let { AttemptId(guardar(f, it).attemptId) } } }
     }
 
     /**
@@ -448,7 +449,7 @@ public class Libreta internal constructor(
      * muerto (ver [recuperarAlArrancar]), en UNA transacción. Regresa la fila como quedó.
      */
     internal fun cerrarHuerfana(id: AttemptId): IntentoEntity? = escribir("cerrarHuerfana") {
-        fila(id)?.let { f -> comoHuerfana(f)?.let(::guardar) ?: f }
+        fila(id)?.let { f -> comoHuerfana(f)?.let { guardar(f, it) } ?: f }
     }
 
     /** El cierre de una fila sin camino; `null` si no hay nada que cerrar. */
@@ -531,9 +532,18 @@ public class Libreta internal constructor(
         ultimos4 = d.ultimos4, paisEmisor = d.paisEmisor, huellaTarjeta = d.huellaTarjeta, huellaLectura = d.huellaLectura,
     )
 
-    private fun guardar(f: IntentoEntity): IntentoEntity {
+    /**
+     * El único UPDATE. Bloque 1b · fila 14: lo que el KDoc promete, cumplido para TODO escritor. [previa] es la fila que el
+     * llamador ya leyó y validó en ESTA transacción (Codex r1: sin releer). Mensajes fijos, sin valores.
+     */
+    private fun guardar(previa: IntentoEntity, f: IntentoEntity): IntentoEntity {
+        require(f.attemptId == previa.attemptId) { "guardar no cambia el id" }
         val n = f.copy(actualizadoEnMs = ahora())
         validar(n)
+        check(!previa.pudoEntrar || n.pudoEntrar) { "pudoEntrar sólo sube" }
+        check(previa.ksnBase == null || previa.ksnBase == n.ksnBase) { "ksnBase se fija una vez" }
+        check(previa.contadorUsado == null || previa.contadorUsado == n.contadorUsado) { "contadorUsado se fija una vez" }
+        check(previa.huellaLectura == null || previa.huellaLectura == n.huellaLectura) { "huellaLectura se fija una vez" }
         check(dao.actualizar(n) == 1) { "la fila no existe" }
         return n
     }

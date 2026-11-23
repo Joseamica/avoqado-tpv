@@ -422,6 +422,44 @@ class LibretaTest {
         assertEquals(EstadoDelIntento.NO_SE, f.estado)
     }
 
+    /** Bloque 1b · fila 14: lo que promete el KDoc (`IntentoEntity.pudoEntrar`, «sólo sube») vale para TODO escritor. */
+    @Test fun `transicionar no baja pudoEntrar`() {
+        val l = libreta()
+        val v = reclamada(l)
+        assertTrue(l.cerrarVuelta(v.id(), ClaseDelReverso.Reintentar("68", false, pared), null, null))
+        val antes = l.buscar(v.id())!!
+        assertTrue(antes.pudoEntrar)
+        val e = runCatching { l.transicionar(v.id(), EstadoDelIntento.ENVIADO) { it.copy(pudoEntrar = false) } }.exceptionOrNull()
+        assertTrue("$e", e is IllegalStateException)
+        assertEquals("la fila no cambia", antes, l.buscar(v.id()))
+        // Copiarlo (o subirlo) sí se puede.
+        assertNotNull(l.transicionar(v.id(), EstadoDelIntento.ENVIADO) { it.copy(estado = EstadoDelIntento.NO_SE) })
+        assertTrue(l.buscar(v.id())!!.pudoEntrar)
+    }
+
+    /** Bloque 1b · fila 14: la base DUKPT, el contador usado y la huella de la lectura se escriben UNA vez (al salir). */
+    @Test fun `ksnBase contadorUsado y huellaLectura se fijan una vez`() {
+        val l = libreta()
+        val v = enviada(l)
+        val antes = l.buscar(v.id())!!
+        val cambios = listOf<(IntentoEntity) -> IntentoEntity>(
+            { it.copy(ksnBase = null) },
+            { it.copy(ksnBase = "FFFF9876543210A00000") },
+            { it.copy(contadorUsado = null) },
+            { it.copy(contadorUsado = 1) },
+            { it.copy(huellaLectura = null) },
+            { it.copy(huellaLectura = "c".repeat(64)) },
+        )
+        for ((i, cambio) in cambios.withIndex()) {
+            val e = runCatching { l.transicionar(v.id(), EstadoDelIntento.ENVIADO, cambio) }.exceptionOrNull()
+            assertTrue("cambio $i: $e", e is IllegalStateException)
+            assertEquals("cambio $i: la fila no cambia", antes, l.buscar(v.id()))
+        }
+        // Volver a escribir el MISMO valor sí se puede (todo escritor copia la fila).
+        assertNotNull(l.transicionar(v.id(), EstadoDelIntento.ENVIADO) { it.copy(estado = EstadoDelIntento.NO_SE) })
+        assertEquals(antes.contadorUsado, l.buscar(v.id())!!.contadorUsado)
+    }
+
     @Test fun `cerrar vuelta desde NO_CONCLUYENTE al techo`() {
         val l = libreta()
         val v = reclamada(l)

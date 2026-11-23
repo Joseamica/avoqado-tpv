@@ -207,13 +207,23 @@ public class Libreta internal constructor(
     private fun vetada(f: IntentoEntity) =
         f.copy(cortarAntesDeSalir = true, estado = EstadoDelIntento.NO_SALIO, motivoNoSalio = MotivoNoSalio.INTERRUMPIDO)
 
-    /** t0: el CAS `ANOTADO → ENVIADO` de una VENTA. Falla si se pidió cortar. Una cancelación va por [marcarCancelacionEnviada]. */
+    /**
+     * t0: el CAS `ANOTADO → ENVIADO` de una VENTA. Falla si se pidió cortar. Bloque 1b · fila 11 (R15-2): una lectura que ya
+     * está en OTRA fila (venta o cancelación, de cualquier estado), o una sin huella, no sale: la fila queda
+     * `NO_SALIO(LECTURA_REPETIDA)` en ESTA transacción (regla N) y regresa `false`. Una cancelación va por [marcarCancelacionEnviada].
+     */
     internal fun marcarEnviado(id: AttemptId, t0: Long, datos: DatosDelEnvio): Boolean = escribir("marcarEnviado") {
         val f = fila(id)
-        if (f == null || f.operacion != Operacion.VENTA || f.estado != EstadoDelIntento.ANOTADO || f.cortarAntesDeSalir) false
-        else {
-            guardar(f, enviar(f, t0, datos))
-            true
+        when {
+            f == null || f.operacion != Operacion.VENTA || f.estado != EstadoDelIntento.ANOTADO || f.cortarAntesDeSalir -> false
+            datos.huellaLectura == null || dao.existeLectura(datos.huellaLectura, f.attemptId) -> {
+                guardar(f, f.copy(estado = EstadoDelIntento.NO_SALIO, motivoNoSalio = MotivoNoSalio.LECTURA_REPETIDA))
+                false
+            }
+            else -> {
+                guardar(f, enviar(f, t0, datos))
+                true
+            }
         }
     }
 

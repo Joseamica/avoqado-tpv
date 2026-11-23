@@ -21,6 +21,7 @@
 - **Interno, sin efecto en la app · `cobropropio`, bloque 1b de la fase 3 del SDK propio**: tres candados de dinero antes del piloto con dinero real; el módulo sigue sin conectarse (`:app` no depende de él).
   - La libreta no deja bajar «el reverso pudo entrar» ni reescribir la base DUKPT, el contador usado ni la huella de la lectura de una fila que ya salió.
   - Un éxito de Blumon con algo bajo una clave «error» en cualquier lugar del sobre (no sólo en la raíz) ya no da un desenlace definitivo: queda en duda.
+  - Una VENTA con una lectura de tarjeta que ya salió al banco en otra fila no sale: su fila queda «no salió (lectura repetida)».
 
 ### **Fixed**
 - **Caja · la terminal ya no se traba en la caja de ayer cuando entra alguien sin permiso de caja (D24, Testarudo, N86, 22-nov)**: la caja del 21 la cerró el dueño en otro aparato, la del 22 ya estaba abierta, y entró alguien de Cocina: la terminal se quedó en «Caja cerrada o cerrándose en otro aparato · Cierre observado en el servidor (CLOSED)» con «Abrir nueva caja» y «Usar la caja vinculada» en gris, sin salida. Dos causas: el paso solo a la caja del negocio (D65) pedía `shifts:read`, y se saltaba las cajas vinculadas (`ADOPTED`), que era la de la N86. Ahora:

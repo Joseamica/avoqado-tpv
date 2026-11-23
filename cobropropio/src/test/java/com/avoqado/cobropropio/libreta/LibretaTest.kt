@@ -829,6 +829,35 @@ class LibretaTest {
         assertEquals(ResultadoDeEnviarCancelacion.YaNoAplica, l.marcarCancelacionEnviada(c.id(), reloj, datos(huellaLectura = "c".repeat(64))))
     }
 
+    /** Bloque 1b · fila 11 (R15-2): una lectura que ya salió en OTRA fila (venta o cancelación), o sin huella, no sale en una VENTA. */
+    @Test fun `marcarEnviado de una venta con la lectura de otra fila no sale`() {
+        val l = libreta()
+        val primera = aprobada(l, lectura = lecturaDeLaVenta)
+        val c = cancelacionDe(primera)
+        assertEquals(ResultadoDeAnotarCancelacion.Anotada, l.anotarCancelacion(c, primera.ambito()))
+        assertEquals(ResultadoDeEnviarCancelacion.Enviada, l.marcarCancelacionEnviada(c.id(), reloj, datos(huellaLectura = "c".repeat(64))))
+        val laPrimera = l.buscar(primera.id())
+        val laCancelacion = l.buscar(c.id())
+        for (repetida in listOf<String?>(lecturaDeLaVenta, "c".repeat(64), null)) {
+            val v = venta()
+            assertTrue(l.anotar(v))
+            assertFalse("$repetida", l.marcarEnviado(v.id(), reloj, datos().copy(huellaLectura = repetida)))
+            val f = l.buscar(v.id())!!
+            assertEquals("$repetida", EstadoDelIntento.NO_SALIO, f.estado)
+            assertEquals("$repetida", MotivoNoSalio.LECTURA_REPETIDA, f.motivoNoSalio)
+            assertNull("$repetida", f.huellaLectura)
+            assertNull("$repetida", f.enviadoEnMs)
+            assertFalse("$repetida: el folio es de un solo uso", l.marcarEnviado(v.id(), reloj, datos(huellaLectura = "e".repeat(64))))
+        }
+        assertEquals("la otra venta no cambia", laPrimera, l.buscar(primera.id()))
+        assertEquals("la cancelación no cambia", laCancelacion, l.buscar(c.id()))
+        // La misma tarjeta con una lectura NUEVA sí sale.
+        val nueva = venta()
+        assertTrue(l.anotar(nueva))
+        assertTrue(l.marcarEnviado(nueva.id(), reloj, datos(huellaLectura = "d".repeat(64))))
+        assertEquals(EstadoDelIntento.ENVIADO, l.buscar(nueva.id())!!.estado)
+    }
+
     /** Mete la fila directo en la tabla, sin las revisiones de la libreta: el CAS de envío tiene que volver a revisar. */
     private fun insertarDirecto(l: Libreta, i: IntentoEntity) {
         assertTrue(l.db.dao().insertar(i.copy(procesoId = Libreta.PROCESO_ID)) != -1L)

@@ -13,6 +13,8 @@
   - Un solo folio es dueño del lector desde que se apunta hasta que su intento cierra (otro folio se rechaza). Prepara con el importe real, sondea sólo el lector sin contacto y entrega los tags tal como los da el kernel (con un código del kernel distinto de 0 no lee tags: serían de la tarjeta anterior). El cierre dice si el intento no abrió el lector, si lo cerró o si quedó sin acreditar; uno sin acreditar se reintenta antes del siguiente intento. Sin red no sondea; sólo ventas.
   - «Detener» por folio, sólo al dueño: no inicia el sondeo de un folio detenido y, si ya lo inició, ordena pararlo; un folio detenido nunca entrega lectura, tampoco si el detener llega mientras se cierra. Si el motor deja de esperar, igual.
   - La PAX de verdad (la secuencia del laboratorio viejo, sin chip) y la red (activa y validada); botón «Lectura seca de $25.50» que enseña su número de lectura y sólo lo permitido (resultado, causa, marca, kernel, CVM, 9F02, qué tags vinieron y cómo quedó el lector). Guardia de patrones sobre el Kotlin propio: nada de la app escribe al log ni enseña datos de la tarjeta.
+- **Interno, sin efecto en la app · `motorlab`, bloque 4-L (L-d1) de la fase 3 del SDK propio**: la app de laboratorio queda armada para cobrar con el motor contra el sandbox de Blumon, sin hablar con ningún servidor de Avoqado; todavía no vende. `:app` y `:cobropropio` no cambian.
+  - Respondedor local en 127.0.0.1 (404 sin cuerpo a toda petición, después de leerla entera) y la identidad tecleada (serie de Blumon, posId y serie física) guardada en privado, con la llave de las huellas.
 
 ### **Changed**
 - **Interno, sin efecto en la app · `cobropropio`, bloque 1 de la fase 3 del SDK propio**: el módulo sigue sin conectarse (`:app` no depende de él).

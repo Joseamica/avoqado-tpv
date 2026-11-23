@@ -20,7 +20,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executor
-import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
 /** Lo que el laboratorio usa del motor: el de verdad es `MotorDeCobro` (en `AppDelLaboratorio.kt`). */
@@ -38,6 +37,8 @@ internal interface Filas {
 }
 
 internal sealed interface EstadoDelMotor {
+    /** Al abrir, hasta que `arrancar()` leyó el archivo de la identidad: todavía no se sabe si falta (C). */
+    data object Comprobando : EstadoDelMotor
     data object SinIdentidad : EstadoDelMotor
     data object Armando : EstadoDelMotor
     data object Armado : EstadoDelMotor
@@ -75,6 +76,7 @@ internal fun porQueNoCobra(s: Situacion): String? = when {
     s.trabajo is Trabajo.Cobro -> "hay un cobro en curso"
     s.trabajo is Trabajo.LecturaSeca -> "hay una lectura seca en curso"
     else -> when (val m = s.motor) {
+        EstadoDelMotor.Comprobando -> "comprobando la identidad guardada"
         EstadoDelMotor.SinIdentidad -> "falta la identidad"
         EstadoDelMotor.Armando -> "armando el motor"
         is EstadoDelMotor.Fallo -> "no se armó el motor: ${m.clase}; cierra y abre la app"
@@ -85,6 +87,7 @@ internal fun porQueNoCobra(s: Situacion): String? = when {
 /** La cabeza de la pantalla: nunca la identidad, sólo si está guardada y si es la del motor. */
 internal fun textoDeLaSituacion(s: Situacion): String = buildString {
     val motor = when (val m = s.motor) {
+        EstadoDelMotor.Comprobando -> "COMPROBANDO"
         EstadoDelMotor.SinIdentidad -> "SIN_IDENTIDAD"
         EstadoDelMotor.Armando -> "ARMANDO"
         EstadoDelMotor.Armado -> "ARMADO"
@@ -92,7 +95,11 @@ internal fun textoDeLaSituacion(s: Situacion): String = buildString {
     }
     appendLine("Motor: $motor · motores armados: ${s.motoresArmados}")
     appendLine(
-        "Identidad guardada: ${if (s.identidadGuardada) "sí" else "no"}" + when (s.guardadaEsLaDelMotor) {
+        "Identidad guardada: " + when {
+            s.motor == EstadoDelMotor.Comprobando -> "comprobando" // todavía no se lee el archivo: ni «sí» ni «no»
+            s.identidadGuardada -> "sí"
+            else -> "no"
+        } + when (s.guardadaEsLaDelMotor) {
             null -> ""
             true -> " (la del motor)"
             false -> " (distinta de la del motor: se usará al cerrar y abrir la app)"
@@ -106,6 +113,7 @@ internal fun textoDeLaSituacion(s: Situacion): String = buildString {
  * El laboratorio (bloque 4-L · L-d1, Ruling 6): dueño del ÚNICO motor del proceso y del trabajo en curso, en UN carril. Toda
  * orden entra por [orden] y se acepta o se rechaza en [carril] (en la app, el hilo de la pantalla), el único que cambia el
  * estado; lo lento va a [alcance] y su resultado regresa al carril. Los folios los arma UN pintor, en orden ([folios]).
+ * [alcance] vive todo el proceso y nunca se cancela: el `finally` de cada intento cuenta con él para terminar su COBRO.
  */
 internal class Laboratorio(
     private val historial: HistorialLocal,
@@ -126,7 +134,7 @@ internal class Laboratorio(
     }
 
     // ── Sólo el carril toca esto ──
-    private var estadoDelMotor: EstadoDelMotor = EstadoDelMotor.SinIdentidad
+    private var estadoDelMotor: EstadoDelMotor = EstadoDelMotor.Comprobando // hasta que `arrancar()` lea el archivo (C)
     private var trabajo: Trabajo? = null
     private var intento: Intento? = null
     private var motor: Motor? = null
@@ -142,7 +150,7 @@ internal class Laboratorio(
 
     @Volatile private var filas: Filas? = null // la lee el pintor de folios
 
-    private val _situacion = MutableStateFlow(Situacion())
+    private val _situacion = MutableStateFlow(Situacion(motor = estadoDelMotor))
     val situacion: StateFlow<Situacion> = _situacion.asStateFlow()
     private val cambios = MutableStateFlow(0L)
     private val _folios = MutableStateFlow("")
@@ -155,21 +163,29 @@ internal class Laboratorio(
         alcance.launch { lector.informes.collect { i -> i?.folio?.let { nota(it, textoDelInforme(i)) } } } // tal cual (Ruling 8)
     }
 
-    /** Al abrir: la identidad guardada; si hay, arma (salvo que ya se haya tecleado otra). */
+    /**
+     * Al abrir: la identidad guardada; si hay, arma (salvo que ya se haya tecleado otra, que gana). Hasta que el archivo se lee,
+     * el motor está COMPROBANDO; al regresar al carril pasa a SIN_IDENTIDAD si nadie lo armó mientras tanto (C).
+     */
     fun arrancar() {
         alcance.launch {
             val t = archivo.leer()
             enCarril {
-                if (!tecleada) {
-                    guardada = t
-                    if (t != null) armar(t) else publicar()
-                }
+                if (estadoDelMotor == EstadoDelMotor.Comprobando) estadoDelMotor = EstadoDelMotor.SinIdentidad
+                if (!tecleada) guardada = t
+                if (!tecleada && t != null) armar(t) else publicar()
             }
         }
     }
 
     /** EL punto de entrada de toda orden: se acepta, o se rechaza con un aviso, en el carril y en el orden en que llegó. */
     fun orden(o: Orden) = enCarril { aceptar(o) }
+
+    /**
+     * Que el pintor vuelva a leer los folios y la libreta, fuera del carril: el motor puede cambiar una fila sin ningún evento
+     * (un reverso tras «por confirmar»). No toca el estado del carril ni retrasa ninguna orden (F).
+     */
+    fun releer() = cambios.update { it + 1 }
 
     // ───────────── En el carril ─────────────
 
@@ -185,7 +201,10 @@ internal class Laboratorio(
 
     private fun rechazo(que: String) = aviso("no se acepta «$que»: ${porQueNoCobra(_situacion.value) ?: "ahora no"}")
 
-    /** Siempre se acepta; arma SÓLO si el motor estaba SIN_IDENTIDAD (la identidad activa es la del proceso). */
+    /**
+     * Siempre se acepta y sólo escribe. Si el motor no tiene identidad (SIN_IDENTIDAD o COMPROBANDO), arma con ella cuando el
+     * archivo ya la tiene ([escribir]); con el motor armando, armado o en FALLO, sólo guarda (la activa es la del proceso).
+     */
     private fun guardar(o: Orden.Guardar) {
         val t = try {
             IdentidadTecleada.de(o.serie, o.posId, o.serieFisica)
@@ -193,11 +212,16 @@ internal class Laboratorio(
             return aviso("identidad sin forma: las series llevan de 4 a 32 letras o números y el posId de 1 a 9 números")
         }
         tecleada = true
-        if (estadoDelMotor == EstadoDelMotor.SinIdentidad) armar(t)
         escribir(t)
     }
 
-    /** Un archivo a la vez; si llega otra mientras se escribe, se escribe después: queda la última aceptada. */
+    private fun sinIdentidad() = estadoDelMotor == EstadoDelMotor.SinIdentidad || estadoDelMotor == EstadoDelMotor.Comprobando
+
+    /**
+     * Un archivo a la vez; si llega otra mientras se escribe, se escribe después: queda la última aceptada. Un motor sin
+     * identidad arma SÓLO con una identidad ya escrita y sólo con la última aceptada: si hay otra en fila, arma ésa cuando se
+     * escriba (D). Si la escritura falla, el aviso, y el motor sigue sin identidad.
+     */
     private fun escribir(t: IdentidadTecleada) {
         if (escribiendo) {
             porEscribir = t
@@ -208,21 +232,24 @@ internal class Laboratorio(
             val error = runCatching { archivo.guardar(t) }.exceptionOrNull()
             enCarril {
                 escribiendo = false
+                val siguiente = porEscribir
+                porEscribir = null
                 if (error != null) {
                     aviso("la identidad no se pudo guardar: ${error.javaClass.simpleName}")
                 } else {
                     guardada = t
-                    aviso(if (t == activa) "identidad guardada" else "identidad guardada: se usará al cerrar y abrir la app")
+                    if (siguiente == null && sinIdentidad()) armar(t)
+                    aviso(if (activa == null || t == activa) "identidad guardada" else "identidad guardada: se usará al cerrar y abrir la app")
                 }
-                porEscribir?.let {
-                    porEscribir = null
-                    escribir(it)
-                }
+                siguiente?.let { escribir(it) }
             }
         }
     }
 
-    /** ARMANDO: crea el ÚNICO motor y corre `recuperar()` UNA vez; si cualquiera lanza, FALLO y no se reintenta (Ruling 7). */
+    /**
+     * ARMANDO, con una identidad que ya está en el archivo (la leída al abrir o la recién escrita): crea el ÚNICO motor y corre
+     * `recuperar()` UNA vez; si cualquiera lanza, FALLO y no se reintenta (Ruling 7).
+     */
     private fun armar(t: IdentidadTecleada) {
         activa = t
         estadoDelMotor = EstadoDelMotor.Armando
@@ -234,7 +261,10 @@ internal class Laboratorio(
                 delCarril { motor = m }
                 m to m.recuperar()
             }.onSuccess { (m, cambiados) ->
-                alcance.launch { m.resolucionesTardias.collect { (id, e) -> nota(id, "tardía: ${textoDelEvento(e)}") } }
+                // El motor publica aquí TODOS los finales de cada intento, también el primero, que ya llegó por su `Flow`; haya o no
+                // quien escuche. No son «tardíos»: van a su folio como «final publicado», sin deduplicar (un `NoSeCobro` después de
+                // un `PorConfirmar` del mismo folio también se enseña) (B).
+                alcance.launch { m.resolucionesTardias.collect { (id, e) -> nota(id, "final publicado: ${textoDelEvento(e)}") } }
                 enCarril {
                     armados++
                     estadoDelMotor = EstadoDelMotor.Armado
@@ -314,8 +344,17 @@ internal class Laboratorio(
             } catch (e: Exception) {
                 return enCarril { aviso("no se pudo guardar el folio: ${e.javaClass.simpleName}") }
             }
-            if (!delCarril { (!i.cancelado).also { i.arrancado = it } }) return nota(s.id, "cancelado antes de arrancar el motor")
-            m.cobrar(s).collect { nota(s.id, textoDelEvento(it)) }
+            // La frontera de «Cancelar» es UNA decisión del carril (E): antes, el motor nunca se llama; después, `cobrar` ya se
+            // llamó (sólo arma el `Flow` frío, `MotorDeCobro.cobrar`) y «Cancelar» va con `detener` + `cortar`.
+            val flujo = delCarril {
+                if (i.cancelado) {
+                    null
+                } else {
+                    i.arrancado = true
+                    m.cobrar(s)
+                }
+            } ?: return nota(s.id, "cancelado antes de arrancar el motor")
+            flujo.collect { nota(s.id, textoDelEvento(it)) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -359,7 +398,8 @@ internal class Laboratorio(
 
     private fun enCarril(b: () -> Unit) = carril.execute(b)
 
-    private suspend fun <T> delCarril(b: () -> T): T = suspendCoroutine { c -> carril.execute { c.resume(b()) } }
+    /** Lo de [b] en el carril; si lanza (p. ej. un `cobrar` que truena al llamarlo), lo recibe quien espera, no el carril. */
+    private suspend fun <T> delCarril(b: () -> T): T = suspendCoroutine { c -> carril.execute { c.resumeWith(runCatching(b)) } }
 }
 
 /** Como `runCatching`, pero la cancelación no se traga. */

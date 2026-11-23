@@ -44,11 +44,13 @@ import java.io.File
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /** Bloque 4-L · L-d1: el carril con un motor y una libreta de mentira y el `LectorPax` DE VERDAD sobre una PAX de mentira. */
 class LaboratorioTest {
@@ -84,9 +86,9 @@ class LaboratorioTest {
         @Volatile var alRecuperar: suspend () -> List<AttemptId> = { emptyList() }
         val tardias = MutableSharedFlow<Pair<AttemptId, EventoDeCobro>>() // sin búfer: `emit` regresa cuando el colector terminó con el anterior
         override val resolucionesTardias: SharedFlow<Pair<AttemptId, EventoDeCobro>> = tardias
-        override fun cobrar(s: SolicitudDeVenta): Flow<EventoDeCobro> = flow {
-            llamadas += "cobrar"
-            alCobrar(this, s)
+        override fun cobrar(s: SolicitudDeVenta): Flow<EventoDeCobro> {
+            llamadas += "cobrar" // al LLAMARLO (como el de verdad, sólo arma el `Flow` frío): se ve en qué paso se llamó (E)
+            return flow { alCobrar(this, s) }
         }
         override suspend fun cortar(s: SolicitudDeVenta): ResultadoDelCorte {
             llamadas += "cortar"
@@ -124,9 +126,12 @@ class LaboratorioTest {
         override fun cerrarPicc() = Unit
     }
 
-    private fun nuevo(h: HistorialLocal = historial, a: CoroutineScope = alcance) = Laboratorio(
-        h, lector, ArchivoDeIdentidad(carpeta.root), { fabricas.incrementAndGet(); fabrica(it) }, { enSeco() }, a, carril, { System.nanoTime() / 1_000_000 },
-    )
+    private fun nuevo(
+        h: HistorialLocal = historial,
+        a: CoroutineScope = alcance,
+        ar: ArchivoDeIdentidad = ArchivoDeIdentidad(carpeta.root),
+        c: Executor = carril,
+    ) = Laboratorio(h, lector, ar, { fabricas.incrementAndGet(); fabrica(it) }, { enSeco() }, a, c, { System.nanoTime() / 1_000_000 })
 
     private fun <T> espera(b: suspend () -> T): T = runBlocking { withTimeout(10_000) { b() } }
     private fun aguanta(l: CountDownLatch) = check(l.await(10, TimeUnit.SECONDS)) { "prueba colgada" }
@@ -149,12 +154,12 @@ class LaboratorioTest {
         val r = lector.leer(Operacion.VENTA, s.importeCentavos, 30_000)
         emit(if (r is ResultadoDeLectura.Leida) EventoDeCobro.PorConfirmar(s.importeCentavos) else EventoDeCobro.NoSalioAlBanco(MotivoNoSalio.CANCELADA_EN_LECTOR, null))
     }
-    /** Un laboratorio cuyo trabajo de fondo corre en UN hilo: vaciarlo es una barrera. */
-    private fun conHiloLento(prueba: (Laboratorio, ExecutorService) -> Unit) {
+    /** Un laboratorio cuyo trabajo de fondo corre en UN hilo: vaciarlo es una barrera. [armar] = armado antes de la prueba. */
+    private fun conHiloLento(armar: Boolean = true, c: Executor = carril, prueba: (Laboratorio, ExecutorService) -> Unit) {
         val hilo = Executors.newSingleThreadExecutor()
         val lento = CoroutineScope(SupervisorJob() + hilo.asCoroutineDispatcher())
         try {
-            prueba(nuevo(a = lento).also { armado(it) }, hilo)
+            prueba(nuevo(a = lento, c = c).also { if (armar) armado(it) }, hilo)
         } finally {
             lento.cancel()
             hilo.shutdownNow()
@@ -184,18 +189,27 @@ class LaboratorioTest {
         assertTrue(lab.situacion.value.avisos.any { "no se acepta «Cobrar»: hay un cobro en curso" in it })
     }
 
-    /** Se arma con la identidad aceptada en SIN_IDENTIDAD; guardar otra mientras se arma o ya armado sólo guarda; no se cobra hasta ARMADO. */
+    /**
+     * Se arma con la identidad aceptada en SIN_IDENTIDAD; guardar otra mientras se arma o ya armado sólo guarda; no se cobra hasta
+     * ARMADO, y el rechazo dice por qué. La barrera va al EMPEZAR `recuperar()`: el motor ya existe y sigue ARMANDO (A).
+     */
     @Test fun `un solo motor con la identidad del proceso y no se cobra mientras se arma`() {
         val usada = CompletableDeferred<Identidad>()
+        val enRecuperar = CompletableDeferred<Unit>()
         val suelta = CompletableDeferred<Unit>()
         fabrica = { usada.complete(it); motor to filas }
-        motor.alRecuperar = { suelta.await(); emptyList() }
+        motor.alRecuperar = { enRecuperar.complete(Unit); suelta.await(); emptyList() }
+        lab.arrancar()
+        esperar { it.motor == EstadoDelMotor.SinIdentidad }
+        lab.orden(Orden.Cobrar(2_537)) // todavía sin identidad
         lab.orden(Orden.Guardar("SERIE0099", "4321", ""))
-        espera { usada.await() }
+        espera { enRecuperar.await() }
         lab.orden(Orden.Guardar("SERIE0088", "8765", "FISICA02"))
         lab.orden(Orden.Cobrar(2_537))
         carrilVacio()
         assertEquals(EstadoDelMotor.Armando, lab.situacion.value.motor)
+        assertTrue(lab.situacion.value.avisos.any { "no se acepta «Cobrar»: falta la identidad" in it })
+        assertTrue(lab.situacion.value.avisos.any { "no se acepta «Cobrar»: armando el motor" in it })
         suelta.complete(Unit)
         val s = esperar { it.motor == EstadoDelMotor.Armado && it.avisos.any { a -> "se usará al cerrar y abrir la app" in a } }
         assertEquals(IdentidadTecleada("SERIE0099", "4321", "SERIE0099").identidad(), espera { usada.await() })
@@ -219,12 +233,16 @@ class LaboratorioTest {
         carrilVacio()
         assertEquals(0, motor.cuantas("cobrar"))
         assertNull(lab.situacion.value.trabajo)
+        assertTrue(lab.situacion.value.avisos.any { "no se acepta «Cobrar»: no se armó el motor: IllegalStateException; cierra y abre la app" in it })
         fabrica = { error("no abrió") } // otro proceso: la identidad ya está guardada
         val otro = nuevo().also { it.arrancar() }
         assertEquals(EstadoDelMotor.Fallo("IllegalStateException"), esperar(otro) { it.motor is EstadoDelMotor.Fallo }.motor)
     }
 
-    /** Contrato de L-c: se suelta al terminar o si el intento aborta, no mientras el motor lee; el informe y las tardías van a su folio; ocupado, ni folio ni motor. */
+    /**
+     * Contrato de L-c: se suelta al terminar o si el intento aborta, no mientras el motor lee; el informe y los finales que publica
+     * el motor van a su folio («final publicado», B); ocupado, ni folio ni motor.
+     */
     @Test fun `el lector se suelta al terminar o si el intento aborta y ocupado no cobra`() {
         armado()
         cobrarYEsperar()
@@ -241,15 +259,15 @@ class LaboratorioTest {
         tarjeta.countDown()
         esperar { it.trabajo == null }
         assertTrue(libre())
-        val leido = historial.leer().last().folio // el informe de L-c y una tardía, en SU folio y aparte del Flow
+        val leido = historial.leer().last().folio // el informe de L-c y un final publicado, en SU folio y aparte del Flow
         espera { lab.folios.first { "lector: LEIDA · código 0 · VISA · 9F02 2537 · lector cerrado" in it } }
         espera {
             motor.tardias.subscriptionCount.first { it > 0 }
             motor.tardias.emit(leido to EventoDeCobro.NoSeCobro)
             motor.tardias.emit(AttemptId.nuevo() to EventoDeCobro.NoSeCobro) // regresa cuando el colector terminó con la primera
         }
-        assertTrue("tardía: NoSeCobro" in notas(leido))
-        assertEquals(listOf("PideTarjeta", "PorConfirmar \$25.37"), notas(leido).filterNot { it.startsWith("lector:") || it.startsWith("tardía:") })
+        assertTrue("final publicado: NoSeCobro" in notas(leido))
+        assertEquals(listOf("PideTarjeta", "PorConfirmar \$25.37"), notas(leido).filterNot { it.startsWith("lector:") || it.startsWith("final publicado:") })
         val otro = AttemptId.nuevo()
         assertTrue(lector.siguienteFolio(otro))
         val antes = historial.leer().size
@@ -295,7 +313,15 @@ class LaboratorioTest {
         assertEquals(0, motor.cuantas("cobrar"))
         assertEquals(0, motor.cuantas("cortar"))
         assertTrue(libre())
-        assertTrue("cancelado antes de arrancar el motor" in notas(historial.leer().single().folio))
+        val folio = historial.leer().single().folio
+        assertTrue("cancelado antes de arrancar el motor" in notas(folio))
+        // F: la fila cambia sin ningún evento. Con el pintor quieto (el carril y el hilo vacíos, tres veces: cada cambio llega al
+        // pintor en dos saltos, el colector de su `StateFlow` y el de `combine`), sólo `releer()` la trae.
+        carrilVacio()
+        repeat(3) { hilo.submit {}.get(10, TimeUnit.SECONDS) }
+        filas.filas[folio] = IntentoEntity(folio.valor, Operacion.VENTA, VENUE, 2_537, false, "1", "S1", Ambiente.SANDBOX, "x", Origen.LOCAL_SIN_SOLICITUD, estado = EstadoDelIntento.NO_SALIO)
+        l.releer()
+        assertTrue(espera { l.folios.first { "— ${folio.valor} \$25.37: fila NO_SALIO" in it } }.isNotEmpty())
     }
 
     /** Si el folio no se puede guardar, no se llama al motor, el lector queda libre y la pantalla lo dice (Codex r3 #5). */
@@ -352,6 +378,102 @@ class LaboratorioTest {
         assertTrue(texto, "Libreta: reportes pendientes 0 · filas ilegibles 1" in texto)
         assertEquals(true, s.guardadaEsLaDelMotor)
         assertEquals(1, fabricas.get())
+    }
+
+    /**
+     * Al abrir, hasta leer el archivo de la identidad: COMPROBANDO, no «falta», y «Cobrar» se rechaza con ese aviso. Al leerlo,
+     * sin identidad, la cabeza dice lo que busca la revisión en el aparato (C).
+     */
+    @Test fun `al abrir dice comprobando hasta leer el archivo de la identidad`() = conHiloLento(armar = false) { l, hilo ->
+        val tapon = CountDownLatch(1)
+        hilo.execute { aguanta(tapon) } // `archivo.leer()` de `arrancar()` no corre hasta soltarlo
+        l.arrancar()
+        l.orden(Orden.Cobrar(2_537))
+        carrilVacio()
+        val antes = l.situacion.value
+        assertEquals(EstadoDelMotor.Comprobando, antes.motor)
+        assertTrue(antes.avisos.any { "no se acepta «Cobrar»: comprobando la identidad guardada" in it })
+        assertEquals(
+            listOf("Motor: COMPROBANDO · motores armados: 0", "Identidad guardada: comprobando", "Cobrar: apagado: comprobando la identidad guardada"),
+            textoDeLaSituacion(antes).lines().take(3),
+        )
+        tapon.countDown()
+        val leida = esperar(l) { it.motor == EstadoDelMotor.SinIdentidad }
+        assertEquals(
+            listOf("Motor: SIN_IDENTIDAD · motores armados: 0", "Identidad guardada: no", "Cobrar: apagado: falta la identidad"),
+            textoDeLaSituacion(leida).lines().take(3),
+        )
+    }
+
+    /**
+     * La primera identidad arma SÓLO cuando ya está escrita (D): si el escritor truena, el aviso y el motor sigue sin identidad y
+     * sin fábrica; mientras el escritor no termina, «Cobrar» se rechaza y la fábrica no se llama; y la fábrica ya la encuentra en
+     * el disco.
+     */
+    @Test fun `la primera identidad arma solo cuando ya esta escrita`() {
+        val sinCarpeta = nuevo(ar = ArchivoDeIdentidad(File(carpeta.root, "no-existe"))).also { it.arrancar() }
+        esperar(sinCarpeta) { it.motor == EstadoDelMotor.SinIdentidad }
+        sinCarpeta.orden(Orden.Guardar("SERIE0099", "4321", ""))
+        val fallida = esperar(sinCarpeta) { it.avisos.any { a -> "la identidad no se pudo guardar: " in a } }
+        assertEquals(EstadoDelMotor.SinIdentidad, fallida.motor)
+        assertFalse(fallida.identidadGuardada)
+        carrilVacio()
+        assertEquals(0, fabricas.get())
+        conHiloLento(armar = false) { l, hilo ->
+            val enDisco = AtomicReference<IdentidadTecleada?>()
+            fabrica = { enDisco.set(ArchivoDeIdentidad(carpeta.root).leer()); motor to filas }
+            l.arrancar()
+            esperar(l) { it.motor == EstadoDelMotor.SinIdentidad }
+            val tapon = CountDownLatch(1)
+            hilo.execute { aguanta(tapon) } // el escritor no corre hasta soltarlo
+            l.orden(Orden.Guardar("SERIE0099", "4321", ""))
+            l.orden(Orden.Cobrar(2_537))
+            carrilVacio()
+            assertEquals(EstadoDelMotor.SinIdentidad, l.situacion.value.motor)
+            assertTrue(l.situacion.value.avisos.any { "no se acepta «Cobrar»: falta la identidad" in it })
+            assertEquals(0, fabricas.get())
+            tapon.countDown()
+            esperar(l) { it.motor == EstadoDelMotor.Armado }
+            assertEquals(IdentidadTecleada("SERIE0099", "4321", "SERIE0099"), enDisco.get()) // la fábrica ya la vio escrita
+            assertEquals(1, fabricas.get())
+            assertEquals(0, motor.cuantas("cobrar"))
+        }
+    }
+
+    /**
+     * La frontera de «Cancelar» es UNA decisión del carril (E). Un «Cancelar» que el carril acepta justo después de esa decisión, y
+     * antes de que el intento junte el `Flow`, ya encuentra `cobrar` llamado: va con `detener` + `cortar`, y el COBRO termina.
+     */
+    @Test fun `cancelar justo despues de la decision de arrancar encuentra cobrar ya llamado`() {
+        val dePrueba = Thread.currentThread()
+        val inyeccion = AtomicReference<Pair<() -> Unit, () -> Unit>?>(null)
+        val inyectado = CountDownLatch(1)
+        // El carril de esta prueba: el primer encargo que le llega del intento es su decisión de arrancar; mete algo antes y algo
+        // justo después de ella.
+        val conInyeccion = Executor { r ->
+            val i = if (Thread.currentThread() !== dePrueba) inyeccion.getAndSet(null) else null
+            i?.first?.invoke()
+            carril.execute(r)
+            i?.second?.invoke()
+        }
+        conHiloLento(c = conInyeccion) { l, hilo ->
+            val tapa = CountDownLatch(1)
+            inyeccion.set(
+                { hilo.execute { aguanta(tapa) } } to { // antes: la corrutina del intento no sigue hasta soltarla
+                    carril.execute { motor.llamadas += "cancelar" } // después: la marca de que el carril acepta «Cancelar» aquí
+                    l.orden(Orden.Cancelar)
+                    inyectado.countDown()
+                },
+            )
+            l.orden(Orden.Cobrar(2_537))
+            aguanta(inyectado)
+            carrilVacio() // la decisión, la marca y «Cancelar» ya corrieron
+            tapa.countDown()
+            esperar(l) { it.trabajo == null }
+            assertEquals(listOf("cobrar", "cancelar", "cortar"), synchronized(motor.llamadas) { motor.llamadas.filter { it != "recuperar" } })
+            assertEquals(1, motor.cuantas("cobrar"))
+            assertTrue("corte: CORTADO" in notas(historial.leer().single().folio))
+        }
     }
 
     private companion object {

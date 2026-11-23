@@ -19,6 +19,7 @@ import com.avoqado.motorlab.textoDeLaSituacion
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
@@ -73,12 +74,24 @@ class MainActivity : Activity() {
             listOf(cabeza, lecturaSeca, resultado, serie, posId, fisica, guardar, importe, cobrar, cancelar, folios).forEach { addView(it) }
         }
         setContentView(ScrollView(this).apply { addView(columna) })
+        pintar() // este hilo ES el carril: el primer cuadro ya trae el estado vigente, no una pantalla vacía con «Cobrar» encendido
     }
 
-    /** Pinta en cada cambio del carril o de los folios mientras se ve; al dejar de verse se suelta. */
+    /**
+     * Pinta en cada cambio del carril o de los folios mientras se ve; al dejar de verse se suelta. La fila del motor puede
+     * cambiar sin evento (un reverso tras «por confirmar»): al verse y, mientras se ve, cada segundo, el laboratorio la relee.
+     * Es sólo la vista: no toca el carril ni retrasa ninguna orden.
+     */
     override fun onStart() {
         super.onStart()
+        lab.releer()
         pintor = CoroutineScope(Dispatchers.Default).launch {
+            launch {
+                while (true) {
+                    delay(1_000)
+                    lab.releer()
+                }
+            }
             combine(lab.situacion, lab.folios) { _, _ -> }.collect { runOnUiThread { if (!isDestroyed) pintar() } }
         }
     }

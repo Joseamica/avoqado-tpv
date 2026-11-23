@@ -731,4 +731,14 @@ class BlumonSaleReferenceTest {
         PaymentViewModel::class.java.getDeclaredMethod("onCleared").apply { isAccessible = true }.invoke(vm)
         io.mockk.verify(exactly = 1) { mockSocketManager.alMorirUnaPantallaDeCobro("req-d26", "venue-test-001", any()) }
     }
+
+    /** D26 (aparato, 22-nov): la pantalla que se va ANTES de elegir método (no hay venue del cobro todavía) también avisa, con el de la sesión. */
+    @Test
+    fun `D26 la pantalla que se va antes de elegir metodo tambien suelta el cobro y avisa con el venue de la sesion`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        vm.setSocketPaymentSource("SOCKET", "req-d26-antes")
+        vm.viewModelScope.cancel()
+        PaymentViewModel::class.java.getDeclaredMethod("onCleared").apply { isAccessible = true }.invoke(vm)
+        io.mockk.verify(exactly = 1) { mockSocketManager.alMorirUnaPantallaDeCobro("req-d26-antes", "venue-test-001", any()) }
+    }
 }

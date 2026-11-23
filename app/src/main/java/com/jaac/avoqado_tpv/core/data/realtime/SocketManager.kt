@@ -2227,10 +2227,16 @@ class SocketManager @Inject constructor(
             }
             val solicitud = requestId?.takeIf { it.isNotBlank() } ?: return@launch
             remotePaymentCoordinator.soltarPropiedad(solicitud)
-            val venue = venueId?.takeIf { it.isNotBlank() } ?: return@launch
+            val venue = venueId?.takeIf { it.isNotBlank() } ?: run {
+                Timber.w("🔓 [D26] La pantalla de %s se fue sin venue: se soltó la propiedad; contesta la siguiente sonda", solicitud)
+                return@launch
+            }
             try {
                 val answer = remotePaymentCoordinator.probeSocketPaymentRequest(solicitud, venue)
-                if (answer.disposition == com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition.ACTIVE && answer.executionAlive) return@launch
+                if (answer.disposition == com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition.ACTIVE && answer.executionAlive) {
+                    Timber.i("🔓 [D26] La pantalla de %s se fue con una llamada al SDK en vuelo: sigue viva hasta que regrese o venza el tope", solicitud)
+                    return@launch
+                }
                 Timber.i("🔓 [D26] La pantalla de %s se fue: la terminal avisa %s sin esperar la sonda", solicitud, answer.disposition)
                 socket?.emit("terminal:payment_probe_result", JSONObject().apply {
                     put("requestId", solicitud)

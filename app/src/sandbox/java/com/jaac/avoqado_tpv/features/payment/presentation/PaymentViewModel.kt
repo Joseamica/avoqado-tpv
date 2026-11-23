@@ -10668,7 +10668,8 @@ class PaymentViewModel @Inject constructor(
         enviarDesenlaceRetenidoAlSalir()
         // 🔓 D26: la pantalla dueña se fue: se suelta la propiedad de SU solicitud (la vinculada, que sobrevive a `resetPayment` y a
         // emitir; Codex r2 #7) y la terminal le dice al SERVIDOR lo que diría la sonda (con un final ya emitido, sólo lo repite).
-        socketManager.alMorirUnaPantallaDeCobro(solicitudVinculada, currentVenueId)
+        // El venue del cobro se fija al empezar a cobrar; si la pantalla se fue antes (p. ej. en «Seleccionar Cuenta»), el de la sesión.
+        socketManager.alMorirUnaPantallaDeCobro(solicitudVinculada, currentVenueId.ifBlank { authRepository.getVenueId() ?: secureStorage.getVenueId() })
         // 🔒 The state collector died with viewModelScope — never leave the singleton flags stuck
         // true. A stuck money-window flag would refuse every future POS cancel; a stuck
         // charge-active flag would refuse every future POS CHARGE («La terminal tiene otro cobro en curso…»)

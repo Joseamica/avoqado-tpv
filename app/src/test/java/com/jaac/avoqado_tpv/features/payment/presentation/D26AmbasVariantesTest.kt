@@ -21,7 +21,7 @@ class D26AmbasVariantesTest {
         // la duda con el SDK ya regresado no deja la bandera de cobro activo arriba
         "if (authorizationReturned && !authorizationApproved) paymentStateHolder.setChargeAttemptActive(false)",
         // al morir la pantalla dueña se suelta el cobro del POS
-        "socketManager.alMorirUnaPantallaDeCobro(solicitudVinculada, currentVenueId)",
+        "socketManager.alMorirUnaPantallaDeCobro(solicitudVinculada, currentVenueId.ifBlank { authRepository.getVenueId() ?: secureStorage.getVenueId() })",
         // el registro del rechazo lleva el código y el httpCode de Momentum
         "val (codigoDelHost, httpDelHost) = blumonCodigoYHttp(failure)",
     )

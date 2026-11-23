@@ -17,6 +17,7 @@
   - Respondedor local en 127.0.0.1 (404 sin cuerpo a toda petición, después de leerla entera) y la identidad tecleada (serie de Blumon, posId y serie física) guardada en privado, con la llave de las huellas.
   - Un archivo por folio, entero y sincronizado antes de cobrar (uno a medias no se come al siguiente), y los textos de la pantalla sin traducir y sin datos de la tarjeta ni de la identidad.
   - El laboratorio: un carril con un dueño (el estado del motor y el trabajo en curso cambian al aceptar el toque), un solo motor armado con la identidad aceptada sin motor y un recuperar() al armar (si falla, FALLO), el folio entero antes de cobrar, el dueño del lector según su contrato, «Cancelar» que se recuerda aunque el folio no exista y que el cobro espera, y la lectura seca de L-c por el mismo carril.
+  - La app: un Application dueño de todo (el carril en el hilo de la pantalla, el respondedor local, el lector y el motor armado con el par Basic de sandbox y una llave de huellas privada) y una pantalla que sólo manda órdenes: la lectura seca de L-c, la identidad en tres campos ocultos que se vacían al guardar, el importe, Cobrar y Cancelar.
 
 ### **Changed**
 - **Interno, sin efecto en la app · `cobropropio`, bloque 1 de la fase 3 del SDK propio**: el módulo sigue sin conectarse (`:app` no depende de él).

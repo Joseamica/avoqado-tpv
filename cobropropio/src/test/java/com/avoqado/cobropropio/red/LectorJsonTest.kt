@@ -63,4 +63,19 @@ class LectorJsonTest {
         assertFalse(a.en("t").toString().contains("secreto"))
         assertFalse(a.en("n").toString().contains("4111"))
     }
+
+    /** Bloque 1b · fila 13: la clave en CUALQUIER ruta, con las reglas de vacío de `tieneAlgoBajo`. */
+    @Test fun `algo bajo una clave en cualquier ruta`() {
+        fun algo(c: String) = Apariciones.leer(c)!!.tieneAlgoBajoEnCualquierRuta("error")
+        for (c in listOf(
+            """{"error":"x"}""", """{"d":{"error":504}}""", """{"d":{"e":{"error":{"a":null}}}}""", """{"d":[{"error":true}]}""",
+            """{"d":{"error":[null]}}""",
+        )) assertTrue(c, algo(c))
+        for (c in listOf(
+            """{}""", """{"error":null}""", """{"d":{"error":{}}}""", """{"d":[{"error":[]}]}""", """{"d":{"errores":"x"}}""",
+            """{"d":"error"}""",
+        )) assertFalse(c, algo(c))
+        // `tieneAlgoBajo` sigue mirando sólo la raíz (P2 lo usa con `dataResponse`).
+        assertFalse(Apariciones.leer("""{"d":{"error":"x"}}""")!!.tieneAlgoBajo("error"))
+    }
 }

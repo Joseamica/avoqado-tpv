@@ -37,6 +37,7 @@ import com.avoqado.cobropropio.dominio.SolicitudDeCancelacion
 import com.avoqado.cobropropio.dominio.SolicitudDeVenta
 import com.avoqado.cobropropio.fixtures.LecturasDePrueba
 import com.avoqado.cobropropio.fixtures.LecturasDePrueba.con
+import com.avoqado.cobropropio.fixtures.LecturasDePrueba.toque
 import com.avoqado.cobropropio.fixtures.arrancarEnIpv4
 import com.avoqado.cobropropio.fixtures.baseLiteral
 import com.avoqado.cobropropio.libreta.EstadoDelIntento
@@ -742,6 +743,8 @@ class PuntaAPuntaTest {
 
         /** Los folios de venta que la prueba mandó cobrar: cada uno sale al banco a lo más una vez. */
         private val ventasPedidas = ConcurrentHashMap.newKeySet<String>()
+        /** Bloque 1b · fila 11: un toque nuevo por venta, también tras reiniciar el proceso. */
+        val toques = AtomicInteger()
         var actual = Motor(Libreta.PROCESO_ID)
         val envio get() = actual.envio
         val lector get() = actual.lector
@@ -756,7 +759,7 @@ class PuntaAPuntaTest {
             })
             val espia = Espia(ClienteBlumon(endpoints, envio, CREDENCIAL, identidad, SecureRandom())) { t, x -> salidas += t to x }
             private val servidor = ReversoDelServidorHttp(servidorHttp.baseLiteral(), JWT)
-            val lector = LectorDePrueba { t, x -> salidas += t to x }
+            val lector = LectorDePrueba(toques) { t, x -> salidas += t to x }
 
             /** Corren DENTRO de la transacción de esa operación de la libreta, antes del commit. */
             val ganchos = ConcurrentHashMap<String, () -> Unit>()
@@ -978,7 +981,7 @@ class PuntaAPuntaTest {
     // ───────────── Las piezas de prueba ─────────────
 
     /** La tarjeta de prueba (Visa de plástico). La cancelación es otra lectura de la MISMA tarjeta: otro contador (9F36). */
-    private class LectorDePrueba(private val anotar: (String, String) -> Unit) : LectorDeTarjeta {
+    private class LectorDePrueba(private val toques: AtomicInteger, private val anotar: (String, String) -> Unit) : LectorDeTarjeta {
         val lecturas = CopyOnWriteArrayList<Operacion>()
 
         /** Una barrera antes de entregar la lectura (una prueba la usa). */
@@ -987,7 +990,7 @@ class PuntaAPuntaTest {
         override suspend fun leer(operacion: Operacion, importeCentavos: Long, espera: Long): ResultadoDeLectura {
             lecturas += operacion
             antesDeLeer()
-            val lectura = if (operacion == Operacion.VENTA) LecturasDePrueba.visaPlasticoVenta(importeCentavos)
+            val lectura = if (operacion == Operacion.VENTA) LecturasDePrueba.visaPlasticoVenta(importeCentavos).toque(toques.incrementAndGet())
             else LecturasDePrueba.visaPlasticoCancelacion(importeCentavos).con(tags = mapOf(0x9F36 to "0002"))
             // Para el barrido: lo que lleva la tarjeta (la lectura y su resultado) tampoco se imprime.
             return ResultadoDeLectura.Leida(lectura).also { anotar(TO_STRING, lectura.toString()); anotar(TO_STRING, it.toString()) }

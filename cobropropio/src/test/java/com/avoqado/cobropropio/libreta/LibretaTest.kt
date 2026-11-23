@@ -93,14 +93,15 @@ class LibretaTest {
 
     private fun IntentoEntity.id() = AttemptId(attemptId)
 
-    private fun enviada(l: Libreta, v: IntentoEntity = venta()): IntentoEntity {
+    /** Bloque 1b · fila 11: cada venta enviada con su propia lectura (el folio, único); `lectura` la fija a propósito. */
+    private fun enviada(l: Libreta, v: IntentoEntity = venta(), lectura: String = v.attemptId): IntentoEntity {
         assertTrue(l.anotar(v))
-        assertTrue(l.marcarEnviado(v.id(), reloj, datos()))
+        assertTrue(l.marcarEnviado(v.id(), reloj, datos(huellaLectura = lectura)))
         return v
     }
 
-    private fun aprobada(l: Libreta, v: IntentoEntity = venta()): IntentoEntity {
-        enviada(l, v)
+    private fun aprobada(l: Libreta, v: IntentoEntity = venta(), lectura: String = v.attemptId): IntentoEntity {
+        enviada(l, v, lectura)
         assertEquals(Arbitraje.Vigente, l.guardarAprobacion(v.id(), 1_234_567, "A1B2C3"))
         return v
     }
@@ -817,12 +818,12 @@ class LibretaTest {
 
     @Test fun `marcar cancelacion enviada rechaza lectura igual a la de la venta`() {
         val l = libreta()
-        val original = aprobada(l)
+        val original = aprobada(l, lectura = lecturaDeLaVenta)
         val c = cancelacionDe(original)
         assertEquals(ResultadoDeAnotarCancelacion.Anotada, l.anotarCancelacion(c, original.ambito()))
         assertEquals(ResultadoDeEnviarCancelacion.LecturaRepetida, l.marcarCancelacionEnviada(c.id(), reloj, datos(huellaLectura = lecturaDeLaVenta)))
         assertEquals(ResultadoDeEnviarCancelacion.OtraTarjeta, l.marcarCancelacionEnviada(c.id(), reloj, datos(huellaTarjeta = "e".repeat(64), huellaLectura = "c".repeat(64))))
-        assertFalse(l.marcarEnviado(c.id(), reloj, datos(huellaLectura = "c".repeat(64)))) // una cancelación no se salta las revisiones
+        assertFalse(l.marcarEnviado(c.id(), reloj, datos(huellaLectura = lecturaDeLaVenta))) // una cancelación no se salta las revisiones, ni con una lectura repetida
         assertEquals(EstadoDelIntento.ANOTADO, l.buscar(c.id())!!.estado)
         assertTrue(l.vetarPorCorte(c))
         assertEquals(ResultadoDeEnviarCancelacion.YaNoAplica, l.marcarCancelacionEnviada(c.id(), reloj, datos(huellaLectura = "c".repeat(64))))

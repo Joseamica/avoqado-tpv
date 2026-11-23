@@ -27,6 +27,7 @@ import com.avoqado.cobropropio.dominio.SolicitudDeCancelacion
 import com.avoqado.cobropropio.dominio.SolicitudDeVenta
 import com.avoqado.cobropropio.fixtures.LecturasDePrueba
 import com.avoqado.cobropropio.fixtures.LecturasDePrueba.con
+import com.avoqado.cobropropio.fixtures.LecturasDePrueba.toque
 import com.avoqado.cobropropio.libreta.EstadoDelIntento
 import com.avoqado.cobropropio.libreta.EstadoDelReverso
 import com.avoqado.cobropropio.libreta.EstadoDelReversoEnServidor
@@ -298,7 +299,7 @@ class RecorridoSandboxTest {
         nota("fila: ${fila(libreta.buscar(a.s.id))}")
 
         // 2 · Venta retenida: el reverso lo hace el MOTOR.
-        val b = vender("2 · Venta retenida ⇒ reverso del motor", { LecturasDePrueba.mastercardPlasticoVenta(it) }, LecturasDePrueba.PAN_MASTERCARD, retener = true)
+        val b = vender("2 · Venta retenida ⇒ reverso del motor", { LecturasDePrueba.mastercardPlasticoVenta(it).toque(2) }, LecturasDePrueba.PAN_MASTERCARD, retener = true)
         val fb = esperarResultadoDelReverso(libreta, b.s.id)
         nota("fila tras esperar el resultado del reverso: ${fila(fb)}")
         nota("permisos pedidos al SERVIDOR falso: ${servidor.permisos.count { it == b.s.id }}")
@@ -322,7 +323,7 @@ class RecorridoSandboxTest {
         nota("resolucionesTardias de la venta 2: ${tardias.filter { it.first == b.s.id }.joinToString { ev(it.second) }}")
 
         // 3 · Otra venta después del reverso (en producción la siguiente salió N0 dos veces).
-        val c = vender("3 · Venta después del reverso", { LecturasDePrueba.mastercardPlasticoVenta(it) }, LecturasDePrueba.PAN_MASTERCARD)
+        val c = vender("3 · Venta después del reverso", { LecturasDePrueba.mastercardPlasticoVenta(it).toque(3) }, LecturasDePrueba.PAN_MASTERCARD)
         esperarFilaQuieta(libreta, c.s.id)
         nota("fila: ${fila(libreta.buscar(c.s.id))}")
 

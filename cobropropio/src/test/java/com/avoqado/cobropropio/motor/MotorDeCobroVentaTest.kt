@@ -36,6 +36,7 @@ import com.avoqado.cobropropio.dominio.Red
 import com.avoqado.cobropropio.dominio.ResultadoDeLectura
 import com.avoqado.cobropropio.dominio.SolicitudDeVenta
 import com.avoqado.cobropropio.fixtures.LecturasDePrueba
+import com.avoqado.cobropropio.fixtures.LecturasDePrueba.toque
 import com.avoqado.cobropropio.libreta.DatosDelEnvio
 import com.avoqado.cobropropio.libreta.EstadoDelIntento
 import com.avoqado.cobropropio.libreta.EstadoDelReporte
@@ -130,7 +131,7 @@ class MotorDeCobroVentaTest {
     private class LectorFalso : LectorDeTarjeta {
         var lecturas = 0
         var demora = 1_000L
-        var resultado: (Long) -> ResultadoDeLectura = { ResultadoDeLectura.Leida(LecturasDePrueba.visaPlasticoVenta(it)) }
+        var resultado: (Long) -> ResultadoDeLectura = { ResultadoDeLectura.Leida(LecturasDePrueba.visaPlasticoVenta(it).toque(lecturas)) }
 
         override suspend fun leer(operacion: Operacion, importeCentavos: Long, espera: Long): ResultadoDeLectura {
             lecturas++

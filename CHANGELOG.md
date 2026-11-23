@@ -25,6 +25,9 @@
   - La libreta no deja bajar «el reverso pudo entrar» ni reescribir la base DUKPT, el contador usado ni la huella de la lectura de una fila que ya salió.
   - Un éxito de Blumon con algo bajo una clave «error» en cualquier lugar del sobre (no sólo en la raíz) ya no da un desenlace definitivo: queda en duda.
   - Una VENTA con una lectura de tarjeta que ya salió al banco en otra fila no sale: su fila queda «no salió (lectura repetida)».
+- **Interno, sin efecto en la app · `cobropropio`, bloque 4-L (L-b) de la fase 3 del SDK propio**: el motor reconoce a la terminal del laboratorio; el módulo sigue sin conectarse (`:app` no depende de él).
+  - La sesión con Blumon nace con el mismo `posId`; el nombre del comercio pasa a ser opcional y, si viene, se sigue comparando. La contraseña del token usa el modelo de la identidad (con `A910S`, la misma que hoy).
+  - Prueba: las seis ventas medidas, Amex incluida, se admiten con importes distintos de $1 (lo que cobra la app de laboratorio).
 
 ### **Fixed**
 - **Caja · la terminal ya no se traba en la caja de ayer cuando entra alguien sin permiso de caja (D24, Testarudo, N86, 22-nov)**: la caja del 21 la cerró el dueño en otro aparato, la del 22 ya estaba abierta, y entró alguien de Cocina: la terminal se quedó en «Caja cerrada o cerrándose en otro aparato · Cierre observado en el servidor (CLOSED)» con «Abrir nueva caja» y «Usar la caja vinculada» en gris, sin salida. Dos causas: el paso solo a la caja del negocio (D65) pedía `shifts:read`, y se saltaba las cajas vinculadas (`ADOPTED`), que era la de la N86. Ahora:

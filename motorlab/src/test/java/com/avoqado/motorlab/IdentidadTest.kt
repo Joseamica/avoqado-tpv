@@ -4,8 +4,6 @@ import com.avoqado.cobropropio.dominio.Ambiente
 import com.avoqado.cobropropio.dominio.Identidad
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -24,15 +22,16 @@ class IdentidadTest {
         assertEquals(IdentidadTecleada("SERIE0099", "4321", "SERIE0099"), t) // física vacía: la misma serie
         assertEquals("IdentidadTecleada(oculta)", t.toString())
         assertEquals(Identidad(null, "4321", "FISICA01", "SERIE0099", "A910S", "motorlab-0.1.0", Ambiente.SANDBOX), IdentidadTecleada.de("SERIE0099", "4321", "FISICA01").identidad())
+        // Una sola lectura clasificada: éxito con la identidad, éxito con `null` (no hay) o fallo (ilegible).
         val archivo = ArchivoDeIdentidad(carpeta.root)
-        assertNull(archivo.leer())
-        assertFalse(archivo.existe()) // no hay
+        assertEquals(Result.success(null), archivo.leer()) // no hay: ausente
         archivo.guardar(t)
-        assertEquals(t, ArchivoDeIdentidad(carpeta.root).leer())
-        assertTrue(archivo.existe())
-        File(carpeta.root, "identidad-del-laboratorio.txt").writeText("SERIE 0099\n4321\nSERIE0099\n")
-        assertNull(archivo.leer()) // sin forma: se vuelve a teclear
-        assertTrue(archivo.existe()) // pero está: ilegible, no «no hay»
+        assertEquals(Result.success(t), ArchivoDeIdentidad(carpeta.root).leer()) // válida, con los mismos valores
+        val ruta = File(carpeta.root, "identidad-del-laboratorio.txt")
+        ruta.writeText("SERIE 0099\n4321\nSERIE0099\n")
+        assertTrue(archivo.leer().isFailure) // sin forma: ilegible, se vuelve a teclear
+        assertTrue(ruta.delete() && ruta.mkdir()) // la ruta está, pero no se puede leer como archivo
+        assertTrue(archivo.leer().isFailure) // ilegible, nunca «no hay»
     }
 
     @Test fun `la llave de huellas nace una vez y se relee igual`() {

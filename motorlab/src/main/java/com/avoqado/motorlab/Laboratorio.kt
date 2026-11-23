@@ -170,17 +170,16 @@ internal class Laboratorio(
     }
 
     /**
-     * Al abrir: lee el archivo de la identidad fuera del carril. Mientras, el motor está COMPROBANDO y «Guardar» se rechaza, así
-     * que al regresar al carril nada lo cambió: arma con la leída o queda SIN_IDENTIDAD («ilegible» si el archivo está y no se lee).
+     * Al abrir: UNA lectura clasificada del archivo ([ArchivoDeIdentidad.leer]), fuera del carril. Mientras, COMPROBANDO y «Guardar»
+     * se rechaza; al regresar nada lo cambió: arma con la leída o SIN_IDENTIDAD («ilegible» si falló y no por falta del archivo).
      */
     fun arrancar() {
         alcance.launch {
-            val t = archivo.leer()
-            val ilegible = t == null && archivo.existe()
+            val leida = archivo.leer()
             enCarril {
-                guardada = t
-                archivoIlegible = ilegible
-                if (t != null) return@enCarril armar(t)
+                guardada = leida.getOrNull()
+                archivoIlegible = leida.isFailure
+                guardada?.let { return@enCarril armar(it) }
                 estadoDelMotor = EstadoDelMotor.SinIdentidad
                 publicar()
             }

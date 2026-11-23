@@ -5,6 +5,8 @@ import com.avoqado.cobropropio.dominio.Identidad
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.NoSuchFileException
 import java.security.SecureRandom
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
@@ -49,14 +51,12 @@ internal data class IdentidadTecleada(val serieBlumon: String, val posId: String
 internal class ArchivoDeIdentidad(dir: File) {
     private val archivo = File(dir, "identidad-del-laboratorio.txt")
 
-    /** `null` si no hay, si no se puede leer o si no tiene forma: se vuelve a teclear. Nunca lanza. */
-    fun leer(): IdentidadTecleada? = runCatching {
-        val l = archivo.readText(Charsets.US_ASCII).split('\n')
-        if (l.size == 4 && l[3].isEmpty()) IdentidadTecleada(l[0], l[1], l[2]) else null
-    }.getOrNull()
-
-    /** Si el archivo está, se lea o no: así un `null` de [leer] con el archivo presente es «ilegible», no «no hay». Nunca lanza. */
-    fun existe(): Boolean = runCatching { archivo.exists() }.getOrDefault(true)
+    /** UNA lectura que nunca lanza: la identidad; `null` sólo si no hay archivo (`NoSuchFileException`); fallo = ilegible, por lo que sea. */
+    fun leer(): Result<IdentidadTecleada?> = runCatching {
+        val l = String(Files.readAllBytes(archivo.toPath()), Charsets.US_ASCII).split('\n')
+        require(l.size == 4 && l[3].isEmpty())
+        IdentidadTecleada(l[0], l[1], l[2])
+    }.recoverCatching { if (it is NoSuchFileException) null else throw it }
 
     fun guardar(t: IdentidadTecleada) =
         escribirEntero(archivo, "${t.serieBlumon}\n${t.posId}\n${t.serieFisica}\n".toByteArray(Charsets.US_ASCII))

@@ -218,7 +218,7 @@ class LaboratorioTest {
         assertEquals(false, s.guardadaEsLaDelMotor)
         lab.orden(Orden.Guardar("SERIE0077", "1111", ""))
         esperar { it.avisos.count { a -> "se usará al cerrar y abrir la app" in a } == 2 }
-        assertEquals(IdentidadTecleada("SERIE0077", "1111", "SERIE0077"), ArchivoDeIdentidad(carpeta.root).leer())
+        assertEquals(IdentidadTecleada("SERIE0077", "1111", "SERIE0077"), ArchivoDeIdentidad(carpeta.root).leer().getOrNull())
         assertEquals(1, fabricas.get())
         assertEquals(1, lab.situacion.value.motoresArmados)
         assertEquals(0, motor.cuantas("cobrar"))
@@ -386,7 +386,7 @@ class LaboratorioTest {
         otro.arrancar()
         val s = esperar(otro) { it.motor == EstadoDelMotor.Armado }
         assertEquals(delArchivo.identidad(), usada.get()) // armó la del archivo
-        assertEquals(delArchivo, ArchivoDeIdentidad(carpeta.root).leer()) // y el archivo no cambió
+        assertEquals(delArchivo, ArchivoDeIdentidad(carpeta.root).leer().getOrNull()) // y el archivo no cambió
         val texto = espera { otro.folios.first { "fila APROBADO" in it } }
         assertTrue(texto, "— ${y.valor} \$2.00: sin fila guardada por el motor" in texto)
         assertTrue(texto, "— ${z.valor} \$3.00: fila ILEGIBLE (IllegalStateException): por confirmar" in texto)
@@ -420,8 +420,18 @@ class LaboratorioTest {
         )
     }
 
-    /** Un archivo de identidad que está pero no se lee como una no es «no»: SIN_IDENTIDAD con «ilegible»; un «Guardar» lo reemplaza y arma (2). */
+    /**
+     * Una ruta de identidad que está pero no se lee como una no es «no»: SIN_IDENTIDAD con «ilegible». Ni siquiera como archivo (una
+     * carpeta en su lugar), ni sin forma; un «Guardar» reemplaza el que no tiene forma y arma (2).
+     */
     @Test fun `un archivo de identidad ilegible no se confunde con ninguno`() {
+        val conCarpeta = carpeta.newFolder("con-carpeta")
+        assertTrue(File(conCarpeta, "identidad-del-laboratorio.txt").mkdir()) // la ruta está, pero no se puede leer
+        val enCarpeta = nuevo(ar = ArchivoDeIdentidad(conCarpeta)).also { it.arrancar() }
+        assertEquals(
+            listOf("Motor: SIN_IDENTIDAD · motores armados: 0", "Identidad guardada: ilegible", "Cobrar: apagado: falta la identidad"),
+            textoDeLaSituacion(esperar(enCarpeta) { it.motor == EstadoDelMotor.SinIdentidad }).lines().take(3),
+        )
         File(carpeta.root, "identidad-del-laboratorio.txt").writeText("SERIE 0099\n4321\nSERIE0099\n") // sin forma
         lab.arrancar()
         val s = esperar { it.motor == EstadoDelMotor.SinIdentidad }
@@ -432,7 +442,7 @@ class LaboratorioTest {
         lab.orden(Orden.Guardar("SERIE0099", "4321", ""))
         val armadoYa = esperar { it.motor == EstadoDelMotor.Armado }
         assertEquals("Identidad guardada: sí (la del motor)", textoDeLaSituacion(armadoYa).lines()[1])
-        assertEquals(IdentidadTecleada("SERIE0099", "4321", "SERIE0099"), ArchivoDeIdentidad(carpeta.root).leer())
+        assertEquals(IdentidadTecleada("SERIE0099", "4321", "SERIE0099"), ArchivoDeIdentidad(carpeta.root).leer().getOrNull())
     }
 
     /**
@@ -457,7 +467,7 @@ class LaboratorioTest {
         fabricas.set(0)
         conHiloLento(armar = false) { l, hilo ->
             val enDisco = AtomicReference<IdentidadTecleada?>()
-            fabrica = { enDisco.set(ArchivoDeIdentidad(carpeta.root).leer()); motor to filas }
+            fabrica = { enDisco.set(ArchivoDeIdentidad(carpeta.root).leer().getOrNull()); motor to filas }
             l.arrancar()
             esperar(l) { it.motor == EstadoDelMotor.SinIdentidad }
             val tapon = CountDownLatch(1)
@@ -474,7 +484,7 @@ class LaboratorioTest {
             esperar(l) { it.motor == EstadoDelMotor.Armado }
             val primera = IdentidadTecleada("SERIE0099", "4321", "SERIE0099")
             assertEquals(primera, enDisco.get()) // la fábrica ya la vio escrita: la primera
-            assertEquals(primera, ArchivoDeIdentidad(carpeta.root).leer())
+            assertEquals(primera, ArchivoDeIdentidad(carpeta.root).leer().getOrNull())
             assertEquals(1, fabricas.get())
             assertEquals(0, motor.cuantas("cobrar"))
         }

@@ -91,13 +91,18 @@ class ClienteBlumonTest {
     private val credencial = CredencialDelCliente("usuario-de-prueba", "clave-de-prueba")
     private val ahora = { System.nanoTime() / 1_000_000 }
 
-    private fun identidad(ambiente: Ambiente = Ambiente.SANDBOX) =
-        Identidad("COMERCIO DE PRUEBA", "12345", "0000000001", "00000000011", "A910S", "1", ambiente)
+    /** Bloque 4-L · L-b: el nombre del comercio puede faltar (`null`) y el modelo entra a la contraseña del token. */
+    private fun identidad(ambiente: Ambiente, comercio: String?, modelo: String) =
+        Identidad(comercio, "12345", "0000000001", "00000000011", modelo, "1", ambiente)
 
-    private fun cliente(ambiente: Ambiente = Ambiente.SANDBOX): ClienteBlumon {
+    private fun cliente(
+        ambiente: Ambiente = Ambiente.SANDBOX,
+        comercio: String? = "COMERCIO DE PRUEBA",
+        modelo: String = "A910S",
+    ): ClienteBlumon {
         val endpoints = Endpoints("https://localhost:${server.port}/oauth/token", "https://localhost:${server.port}/")
         val envio = EnvioUnico(endpoints, ahora, delCliente.trustManager, object : Dns { override fun lookup(hostname: String) = listOf(localhost) })
-        return ClienteBlumon(endpoints, envio, credencial, identidad(ambiente), SecureRandom())
+        return ClienteBlumon(endpoints, envio, credencial, identidad(ambiente, comercio, modelo), SecureRandom())
     }
 
     private fun rutas() = pedidas.map { it.ruta.substringBefore('?') }
@@ -142,6 +147,43 @@ class ClienteBlumonTest {
         }
     }
 
+    /**
+     * Bloque 4-L · L-b: el laboratorio no sabe el nombre del comercio. Sin nombre en la identidad, la sesión la decide el
+     * `posId` (siempre se compara) junto con las demás guardas de `device/init`; con nombre, `commerceName` se sigue comparando.
+     */
+    @Test fun `sin nombre del comercio la sesion la decide el posId`() {
+        // Sin nombre: el mismo posId da sesión, venga el nombre de Blumon, otro o ninguno.
+        for (init in listOf(
+            """{"status":true,"dataResponse":{"posId":12345,"commerceName":"COMERCIO DE PRUEBA","contactless":true,"initializeKeys":true,"qps":false}}""",
+            """{"status":true,"dataResponse":{"posId":12345,"commerceName":"OTRO COMERCIO","contactless":true,"initializeKeys":true,"qps":false}}""",
+            """{"status":true,"dataResponse":{"posId":12345,"contactless":true,"initializeKeys":true,"qps":false}}""",
+        )) {
+            pedidas.clear()
+            identidadDeBlumon = init
+            assertNotNull(init, runBlocking { cliente(comercio = null).iniciarSesion(10.seconds) })
+            assertEquals(init, listOf("/oauth/token", "/device/init", "/device/getKey", "/device/initDukptKeys"), rutas())
+        }
+        // Sin nombre: otro posId, ninguno, una guarda de siempre que falla (qps), o un `commerceName` que aparece en dos rutas
+        // (Codex r1 #1: «el campo en una sola ruta» se sigue exigiendo aunque no se compare) no dan sesión. Se para justo en la
+        // guarda: después de `device/init`, sin pedir llaves.
+        for (init in listOf(
+            """{"status":true,"dataResponse":{"posId":99999,"commerceName":"COMERCIO DE PRUEBA","contactless":true,"initializeKeys":true,"qps":false}}""",
+            """{"status":true,"dataResponse":{"commerceName":"COMERCIO DE PRUEBA","contactless":true,"initializeKeys":true,"qps":false}}""",
+            """{"status":true,"dataResponse":{"posId":12345,"contactless":true,"initializeKeys":true,"qps":true}}""",
+            """{"status":true,"dataResponse":{"posId":12345,"commerceName":"COMERCIO DE PRUEBA","contactless":true,"initializeKeys":true,"qps":false},"extra":{"commerceName":"OTRO COMERCIO"}}""",
+        )) {
+            pedidas.clear()
+            identidadDeBlumon = init
+            assertNull(init, runBlocking { cliente(comercio = null).iniciarSesion(10.seconds) })
+            assertEquals(init, listOf("/oauth/token", "/device/init"), rutas())
+        }
+        // Con nombre, un `device/init` que no lo manda no da sesión: el nombre que viene se sigue comparando.
+        pedidas.clear()
+        identidadDeBlumon = """{"status":true,"dataResponse":{"posId":12345,"contactless":true,"initializeKeys":true,"qps":false}}"""
+        assertNull(runBlocking { cliente().iniciarSesion(10.seconds) })
+        assertEquals(listOf("/oauth/token", "/device/init"), rutas())
+    }
+
     @Test fun `sesion null si KCV no cuadra`() {
         for (malo in listOf(null, "", "AA", "000000", "ZZZZZZ")) {
             kcv = malo
@@ -174,6 +216,19 @@ class ClienteBlumonTest {
         assertEquals(basic, sandbox.autorizacion)
         assertTrue(sandbox.tipo.orEmpty().startsWith("application/x-www-form-urlencoded"))
         assertEquals("grant_type=password&username=00000000011&password=$esperada", sandbox.cuerpo)
+    }
+
+    /**
+     * Bloque 4-L · L-b: la contraseña del token es SHA-256 de la serie de Blumon + "PAX" + el modelo de la identidad. Con
+     * `A910S` es la de siempre (la misma cadena que fija `token produccion por query y sandbox por formulario`).
+     */
+    @Test fun `la contrasena del token usa la serie PAX y el modelo de la identidad`() {
+        fun sha(s: String) = MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).aHex()
+        for ((modelo, clave) in listOf("A910S" to sha("00000000011PAXA910S"), "A920" to sha("00000000011PAXA920"))) {
+            pedidas.clear()
+            runBlocking { cliente(modelo = modelo).renovarToken(10.seconds) }
+            assertEquals(modelo, "grant_type=password&username=00000000011&password=$clave", pedidas.single().cuerpo)
+        }
     }
 
     @Test fun `reverso usa el cuerpo y el token congelados`() {

@@ -16,6 +16,7 @@
 - **Interno, sin efecto en la app · `motorlab`, bloque 4-L (L-d1) de la fase 3 del SDK propio**: la app de laboratorio queda armada para cobrar con el motor contra el sandbox de Blumon, sin hablar con ningún servidor de Avoqado; todavía no vende. `:app` y `:cobropropio` no cambian.
   - Respondedor local en 127.0.0.1 (404 sin cuerpo a toda petición, después de leerla entera) y la identidad tecleada (serie de Blumon, posId y serie física) guardada en privado, con la llave de las huellas.
   - Un archivo por folio, entero y sincronizado antes de cobrar (uno a medias no se come al siguiente), y los textos de la pantalla sin traducir y sin datos de la tarjeta ni de la identidad.
+  - El laboratorio: un carril con un dueño (el estado del motor y el trabajo en curso cambian al aceptar el toque), un solo motor armado con la identidad aceptada sin motor y un recuperar() al armar (si falla, FALLO), el folio entero antes de cobrar, el dueño del lector según su contrato, «Cancelar» que se recuerda aunque el folio no exista y que el cobro espera, y la lectura seca de L-c por el mismo carril.
 
 ### **Changed**
 - **Interno, sin efecto en la app · `cobropropio`, bloque 1 de la fase 3 del SDK propio**: el módulo sigue sin conectarse (`:app` no depende de él).

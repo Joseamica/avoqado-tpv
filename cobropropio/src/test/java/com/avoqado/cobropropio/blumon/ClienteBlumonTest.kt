@@ -130,6 +130,7 @@ class ClienteBlumonTest {
                 """{"status":true,"dataResponse":{"posId":12345,"commerceName":"COMERCIO DE PRUEBA","contactless":true,"initializeKeys":true$campo}}"""
             assertNull("$qps", runBlocking { cliente().iniciarSesion(10.seconds) })
             assertFalse("no se piden llaves con qps=$qps", rutas().contains("/device/getKey"))
+            assertEquals("$qps", listOf("/oauth/token", "/device/init"), rutas())
         }
     }
 
@@ -144,6 +145,7 @@ class ClienteBlumonTest {
             identidadDeBlumon = otra
             assertNull(otra, runBlocking { cliente().iniciarSesion(10.seconds) })
             assertFalse(rutas().contains("/device/getKey"))
+            assertEquals(otra, listOf("/oauth/token", "/device/init"), rutas())
         }
     }
 
@@ -163,13 +165,14 @@ class ClienteBlumonTest {
             assertNotNull(init, runBlocking { cliente(comercio = null).iniciarSesion(10.seconds) })
             assertEquals(init, listOf("/oauth/token", "/device/init", "/device/getKey", "/device/initDukptKeys"), rutas())
         }
-        // Sin nombre: otro posId, ninguno, una guarda de siempre que falla (qps), o un `commerceName` que aparece en dos rutas
+        // Sin nombre: otro posId, ninguno, una guarda de siempre que falla (qps o initializeKeys), o un `commerceName` que aparece en dos rutas
         // (Codex r1 #1: «el campo en una sola ruta» se sigue exigiendo aunque no se compare) no dan sesión. Se para justo en la
         // guarda: después de `device/init`, sin pedir llaves.
         for (init in listOf(
             """{"status":true,"dataResponse":{"posId":99999,"commerceName":"COMERCIO DE PRUEBA","contactless":true,"initializeKeys":true,"qps":false}}""",
             """{"status":true,"dataResponse":{"commerceName":"COMERCIO DE PRUEBA","contactless":true,"initializeKeys":true,"qps":false}}""",
             """{"status":true,"dataResponse":{"posId":12345,"contactless":true,"initializeKeys":true,"qps":true}}""",
+            """{"status":true,"dataResponse":{"posId":12345,"contactless":true,"initializeKeys":false,"qps":false}}""",
             """{"status":true,"dataResponse":{"posId":12345,"commerceName":"COMERCIO DE PRUEBA","contactless":true,"initializeKeys":true,"qps":false},"extra":{"commerceName":"OTRO COMERCIO"}}""",
         )) {
             pedidas.clear()
@@ -311,6 +314,7 @@ class ClienteBlumonTest {
             identidadDeBlumon = otra
             assertNull(otra, runBlocking { cliente().iniciarSesion(10.seconds) })
             assertFalse(rutas().contains("/device/getKey"))
+            assertEquals(otra, listOf("/oauth/token", "/device/init"), rutas())
         }
     }
 

@@ -131,6 +131,7 @@ class TablaDeAdmisionTest {
         for ((marca, medio, lectura) in ventas) for (importe in listOf(1L, 99L, 101L, 2_550L, 10_000L, 999_999_999_999L)) {
             admite(lectura(importe), marca, medio, venta, importe)
             niega(MotivoNoAdmitida.IMPORTE_NO_COINCIDE, lectura(importe), importe = importe + 1)
+            if (importe > 1) niega(MotivoNoAdmitida.IMPORTE_NO_COINCIDE, lectura(importe), importe = importe - 1)
         }
     }
 

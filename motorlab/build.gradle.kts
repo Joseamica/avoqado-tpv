@@ -50,3 +50,8 @@ dependencies {
 
     testImplementation(libs.junit)
 }
+
+// PrivacidadTest lee los fuentes como TEXTO: sin declararlos, un cambio que no mueve el bytecode saldría verde del caché.
+tasks.withType<Test>().configureEach {
+    inputs.dir("src/main/java").withPropertyName("guardaFuentes").withPathSensitivity(PathSensitivity.RELATIVE)
+}

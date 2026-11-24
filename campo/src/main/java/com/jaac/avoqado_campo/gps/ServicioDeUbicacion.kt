@@ -13,7 +13,10 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import com.jaac.avoqado_campo.MainActivity
 import com.jaac.avoqado_campo.checada.Ubicacion
+import com.jaac.avoqado_campo.checada.turnoOlvidado
+import com.jaac.avoqado_campo.checada.turnoVigente
 import com.jaac.avoqado_campo.cola.PiezaDao
+import com.jaac.avoqado_campo.cola.TurnoLocal
 import com.jaac.avoqado_campo.identidad.Arranque
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import dagger.hilt.android.AndroidEntryPoint
@@ -54,9 +57,16 @@ class SeguimientoDelTurno(
      * SIEMPRE intenta [primerPlano] primero (cumple el contrato de `startForegroundService` aunque lance) y decide después:
      * con un `detener()` pedido antes de arrancar, con la sucursal del turno sin seguimiento ([debeSeguir], r3 #3: también
      * cuando Android reinicia el servicio solo, sin pasar por `iniciar()`) o sin permiso, [quitarPrimerPlano] y false.
-     * false = quien llama hace `stopSelf()`; lo que pasó ya está en [EstadoDelGps].
+     * false = quien llama hace `stopSelf(startId)`; lo que pasó ya está en [EstadoDelGps].
+     * Codex r4 #1: [esElUltimo] = este arranque sigue siendo el más reciente. Si mientras leía el turno llegó otro, éste no
+     * quita el aviso ni para nada: devuelve true y deja que decida el bucle (con la fila de ahora).
      */
-    suspend fun arrancar(tienePermiso: Boolean, primerPlano: () -> Unit, quitarPrimerPlano: () -> Unit): Boolean {
+    suspend fun arrancar(
+        tienePermiso: Boolean,
+        primerPlano: () -> Unit,
+        esElUltimo: () -> Boolean = { true },
+        quitarPrimerPlano: () -> Unit,
+    ): Boolean {
         try {
             primerPlano()
         } catch (e: SecurityException) {
@@ -67,15 +77,21 @@ class SeguimientoDelTurno(
             return noSigue(ANDROID_NO_LO_PERMITIO)
         }
         puerta.enPrimerPlano = true // después de esto, `detener()` ya puede hacer stopService
+        val yo = quienSoy.instantanea()
+        val t = piezas.turnoAhora()
+        val ms = ahora()
         val fin: ResultadoGps? = when {
             puerta.detenerPedido -> null // la salida o el borrado llegaron antes que el servicio
-            !debeSeguir(quienSoy.instantanea(), piezas.turnoAhora()) -> ResultadoGps.NoLoUsaLaTienda
+            // D3: el reinicio de Android con el turno de un día ya terminado no sigue (sin aviso: no es un problema).
+            turnoOlvidado(t, yo.staffId, ms) != null -> null
+            !debeSeguir(yo, t, ms) -> ResultadoGps.NoLoUsaLaTienda
             !tienePermiso -> ResultadoGps.NoSigue(SIN_PERMISO)
             else -> {
                 estado.publicar(ResultadoGps.Siguiendo)
                 return true
             }
         }
+        if (!esElUltimo()) return true
         quitarPrimerPlano()
         alTerminar()
         fin?.let(estado::publicar)
@@ -95,21 +111,73 @@ class SeguimientoDelTurno(
     /**
      * Una lectura → un ping de la sucursal del turno. false = ya no hay turno de esta persona, o su sucursal ya no sigue la
      * ubicación (G, r3 #4: la misma sucursal que lleva el ping): el servicio se detiene.
+     * D3 (hz:nube0000:na1c5a48): un turno de un día ya terminado («salida olvidada») cuenta como sin turno: el SERVIDOR ya
+     * lo cerró, así que no se guarda su ubicación y el servicio se para (privacidad y batería).
      */
     suspend fun tomarUno(): Boolean {
         val yo = quienSoy.instantanea() // r3: la persona del turno y su generación, juntas
         val t = piezas.turnoAhora()
-        if (t == null || !t.abierto || t.staffId != yo.staffId) return false
-        if (!debeSeguir(yo, t)) {
+        val ms = ahora()
+        if (t == null || t.staffId != yo.staffId || !turnoVigente(t, ms)) return false
+        if (!debeSeguir(yo, t, ms)) {
             estado.publicar(ResultadoGps.NoLoUsaLaTienda)
             return false
         }
-        val venueId = t.venueId ?: yo.sesion?.venueId ?: return true
-        val l = ubicacion.leer() ?: return true
-        pings.guardarSi(Ping(venueId = venueId, lat = l.lat, lon = l.lon, precision = l.precision, capturadoAt = ahora())) {
+        val l = leerSinTronar()
+        // La lectura tarda hasta 10 s (y puede terminar sin posición o con un error). Al terminar se decide OTRA VEZ con la fila
+        // del turno de ese momento y esa hora: si cruzó su límite no se guarda ni se espera otra vuelta (Codex r1 #2, r2 #1,
+        // r3 #1). Si mientras tanto se marcó una entrada nueva, esta lectura no se le cuelga (puede ser una posición de antes
+        // del toque, Codex r4 #3) y el servicio sigue: su arranque hace que el bucle lea otra vez de inmediato (correrBucle).
+        val capturado = ahora()
+        val ahoraT = piezas.turnoAhora()
+        if (ahoraT == null || ahoraT.staffId != yo.staffId || !turnoVigente(ahoraT, capturado)) return false
+        if (!debeSeguir(yo, ahoraT, capturado)) {
+            estado.publicar(ResultadoGps.NoLoUsaLaTienda)
+            return false
+        }
+        if (l == null || !mismoTurno(t, ahoraT)) return true
+        val venueId = ahoraT.venueId ?: yo.sesion?.venueId ?: return true
+        pings.guardarSi(Ping(venueId = venueId, lat = l.lat, lon = l.lon, precision = l.precision, capturadoAt = capturado)) {
             quienSoy.instantanea().let { !it.limpiando && it.generacion == yo.generacion }
         }
         return true
+    }
+
+    /** Un error del GPS (permiso quitado a media lectura, el proveedor) es «sin posición»: no salta la revisión del turno. */
+    private suspend fun leerSinTronar(): Ubicacion.Lectura? = try {
+        ubicacion.leer()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w("ServicioDeUbicacion", "lectura del turno", e)
+        null
+    }
+}
+
+/** La misma entrada (no otra marcada después): `timeEntryId` y la llave cambian al subir; la hora del toque y la sucursal no. */
+private fun mismoTurno(a: TurnoLocal, b: TurnoLocal) = a.staffId == b.staffId && a.venueId == b.venueId && a.abiertoAt == b.abiertoAt
+
+/**
+ * El bucle del servicio: una lectura y luego [esperar] (30 min), hasta que [tomarUno] diga que ya no hay turno que seguir.
+ * Codex r3 #2: un arranque nuevo (una entrada marcada) puede llegar mientras la lectura decidía con la fila vieja; entonces
+ * no se para, se vuelve a decidir de inmediato con la de ahora. [arranques] lo sube `onStartCommand` en el hilo principal,
+ * el mismo de este bucle, así que entre mirarlo y parar no se cuela otro arranque. Codex r3 #3: con un arranque nuevo
+ * durante la lectura, la siguiente se hace ya, no en 30 min.
+ */
+internal suspend fun correrBucle(tomarUno: suspend () -> Boolean, arranques: () -> Int, esperar: suspend () -> Unit) {
+    while (true) {
+        val visto = arranques()
+        val sigue = try {
+            tomarUno()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("ServicioDeUbicacion", "lectura del turno", e)
+            true
+        }
+        if (arranques() != visto) continue
+        if (!sigue) return
+        esperar()
     }
 }
 
@@ -137,6 +205,10 @@ class ServicioDeUbicacion : Service() {
 
     private val alcance = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var bucle: Job? = null
+    /** Cuántos `onStartCommand` van (sólo el hilo principal lo toca). */
+    private var arranques = 0
+    /** El `startId` del `onStartCommand` más reciente que ya llegó (sólo el hilo principal lo toca). */
+    private var ultimoStartId = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -148,34 +220,29 @@ class ServicioDeUbicacion : Service() {
         // r12: con el arranque DETENIDO (no pudo guardar) no se sigue nada. r13: aun así hay que cumplir `startForeground`
         // antes de pararse: Android puede reentregar un `startForegroundService` que quedó pendiente al morir el proceso, y
         // si el servicio se para sin cumplirlo, cierra la app (ForegroundServiceDidNotStartInTimeException).
+        // Antes de todo y en el hilo principal: el bucle vivo los mira antes de pararse (Codex r3 #2). Además se para con
+        // `stopSelf(startId)`: si Android ya aceptó un arranque más nuevo que todavía no llega aquí, no detiene el servicio
+        // (Codex r4 #1; contrato de `stopSelfResult`).
+        arranques++
+        ultimoStartId = startId
         if (arranque.detenido) {
-            pararCumpliendoPrimerPlano(::ponerEnPrimerPlano, ::quitarPrimerPlano) { stopSelf() }
+            pararCumpliendoPrimerPlano(::ponerEnPrimerPlano, ::quitarPrimerPlano) { stopSelf(startId) }
             return START_NOT_STICKY
         }
         alcance.launch {
             val enPrimerPlano = seguimiento.arrancar(
                 tienePermisoDeUbicacion(this@ServicioDeUbicacion),
                 primerPlano = ::ponerEnPrimerPlano,
+                esElUltimo = { startId == ultimoStartId },
                 quitarPrimerPlano = ::quitarPrimerPlano,
             )
             if (!enPrimerPlano) {
-                stopSelf()
+                stopSelf(startId)
                 return@launch
             }
             if (bucle?.isActive != true) bucle = alcance.launch {
-                while (true) {
-                    val sigue = try {
-                        seguimiento.tomarUno()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.w("ServicioDeUbicacion", "lectura del turno", e)
-                        true
-                    }
-                    if (!sigue) break
-                    delay(CADA_MS)
-                }
-                stopSelf()
+                correrBucle(seguimiento::tomarUno, arranques = { arranques }) { delay(CADA_MS) }
+                stopSelf(ultimoStartId)
             }
         }
         return START_STICKY

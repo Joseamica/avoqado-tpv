@@ -18,6 +18,7 @@ import com.jaac.avoqado_campo.gps.reanudarSiHayTurno
 import com.jaac.avoqado_campo.identidad.Arranque
 import com.jaac.avoqado_campo.identidad.BorradoDelCelular
 import com.jaac.avoqado_campo.identidad.QuienSoy
+import com.jaac.avoqado_campo.identidad.RelojAnclado
 import com.jaac.avoqado_campo.latido.Latido
 import com.jaac.avoqado_campo.red.Conectividad
 import com.jaac.avoqado_campo.ui.Navegacion
@@ -49,6 +50,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var revisor: RevisorDeVersion
     @Inject lateinit var actualizador: Actualizador
     @Inject lateinit var copia: RepositorioDeCopia
+    @Inject lateinit var reloj: RelojAnclado
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -58,7 +60,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         // Cada vez que la app queda al frente (también al cerrar el diálogo de un permiso): reintentar el GPS del turno.
-        cadaVezAlFrente { withContext(Dispatchers.IO) { intentar("GPS del turno") { reanudarSiHayTurno(gps, dao, quienSoy) } } }
+        cadaVezAlFrente { withContext(Dispatchers.IO) { intentar("GPS del turno") { reanudarSiHayTurno(gps, dao, quienSoy, reloj.ahora().epochMs) } } }
         // Mientras se ve (aunque pierda el foco en pantalla dividida): el latido y la versión nueva al abrir y cada 5 min
         // (Latido no manda más de 1/min; la versión se pregunta cada 30 min como mucho).
         cadaVezVisible {

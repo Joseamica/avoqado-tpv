@@ -618,6 +618,15 @@ class PaymentSyncWorker @AssistedInject constructor(
             retryCount = retryCount,
             error = error,
         )
+        // Encargo 29ef3d: cuántos intentos lleva la venta al volver a la fila (con el tope, pasa a revisión).
+        Timber.i(
+            "🔁 [Payment Sync] Vuelve a la fila | ref=%s | intentos=%d/%d (antes %d) | %s",
+            payment.referenceNumber,
+            retryCount,
+            com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity.MAX_RETRY_ATTEMPTS,
+            payment.retryCount,
+            error,
+        )
         if (affected == 0) {
             Timber.w(
                 "⚠️ [Payment Sync] release() no afectó filas | ref=%s | queueId=%d | " +

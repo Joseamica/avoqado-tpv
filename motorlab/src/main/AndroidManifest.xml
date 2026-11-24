@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Motor de cobro · laboratorio (bloque 4-L · L-a): sólo la PAX del laboratorio, contra el sandbox de Blumon.
+     El AAR de Blumon agrega sus propios permisos (almacenamiento, instalar, PRINTER, UPDATE_APP): se dejan hasta que L-c mida
+     si su SDK los usa. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- ConnectivityManager (la red del motor, L-c). No lo traen las bibliotecas de PAX ni los AAR de Blumon. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="com.pax.permission.MAGCARD" />
+    <uses-permission android:name="com.pax.permission.ICC" />
+    <uses-permission android:name="com.pax.permission.PICC" />
+    <uses-permission android:name="com.pax.permission.PED" />
+
+    <application
+        android:name="com.avoqado.motorlab.AppDelLaboratorio"
+        android:allowBackup="false"
+        android:label="Motor de cobro · laboratorio"
+        android:networkSecurityConfig="@xml/network_security_config">
+        <!-- La puerta abre com.jaac.avoqado_tpv.MainActivity en todo paquete sandbox (abrir-tpv). -->
+        <activity
+            android:name="com.jaac.avoqado_tpv.MainActivity"
+            android:exported="true"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

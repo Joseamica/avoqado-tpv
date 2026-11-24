@@ -15,7 +15,9 @@ import com.avoqado.cobropropio.dominio.Origen
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -91,14 +93,15 @@ class LibretaTest {
 
     private fun IntentoEntity.id() = AttemptId(attemptId)
 
-    private fun enviada(l: Libreta, v: IntentoEntity = venta()): IntentoEntity {
+    /** Bloque 1b · fila 11: cada venta enviada con su propia lectura (el folio, único); `lectura` la fija a propósito. */
+    private fun enviada(l: Libreta, v: IntentoEntity = venta(), lectura: String = v.attemptId): IntentoEntity {
         assertTrue(l.anotar(v))
-        assertTrue(l.marcarEnviado(v.id(), reloj, datos()))
+        assertTrue(l.marcarEnviado(v.id(), reloj, datos(huellaLectura = lectura)))
         return v
     }
 
-    private fun aprobada(l: Libreta, v: IntentoEntity = venta()): IntentoEntity {
-        enviada(l, v)
+    private fun aprobada(l: Libreta, v: IntentoEntity = venta(), lectura: String = v.attemptId): IntentoEntity {
+        enviada(l, v, lectura)
         assertEquals(Arbitraje.Vigente, l.guardarAprobacion(v.id(), 1_234_567, "A1B2C3"))
         return v
     }
@@ -116,6 +119,9 @@ class LibretaTest {
     }
 
     private val ksn = "FFFF9876543210E00000".hexABytes()
+
+    /** Un id con la forma vieja (el UUID de 36 con guiones): Room lo lee, `AttemptId` lo rechaza. */
+    private val ID_DE_36 = "0f8fad5b-d9cb-469f-a165-b0867728950e"
 
     // ---- anotar y la base ----
 
@@ -415,6 +421,44 @@ class LibretaTest {
         assertEquals(ResultadoParaReportar.PUDO_ENTRAR, f.resultadoParaReportar)
         assertEquals("TX_007", f.ultimoCodigoReverso)
         assertEquals(EstadoDelIntento.NO_SE, f.estado)
+    }
+
+    /** Bloque 1b · fila 14: lo que promete el KDoc (`IntentoEntity.pudoEntrar`, «sólo sube») vale para TODO escritor. */
+    @Test fun `transicionar no baja pudoEntrar`() {
+        val l = libreta()
+        val v = reclamada(l)
+        assertTrue(l.cerrarVuelta(v.id(), ClaseDelReverso.Reintentar("68", false, pared), null, null))
+        val antes = l.buscar(v.id())!!
+        assertTrue(antes.pudoEntrar)
+        val e = runCatching { l.transicionar(v.id(), EstadoDelIntento.ENVIADO) { it.copy(pudoEntrar = false) } }.exceptionOrNull()
+        assertTrue("$e", e is IllegalStateException)
+        assertEquals("la fila no cambia", antes, l.buscar(v.id()))
+        // Copiarlo (o subirlo) sí se puede.
+        assertNotNull(l.transicionar(v.id(), EstadoDelIntento.ENVIADO) { it.copy(estado = EstadoDelIntento.NO_SE) })
+        assertTrue(l.buscar(v.id())!!.pudoEntrar)
+    }
+
+    /** Bloque 1b · fila 14: la base DUKPT, el contador usado y la huella de la lectura se escriben UNA vez (al salir). */
+    @Test fun `ksnBase contadorUsado y huellaLectura se fijan una vez`() {
+        val l = libreta()
+        val v = enviada(l)
+        val antes = l.buscar(v.id())!!
+        val cambios = listOf<(IntentoEntity) -> IntentoEntity>(
+            { it.copy(ksnBase = null) },
+            { it.copy(ksnBase = "FFFF9876543210A00000") },
+            { it.copy(contadorUsado = null) },
+            { it.copy(contadorUsado = 1) },
+            { it.copy(huellaLectura = null) },
+            { it.copy(huellaLectura = "c".repeat(64)) },
+        )
+        for ((i, cambio) in cambios.withIndex()) {
+            val e = runCatching { l.transicionar(v.id(), EstadoDelIntento.ENVIADO, cambio) }.exceptionOrNull()
+            assertTrue("cambio $i: $e", e is IllegalStateException)
+            assertEquals("cambio $i: la fila no cambia", antes, l.buscar(v.id()))
+        }
+        // Volver a escribir el MISMO valor sí se puede (todo escritor copia la fila).
+        assertNotNull(l.transicionar(v.id(), EstadoDelIntento.ENVIADO) { it.copy(estado = EstadoDelIntento.NO_SE) })
+        assertEquals(antes.contadorUsado, l.buscar(v.id())!!.contadorUsado)
     }
 
     @Test fun `cerrar vuelta desde NO_CONCLUYENTE al techo`() {
@@ -774,15 +818,44 @@ class LibretaTest {
 
     @Test fun `marcar cancelacion enviada rechaza lectura igual a la de la venta`() {
         val l = libreta()
-        val original = aprobada(l)
+        val original = aprobada(l, lectura = lecturaDeLaVenta)
         val c = cancelacionDe(original)
         assertEquals(ResultadoDeAnotarCancelacion.Anotada, l.anotarCancelacion(c, original.ambito()))
         assertEquals(ResultadoDeEnviarCancelacion.LecturaRepetida, l.marcarCancelacionEnviada(c.id(), reloj, datos(huellaLectura = lecturaDeLaVenta)))
         assertEquals(ResultadoDeEnviarCancelacion.OtraTarjeta, l.marcarCancelacionEnviada(c.id(), reloj, datos(huellaTarjeta = "e".repeat(64), huellaLectura = "c".repeat(64))))
-        assertFalse(l.marcarEnviado(c.id(), reloj, datos(huellaLectura = "c".repeat(64)))) // una cancelación no se salta las revisiones
+        assertFalse(l.marcarEnviado(c.id(), reloj, datos(huellaLectura = lecturaDeLaVenta))) // una cancelación no se salta las revisiones, ni con una lectura repetida
         assertEquals(EstadoDelIntento.ANOTADO, l.buscar(c.id())!!.estado)
         assertTrue(l.vetarPorCorte(c))
         assertEquals(ResultadoDeEnviarCancelacion.YaNoAplica, l.marcarCancelacionEnviada(c.id(), reloj, datos(huellaLectura = "c".repeat(64))))
+    }
+
+    /** Bloque 1b · fila 11 (R15-2): una lectura que ya salió en OTRA fila (venta o cancelación), o sin huella, no sale en una VENTA. */
+    @Test fun `marcarEnviado de una venta con la lectura de otra fila no sale`() {
+        val l = libreta()
+        val primera = aprobada(l, lectura = lecturaDeLaVenta)
+        val c = cancelacionDe(primera)
+        assertEquals(ResultadoDeAnotarCancelacion.Anotada, l.anotarCancelacion(c, primera.ambito()))
+        assertEquals(ResultadoDeEnviarCancelacion.Enviada, l.marcarCancelacionEnviada(c.id(), reloj, datos(huellaLectura = "c".repeat(64))))
+        val laPrimera = l.buscar(primera.id())
+        val laCancelacion = l.buscar(c.id())
+        for (repetida in listOf<String?>(lecturaDeLaVenta, "c".repeat(64), null)) {
+            val v = venta()
+            assertTrue(l.anotar(v))
+            assertFalse("$repetida", l.marcarEnviado(v.id(), reloj, datos().copy(huellaLectura = repetida)))
+            val f = l.buscar(v.id())!!
+            assertEquals("$repetida", EstadoDelIntento.NO_SALIO, f.estado)
+            assertEquals("$repetida", MotivoNoSalio.LECTURA_REPETIDA, f.motivoNoSalio)
+            assertNull("$repetida", f.huellaLectura)
+            assertNull("$repetida", f.enviadoEnMs)
+            assertFalse("$repetida: el folio es de un solo uso", l.marcarEnviado(v.id(), reloj, datos(huellaLectura = "e".repeat(64))))
+        }
+        assertEquals("la otra venta no cambia", laPrimera, l.buscar(primera.id()))
+        assertEquals("la cancelación no cambia", laCancelacion, l.buscar(c.id()))
+        // La misma tarjeta con una lectura NUEVA sí sale.
+        val nueva = venta()
+        assertTrue(l.anotar(nueva))
+        assertTrue(l.marcarEnviado(nueva.id(), reloj, datos(huellaLectura = "d".repeat(64))))
+        assertEquals(EstadoDelIntento.ENVIADO, l.buscar(nueva.id())!!.estado)
     }
 
     /** Mete la fila directo en la tabla, sin las revisiones de la libreta: el CAS de envío tiene que volver a revisar. */
@@ -833,5 +906,154 @@ class LibretaTest {
         insertarDirecto(l, deOtraCaja)
         assertEquals(ResultadoDeEnviarCancelacion.OtroAmbito, l.marcarCancelacionEnviada(deOtraCaja.id(), reloj, datos(huellaLectura = "c".repeat(64))))
         assertEquals(EstadoDelIntento.ANOTADO, l.buscar(deOtraCaja.id())!!.estado)
+    }
+
+    // ---- I3: la fila ilegible (fase 3, bloque 1) ----
+
+    /** I3: una fila ilegible se salta y NO se toca; las demás se cierran como siempre. Nunca se traduce a un desenlace. */
+    @Test fun `una fila ilegible no detiene la recuperacion de las demas`() {
+        var l = libreta()
+        val enumRaro = enviada(l)
+        val idViejo = enviada(l)
+        val buena = enviada(l)
+        val sql = l.db.openHelper.writableDatabase
+        sql.execSQL("UPDATE intentos SET marca = 'DISCOVER' WHERE attemptId = ?", arrayOf(enumRaro.attemptId))
+        sql.execSQL("UPDATE intentos SET attemptId = ? WHERE attemptId = ?", arrayOf(ID_DE_36, idViejo.attemptId))
+        l = reabrir(l, proceso = UUID.randomUUID().toString())
+        assertEquals(listOf(buena.attemptId), l.recuperarAlArrancar { emptyList() }.map { it.valor })
+        assertEquals(EstadoDelIntento.NO_SE, l.buscar(buena.id())!!.estado)
+        for (id in listOf(enumRaro.attemptId, ID_DE_36)) {
+            l.db.openHelper.readableDatabase.query("SELECT estado FROM intentos WHERE attemptId = ?", arrayOf(id)).use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("la ilegible no se toca", "ENVIADO", c.getString(0))
+            }
+        }
+    }
+
+    /** Codex r3 #3 (vara 2): el punto único. Una fila que Room lee pero que no pasa la validación ni se entrega ni se escribe. */
+    @Test fun `una fila que no pasa la validacion no se lee ni se escribe`() {
+        val l = libreta()
+        val v = aprobada(l)
+        l.db.openHelper.writableDatabase.execSQL(
+            "UPDATE intentos SET operationNumber = 99999999999 WHERE attemptId = ?", arrayOf(v.attemptId), // fuera de 1..9_999_999_999
+        )
+        val antes = cruda(l, v.attemptId)
+        reloj += 1 // una escritura cambiaría `actualizadoEnMs`
+        assertThrows(FilaIlegible::class.java) { l.buscar(v.id()) }
+        assertThrows(FilaIlegible::class.java) { l.transicionar(v.id(), EstadoDelIntento.APROBADO) { it.copy(estado = EstadoDelIntento.NO_SE) } }
+        assertThrows(FilaIlegible::class.java) { l.vetarPorCorte(v) }
+        assertEquals("la fila ilegible no se toca", antes, cruda(l, v.attemptId))
+    }
+
+    /** La fila tal como está en la tabla, columna por columna, sin pasar por Room ni por la validación. */
+    private fun cruda(l: Libreta, id: String): List<String?> =
+        l.db.openHelper.readableDatabase.query("SELECT * FROM intentos WHERE attemptId = ?", arrayOf(id)).use { c ->
+            assertTrue(c.moveToFirst())
+            (0 until c.columnCount).map { c.getString(it) }
+        }
+
+    /** I3: una cancelación HERMANA que Room lee pero no pasa la validación hace tronar las dos revisiones que las recorren. */
+    @Test fun `una cancelacion hermana que no pasa la validacion hace tronar anotar y enviar la cancelacion`() {
+        val l = libreta()
+        val original = aprobada(l)
+        val c = cancelacionDe(original)
+        assertEquals(ResultadoDeAnotarCancelacion.Anotada, l.anotarCancelacion(c, original.ambito()))
+        // Sin la validación, esta hermana cerrada no vetaría nada y `c` saldría al banco.
+        insertarDirecto(
+            l,
+            cancelacionDe(original).copy(attemptId = ID_DE_36, estado = EstadoDelIntento.NO_SALIO, motivoNoSalio = MotivoNoSalio.OTRA_TARJETA),
+        )
+        val antes = cruda(l, c.attemptId)
+        reloj += 1
+        assertThrows(FilaIlegible::class.java) { l.marcarCancelacionEnviada(c.id(), reloj, datos(huellaLectura = "c".repeat(64))) }
+        val otra = cancelacionDe(original)
+        assertThrows(FilaIlegible::class.java) { l.anotarCancelacion(otra, original.ambito()) }
+        assertEquals(antes, cruda(l, c.attemptId))
+        l.db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM intentos WHERE attemptId = ?", arrayOf(otra.attemptId)).use {
+            assertTrue(it.moveToFirst())
+            assertEquals("la transacción que tronó no deja fila", 0, it.getInt(0))
+        }
+    }
+
+    @Test fun `la salud cuenta avisos pendientes, el mas viejo, los sin hora y las filas ilegibles`() {
+        val l = libreta()
+        assertEquals(SaludDeLaLibreta(0, null, 0, 0), l.salud())
+        val viejo = pared
+        // C4 (Codex b1 r1): el aviso más viejo NO se inserta primero (las filas se recorren por rowid).
+        val nuevo = viejo.plusSeconds(60)
+        val b = reclamada(l)
+        assertTrue(l.cerrarVuelta(b.id(), ClaseDelReverso.Confirmado(nuevo), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
+        val a = reclamada(l)
+        assertTrue(l.cerrarVuelta(a.id(), ClaseDelReverso.Confirmado(viejo), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
+        val c = reclamada(l)
+        assertTrue(l.cerrarVuelta(c.id(), ClaseDelReverso.Confirmado(nuevo), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
+        val sql = l.db.openHelper.writableDatabase
+        sql.execSQL("UPDATE intentos SET horaObservadaIso = NULL WHERE attemptId = ?", arrayOf(c.attemptId))
+        // C4: una hora que no se puede leer cuenta como «sin hora», sin tronar.
+        val d = reclamada(l)
+        assertTrue(l.cerrarVuelta(d.id(), ClaseDelReverso.Confirmado(nuevo), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
+        sql.execSQL("UPDATE intentos SET horaObservadaIso = 'no es una hora' WHERE attemptId = ?", arrayOf(d.attemptId))
+        // C4: una fila legible abierta (ENVIADO) SIN aviso pendiente no es un aviso.
+        enviada(l)
+        // Las tres ilegibles: enum desconocido, id de 36, y un reverso abierto (RECLAMADO) de una fila NO_SE con valor desconocido.
+        val enumRaro = enviada(l)
+        sql.execSQL("UPDATE intentos SET marca = 'DISCOVER' WHERE attemptId = ?", arrayOf(enumRaro.attemptId))
+        val idViejo = enviada(l)
+        sql.execSQL("UPDATE intentos SET attemptId = ? WHERE attemptId = ?", arrayOf(ID_DE_36, idViejo.attemptId))
+        val reversoRaro = reclamada(l)
+        assertNotNull(l.transicionar(reversoRaro.id(), EstadoDelIntento.ENVIADO) { it.copy(estado = EstadoDelIntento.NO_SE) })
+        sql.execSQL("UPDATE intentos SET reverso = 'DESCONOCIDO' WHERE attemptId = ?", arrayOf(reversoRaro.attemptId))
+        assertEquals(
+            SaludDeLaLibreta(reportesPendientes = 4, reportePendienteMasViejo = viejo, reportesSinHora = 2, filasIlegibles = 3),
+            l.salud(),
+        )
+    }
+
+    /**
+     * m1 (revisión final): el listado de avisos es sólo de ids y cada fila se lee después, aparte. Un aviso que alguien cierra
+     * entre el listado y su lectura (aquí, justo antes de leer su fila) ya no se entrega.
+     */
+    @Test fun `un aviso que se cierra entre el listado y su lectura no se entrega`() {
+        var cerrarAntesDeLeer: String? = null
+        lateinit var base: LibretaDatabase
+        base = LibretaDatabase.constructor(context, archivo).allowMainThreadQueries()
+            .setQueryCallback({ sql, _ ->
+                val id = cerrarAntesDeLeer
+                if (id != null && "WHERE rowid" in sql) {
+                    cerrarAntesDeLeer = null
+                    base.openHelper.writableDatabase.execSQL("UPDATE intentos SET reporte = 'ENTREGADO' WHERE attemptId = ?", arrayOf(id))
+                }
+            }, Runnable::run)
+            .build().also { abiertas += it }
+        val l = Libreta(base, { reloj }, { pared })
+        val a = reclamada(l)
+        assertTrue(l.cerrarVuelta(a.id(), ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
+        val b = reclamada(l)
+        assertTrue(l.cerrarVuelta(b.id(), ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
+        assertEquals(listOf(a.attemptId, b.attemptId), l.pendientesDeReporte().map { it.attemptId })
+        cerrarAntesDeLeer = a.attemptId
+        assertEquals(listOf(b.attemptId), l.pendientesDeReporte().map { it.attemptId })
+        assertEquals("el aviso sí se cerró", EstadoDelReporte.ENTREGADO, l.buscar(a.id())!!.reporte)
+    }
+
+    /** Codex r4 #3: Room pone el valor crudo en su mensaje; el lector lanza un error de mensaje fijo, sin la excepción original. */
+    @Test fun `el error de una fila ilegible no trae el valor danado`() {
+        val l = libreta()
+        val v = enviada(l)
+        l.db.openHelper.writableDatabase.execSQL("UPDATE intentos SET marca = 'VALORDANADO' WHERE attemptId = ?", arrayOf(v.attemptId))
+        val e = assertThrows(FilaIlegible::class.java) { l.buscar(v.id()) }
+        assertEquals("fila ilegible", e.message)
+        assertNull(e.cause)
+        assertFalse(e.toString(), "VALORDANADO" in e.toString())
+    }
+
+    /** D3: la consulta del veto es SQL (no lee filas) y sólo cuenta el proceso actual. Pasa hoy: fija la decisión. */
+    @Test fun `una fila ilegible de otro proceso no veta la renovacion de llaves`() {
+        var l = libreta()
+        val v = enviada(l)
+        l.db.openHelper.writableDatabase.execSQL("UPDATE intentos SET marca = 'DISCOVER' WHERE attemptId = ?", arrayOf(v.attemptId))
+        val nuevo = UUID.randomUUID().toString()
+        l = reabrir(l, proceso = nuevo)
+        assertFalse(l.hayIntentosQuePuedenNecesitarReverso(nuevo, reloj, 45_000))
     }
 }

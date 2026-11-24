@@ -31,3 +31,4 @@ include(":commonlib")
 include(":emv")
 include(":campo")
 include(":cobropropio")
+include(":motorlab") // app de laboratorio del motor de cobro (bloque 4-L): sólo la PAX del laboratorio, nunca un negocio

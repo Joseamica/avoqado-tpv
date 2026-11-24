@@ -19,7 +19,7 @@ internal fun normalizarCodigo(crudo: String): String? {
  * normalizado ⇒ leyenda para la terminal. Las filas `BP` (y las que traen un código de Blumon) se indexan por ese código;
  * las demás por su ISO. Si un código se repite, gana la primera fila.
  */
-class CatalogoDeRechazos internal constructor(private val leyendas: Map<String, String>) {
+internal class CatalogoDeRechazos internal constructor(private val leyendas: Map<String, String>) {
 
     fun leyenda(codigo: String): String? = leyendas[codigo]
 

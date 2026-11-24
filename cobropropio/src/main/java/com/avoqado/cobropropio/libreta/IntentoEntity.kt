@@ -14,18 +14,18 @@ import com.avoqado.cobropropio.dominio.Origen
  * La conciliación del gerente NO es de la fase 2 (parada 2): la evidencia tardía y la del parcial sólo se guardan y nunca
  * promueven el estado. Por eso no hay `APROBADO_PARCIAL`.
  */
-enum class EstadoDelIntento { ANOTADO, ENVIADO, APROBADO, RECHAZADO, NO_SALIO, NO_SE, NO_SE_COBRO, CANCELADA }
+public enum class EstadoDelIntento { ANOTADO, ENVIADO, APROBADO, RECHAZADO, NO_SALIO, NO_SE, NO_SE_COBRO, CANCELADA }
 
-enum class EstadoDelReverso { NINGUNO, COMPROMETIDO, RECLAMADO, CONFIRMADO, RECHAZADO, NO_CONCLUYENTE }
+public enum class EstadoDelReverso { NINGUNO, COMPROMETIDO, RECLAMADO, CONFIRMADO, RECHAZADO, NO_CONCLUYENTE }
 
-enum class EstadoDelReporte { NO_APLICA, PENDIENTE, ENTREGADO, CONCILIAR, FINAL_SIN_ENTREGAR }
+public enum class EstadoDelReporte { NO_APLICA, PENDIENTE, ENTREGADO, CONCILIAR, FINAL_SIN_ENTREGAR }
 
-enum class ResultadoParaReportar { CONFIRMADO, RECHAZADO, PUDO_ENTRAR }
+public enum class ResultadoParaReportar { CONFIRMADO, RECHAZADO, PUDO_ENTRAR }
 
-enum class OrigenDeLaAprobacion { BANCO, SERVIDOR }
+public enum class OrigenDeLaAprobacion { BANCO, SERVIDOR }
 
 /** Lo que el SERVIDOR dice del reverso en su acuse (la Tarea 6 traduce su respuesta a esto). */
-enum class EstadoDelReversoEnServidor { REVERSING, REVERSED, REVERSE_FAILED, REVERSE_UNCONFIRMED, CONTRADICTION }
+public enum class EstadoDelReversoEnServidor { REVERSING, REVERSED, REVERSE_FAILED, REVERSE_UNCONFIRMED, CONTRADICTION }
 
 /**
  * Una fila por intento (venta o cancelación). 🔴 Nunca PAN, banda, tags EMV, token ni llaves: sólo campos con forma
@@ -34,7 +34,7 @@ enum class EstadoDelReversoEnServidor { REVERSING, REVERSED, REVERSE_FAILED, REV
  */
 // Ola final · 3: `huellaLectura` lleva índice porque `LibretaDao.existeLectura` la busca en cada cancelación.
 @Entity(tableName = "intentos", indices = [Index("operacionOriginal"), Index("reporte"), Index("huellaLectura")])
-data class IntentoEntity(
+public data class IntentoEntity(
     @PrimaryKey val attemptId: String,
     val operacion: Operacion,
     val venueId: String,
@@ -97,5 +97,5 @@ data class IntentoEntity(
     val actualizadoEnMs: Long = 0,
 ) {
     /** El mismo formato que `Identidad.ambito()`. */
-    fun ambito(): String = "$posId|$serieBlumon|$ambiente"
+    public fun ambito(): String = "$posId|$serieBlumon|$ambiente"
 }

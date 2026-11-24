@@ -15,6 +15,8 @@ import com.jaac.avoqado_tpv.core.util.NetworkStatus
 import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund
 import com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
+import com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion
+import com.jaac.avoqado_tpv.features.permissions.presentation.override.AutorizacionDeGerente
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import com.jaac.avoqado_tpv.features.shift.data.repository.PaginaPagosDelCierre
 import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationAction
@@ -76,6 +78,8 @@ class ShiftViewModel @Inject constructor(
     private val refundQueueRepository: RefundQueueRepository,
     /** El MISMO estado que pinta el aviso rojo («Sin conexión al servidor»): lo escribe el latido (D13). */
     private val connectionStateManager: ConnectionStateManager,
+    /** D24: sin `tpv-shifts:create`, abrir o usar la caja pide el PIN de un cajero o gerente (el diálogo lo pinta AppNavigation). */
+    private val autorizacionDeGerente: AutorizacionDeGerente,
 ) : ViewModel() {
 
     /**
@@ -483,10 +487,8 @@ class ShiftViewModel @Inject constructor(
         gestosDePantalla.incrementAndGet()
         solicitudesDeCierre.incrementAndGet()
         viewModelScope.launch {
-            if (!_canOpenShift.value) {
-                _state.value = ShiftState.Error("No tienes permiso para abrir la caja.\n\nContacta a tu administrador.")
-                return@launch
-            }
+            // D24: sin permiso ya no es un callejón: un cajero, gerente o el dueño pone su PIN (como Square).
+            if (!_canOpenShift.value && abrirConPinDeGerente(startingCash)) return@launch
 
             _state.value = ShiftState.Loading
 
@@ -521,6 +523,45 @@ class ShiftViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * D24 (N86 de Testarudo, 22-nov): quien está dentro no tiene `tpv-shifts:create` (Cocina). Antes «Abrir nueva caja» quedaba en
+     * gris y la terminal se quedaba sin salida; ahora pide el PIN de un cajero, gerente o del dueño, que es lo que hace Square.
+     * El PIN necesita internet y su token es de un solo uso: la caja se abre en línea. Si el negocio tiene el PIN apagado, se
+     * dice a quién pedírselo. Devuelve false sólo si resultó que el permiso sí está (se abre como siempre).
+     */
+    private suspend fun abrirConPinDeGerente(startingCash: Double): Boolean {
+        val venueId = secureStorage.getVenueId()
+        val staffId = secureStorage.getStaffId()
+        if (venueId == null || staffId == null) {
+            _state.value = ShiftState.Error("Información de sesión incompleta")
+            return true
+        }
+        val epoch = gestosDePantalla.get()
+        // Sin el token a propósito (Codex r1 #6): validar el PIN puede renovar la sesión (401 → token nuevo) y eso no descarta un PIN
+        // bueno. La sesión y la sucursal las vuelve a revisar el repositorio al guardar.
+        fun vigente() = secureStorage.getVenueId() == venueId && secureStorage.getStaffId() == staffId && gestosDePantalla.get() == epoch
+        val auth = autorizacionDeGerente.paraPermiso(venueId, PERMISO_ABRIR, PERMISO_ABRIR, MOTIVO_PIN_ABRIR)
+        if (!vigente()) return true
+        val pin = when (auth) {
+            Autorizacion.NoHaceFalta -> return false
+            Autorizacion.Cancelada -> return true
+            is Autorizacion.Negada -> { _state.value = ShiftState.Error(TEXTO_SIN_PERMISO_DE_ABRIR); return true }
+            is Autorizacion.ConPin -> auth.token
+        }
+        _state.value = ShiftState.Loading
+        val result = shiftRepository.abrirCajaConPin(venueId, staffId, BigDecimal.valueOf(startingCash), pin)
+        if (!vigente()) return true
+        when (result) {
+            is Result.Success -> {
+                acknowledgedLocalSessionId = null
+                publishShift(result.data, emptyList())
+                loadCurrentShift()
+            }
+            is Result.Error -> _state.value = ShiftState.Error(translateError(result.exception))
+        }
+        return true
     }
 
     /**
@@ -794,7 +835,12 @@ class ShiftViewModel @Inject constructor(
         val epoch = gestosDePantalla.incrementAndGet()
         solicitudesDeCierre.incrementAndGet()
         viewModelScope.launch {
-            if (!permissionsRepository.hasPermission("tpv-shifts:create")) return@launch
+            // D24: ya no queda en gris; sin permiso dice a quién pedírselo. Sin PIN a propósito (Codex r1 #5): usar la caja vinculada
+            // es un gesto sólo de este aparato, y el token del PIN no se gastaría en el servidor ni quedaría atado a esa caja.
+            if (!permissionsRepository.hasPermission(PERMISO_ABRIR)) {
+                if (gestosDePantalla.get() == epoch) _state.value = ShiftState.Error(TEXTO_SIN_PERMISO_DE_USAR)
+                return@launch
+            }
             if (gestosDePantalla.get() != epoch || secureStorage.getVenueId() != venue ||
                 secureStorage.getStaffId() != staff || secureStorage.getToken() != token) return@launch
             when (val result = shiftRepository.adoptarCajaRemotaParaNuevosGestos(venue, source.session.localSessionId)) {
@@ -840,7 +886,7 @@ class ShiftViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 if (!permissionsRepository.hasPermission("shifts:read")) {
-                    if (vigente()) _localReview.value = owner.copy(busy = false, error = "No tienes permiso para consultar esta caja.")
+                    if (vigente()) _localReview.value = owner.copy(busy = false, error = TEXTO_SIN_PERMISO_DE_REVISAR)
                     return@launch
                 }
                 if (!vigente()) return@launch
@@ -1039,6 +1085,16 @@ class ShiftViewModel @Inject constructor(
         }
     }
 }
+
+/** D24: el permiso de abrir la caja de ESTA terminal (mismo nombre exacto que el SERVIDOR). */
+private const val PERMISO_ABRIR = "tpv-shifts:create"
+private const val MOTIVO_PIN_ABRIR = "Tu puesto no puede abrir la caja. Un cajero, gerente o el dueño pone su PIN para abrirla."
+internal const val TEXTO_SIN_PERMISO_DE_USAR = "Tu puesto no puede cambiar de caja. Pide a un cajero, gerente o al dueño que entre y la use."
+/** D24: el negocio tiene el PIN de gerente apagado: se dice a quién pedírselo, en vez de dejar el botón en gris. */
+internal const val TEXTO_SIN_PERMISO_DE_ABRIR = "Tu puesto no puede abrir la caja. Pide a un cajero, gerente o al dueño que entre y la abra."
+/** D24: lo que dice la pantalla bajo «Abrir caja» cuando el puesto no puede abrirla. */
+internal const val TEXTO_PIN_PARA_ABRIR = "Tu puesto no puede abrir la caja: un cajero, gerente o el dueño pondrá su PIN."
+internal const val TEXTO_SIN_PERMISO_DE_REVISAR = "Tu puesto no puede revisar la caja. Pide a un cajero, gerente o al dueño que entre y la revise."
 
 // ══════════════════════════════════════════════════════════════════════
 // STATE DEFINITIONS

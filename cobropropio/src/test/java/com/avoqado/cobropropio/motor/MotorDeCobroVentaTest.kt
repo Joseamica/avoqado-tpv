@@ -36,6 +36,7 @@ import com.avoqado.cobropropio.dominio.Red
 import com.avoqado.cobropropio.dominio.ResultadoDeLectura
 import com.avoqado.cobropropio.dominio.SolicitudDeVenta
 import com.avoqado.cobropropio.fixtures.LecturasDePrueba
+import com.avoqado.cobropropio.fixtures.LecturasDePrueba.toque
 import com.avoqado.cobropropio.libreta.DatosDelEnvio
 import com.avoqado.cobropropio.libreta.EstadoDelIntento
 import com.avoqado.cobropropio.libreta.EstadoDelReporte
@@ -130,7 +131,7 @@ class MotorDeCobroVentaTest {
     private class LectorFalso : LectorDeTarjeta {
         var lecturas = 0
         var demora = 1_000L
-        var resultado: (Long) -> ResultadoDeLectura = { ResultadoDeLectura.Leida(LecturasDePrueba.visaPlasticoVenta(it)) }
+        var resultado: (Long) -> ResultadoDeLectura = { ResultadoDeLectura.Leida(LecturasDePrueba.visaPlasticoVenta(it).toque(lecturas)) }
 
         override suspend fun leer(operacion: Operacion, importeCentavos: Long, espera: Long): ResultadoDeLectura {
             lecturas++
@@ -280,6 +281,11 @@ class MotorDeCobroVentaTest {
             assertTrue(libreta.anotar(entidad(s, posId)))
             if (cambio != null) assertNotNull(libreta.transicionar(s.id, EstadoDelIntento.ANOTADO, cambio))
         }
+
+        /** Deja la fila con [estado] y un folio bancario fuera de rango: Room la lee, `validar` no la pasa. */
+        fun danar(s: SolicitudDeVenta, estado: String) = db.openHelper.writableDatabase.execSQL(
+            "UPDATE intentos SET estado = ?, operationNumber = 99999999999 WHERE attemptId = ?", arrayOf(estado, s.id.valor),
+        )
     }
 
     private fun entidad(s: SolicitudDeVenta, posId: String = identidad.posId) = IntentoEntity(
@@ -1558,6 +1564,20 @@ class MotorDeCobroVentaTest {
         assertTrue(blumon.ventas.isEmpty())
     }
 
+    /** Bloque 1b · fila 11: el lector repite la lectura de la venta anterior ⇒ la venta no sale y su fila dice por qué. */
+    @Test fun `una venta con la lectura de la venta anterior no sale`() = prueba {
+        lector.resultado = { ResultadoDeLectura.Leida(LecturasDePrueba.visaPlasticoVenta(it)) } // un lector que repite: sin toque
+        assertEquals(APROBADO_VISA, terminal(solicitud()))
+        val s = solicitud()
+        assertEquals(noSalio(MotivoNoSalio.LECTURA_REPETIDA), terminal(s))
+        assertEquals(1, blumon.ventas.size)
+        assertEquals(2, lector.lecturas)
+        assertEquals(EstadoDelIntento.NO_SALIO, fila(s).estado)
+        assertEquals(MotivoNoSalio.LECTURA_REPETIDA, fila(s).motivoNoSalio)
+        esperarTodo()
+        assertEquals("el folio contesta lo mismo", noSalio(MotivoNoSalio.LECTURA_REPETIDA), terminal(s))
+    }
+
     // ───────────── Codex rama r1 ─────────────
 
     /**
@@ -1611,12 +1631,29 @@ class MotorDeCobroVentaTest {
             assertSame(a, Libreta.abrir(context, nombre))
             motorSobre(a)
             assertThrows(IllegalStateException::class.java) { motorSobre(Libreta.abrir(context, nombre)) }
+            // El segundo que tronó no soltó el dueño del primero: un tercero también truena.
+            assertThrows(IllegalStateException::class.java) { motorSobre(a) }
         } finally {
             a.cerrar()
         }
         val otra = Libreta.abrir(context, nombre) // cerrada, ya no se reusa
         assertNotSame(a, otra)
         otra.cerrar()
+    }
+
+    /** Revisión de la tarea 6: un constructor que truena (identidad sin forma) deja el dueño de la libreta como estaba. */
+    @Test fun `un motor que no se arma no toma el dueno de la libreta`() = prueba {
+        val l = Libreta.abrir(context, "sin-forma-${UUID.randomUUID()}.db")
+        fun motorCon(id: Identidad) = MotorDeCobro(
+            id, lector, red, blumon, servidor, l, ColaDeResultados(l, servidor, io), huella,
+            CatalogoDeRechazos.BLUMON, Relojes(), fondo, ahora, { pared }, io,
+        )
+        try {
+            assertThrows(IllegalArgumentException::class.java) { motorCon(identidad.copy(posId = "X")) }
+            motorCon(identidad)
+        } finally {
+            l.cerrar()
+        }
     }
 
     /** R1-5 (a): REVERSADA y la escritura de `cerrarVuelta` truena: el `catch` cierra la fila en el mejor esfuerzo. */
@@ -2518,5 +2555,50 @@ class MotorDeCobroVentaTest {
         assertEquals(noSalio(MotivoNoSalio.INTERRUMPIDO), motor.intentos[s.id]?.actual)
         assertEquals(noSalio(MotivoNoSalio.INTERRUMPIDO), terminal(s))
         assertTrue(blumon.ventas.isEmpty())
+    }
+
+    // ---- I3: los caminos que leen una fila para publicar (fase 3, bloque 1; r1 #5, r2 #5, r3 #3) ----
+
+    /** 1 · La consulta directa de un folio. */
+    @Test fun `la consulta de una fila que no pasa la validacion da por confirmar`() = prueba {
+        val s = solicitud()
+        filaDirecta(s) { it.copy(estado = EstadoDelIntento.APROBADO, operationNumber = 1_234_567) }
+        danar(s, "APROBADO")
+        assertEquals(listOf<EventoDeCobro>(PorConfirmar(s.importeCentavos)), cobrar(s).map { it.first })
+        assertEquals(0, lector.lecturas)
+    }
+
+    /** 2 · La reconsulta de un intento que sigue en memoria (una lápida en duda): el refresco desde la fila no publica nada. */
+    @Test fun `la reconsulta en memoria de una fila que no pasa la validacion no publica un desenlace`() = prueba {
+        blumon.venta = SILENCIO
+        servidor.acuse = { delay(600_000); guardado(EstadoDelReversoEnServidor.REVERSED) } // el acuse se atora: queda en duda
+        val s = solicitud()
+        assertEquals(PorConfirmar(s.importeCentavos), terminal(s))
+        prueba.advanceTimeBy(1_000)
+        assertEquals(true, motor.intentos[s.id]?.retirado)
+        danar(s, "APROBADO")
+        assertEquals(listOf<EventoDeCobro>(PorConfirmar(s.importeCentavos)), cobrar(s).map { it.first }) // dispara el refresco
+        prueba.advanceTimeBy(1_000)
+        assertTrue(tardiasDe(s).none { it is Aprobado })
+        assertEquals(PorConfirmar(s.importeCentavos), motor.intentos[s.id]?.actual)
+    }
+
+    /** 3 · El acuse tardío (después de soltar a la cajera): la fila se daña mientras llega; nunca publica «No se cobró». */
+    @Test fun `el acuse tardio no publica no se cobro desde una fila que no pasa la validacion`() = prueba {
+        blumon.venta = SILENCIO
+        val s = solicitud()
+        servidor.acuse = { delay(31_000); danar(s, "NO_SE_COBRO"); AcuseDelResultado.Reintentar } // llega después de la cajera
+        assertEquals(PorConfirmar(s.importeCentavos), terminal(s))
+        prueba.advanceTimeBy(60_000)
+        assertFalse(NoSeCobro in tardiasDe(s))
+        assertEquals(PorConfirmar(s.importeCentavos), motor.intentos[s.id]?.actual)
+    }
+
+    /** 4 · Codex r4 #2, salida «evento»: una fila APROBADO sin folio bancario ni id de pago nunca da «Aprobado». */
+    @Test fun `un aprobado sin folio ni pago da por confirmar`() = prueba {
+        val s = solicitud()
+        filaDirecta(s) { it.copy(estado = EstadoDelIntento.APROBADO, operationNumber = 1_234_567) }
+        db.openHelper.writableDatabase.execSQL("UPDATE intentos SET operationNumber = NULL WHERE attemptId = ?", arrayOf(s.id.valor))
+        assertEquals(listOf<EventoDeCobro>(PorConfirmar(s.importeCentavos)), cobrar(s).map { it.first })
     }
 }

@@ -77,6 +77,8 @@ data class Folio(
     val beneficios: List<BeneficioDeFolio> = emptyList(),
     /** S14: cuántas filas de descuento tiene la cuenta; si pasa de [beneficios], se dice «y N más». */
     val beneficiosTotal: Int = 0,
+    /** D661 (Ruling 36): «No lo recogió», «Devolviendo…» o «Devuelto»; null sin marca o con un SERVIDOR viejo. */
+    val marca: MarcaDeCierre? = null,
 ) {
     val totalCentavos: Long get() = total.centavos()
     val faltaCentavos: Long get() = falta.centavos()
@@ -87,6 +89,51 @@ data class Folio(
 }
 
 private fun BigDecimal.centavos(): Long = setScale(2, RoundingMode.HALF_UP).movePointRight(2).longValueExact()
+
+/** D661 (Ruling 36): cómo se cerró un pedido pagado en línea. Con cualquiera, ya no se ofrece «Listo» ni «Entregado». */
+enum class MarcaDeCierre(val texto: String) {
+    DEVUELTO("Devuelto"),
+    DEVOLVIENDO("Devolviendo…"),
+    NO_LO_RECOGIO("No lo recogió"),
+}
+
+/** Ruling 36: `refundedAt` > `refundRequestedAt` > `notPickedUpAt`. PURA. */
+fun marcaDeCierre(noLoRecogio: Boolean, devolviendo: Boolean, devuelto: Boolean): MarcaDeCierre? = when {
+    devuelto -> MarcaDeCierre.DEVUELTO
+    devolviendo -> MarcaDeCierre.DEVOLVIENDO
+    noLoRecogio -> MarcaDeCierre.NO_LO_RECOGIO
+    else -> null
+}
+
+/**
+ * D661: un pedido pagado con tarjeta en línea en «No, entran solos» que espera que una caja lo abra (abrirlo = cobrarlo; lo cobra el
+ * SERVIDOR, nunca el lector de esta terminal). [cobrando] = otra caja lo está cobrando ahora: no se abre otra vez.
+ */
+data class TarjetaPorAbrir(
+    val orderId: String,
+    val folio: String,
+    val nombre: String?,
+    /** En pesos, como lo manda el SERVIDOR. */
+    val total: BigDecimal,
+    val creadoEn: Instant?,
+    val cobrando: Boolean,
+)
+
+/** D661: un pedido cobrado cuya comanda falta (`comandasPorImprimir`); sus renglones se leen aparte. */
+data class ComandaPorImprimir(val orderId: String, val folio: String)
+
+/** Lo que dice la lista de un pagado en línea es de una lectura EN VIVO si llegó hace menos de esto (la ventana del SERVIDOR, 90 s). */
+const val EDAD_MAXIMA_PARA_AVISAR_MS = 90_000L
+
+/**
+ * D661 (Ruling 19): los pagados en línea que AVISAN (los que suenan y dicen el recuadro y la banda): sólo de una lectura en vivo —sin
+ * red, tras un 4xx o con la copia vieja, nada— y sin los que otra caja está cobrando. PURA.
+ */
+fun tarjetasQueAvisan(estado: EstadoDeFolios, ahoraMs: Long): List<TarjetaPorAbrir> {
+    val leidaEn = estado.actualizadoEnMs ?: return emptyList()
+    if (estado.sinConexion || estado.desactualizado || ahoraMs - leidaEn > EDAD_MAXIMA_PARA_AVISAR_MS) return emptyList()
+    return estado.tarjetasPorAbrir.filterNot { it.cobrando }
+}
 
 data class ConteoDeFolios(val porPagar: Int = 0, val porEntregar: Int = 0)
 
@@ -101,6 +148,10 @@ data class PaginaDeFolios(
     val porEntregar: List<Folio>,
     /** Cursor de la página siguiente de cada sección; sin llave = no hay más. */
     val siguientes: Map<SeccionDeFolios, String>,
+    /** D661: los pagados en línea por abrir (tope 50 del SERVIDOR, del más viejo al más nuevo). */
+    val tarjetasPorAbrir: List<TarjetaPorAbrir> = emptyList(),
+    /** D661: lo cobrado en línea cuya comanda falta (últimas 24 h, tope 50); no depende de la página. */
+    val comandasPorImprimir: List<ComandaPorImprimir> = emptyList(),
 )
 
 /**
@@ -123,4 +174,15 @@ data class EstadoDeFolios(
     val desactualizado: Boolean = false,
     /** El último «Cargar más» falló (se limpia en el siguiente intento). */
     val errorAlCargarMas: Boolean = false,
+    /** D661: los pagados en línea por abrir de la última lista buena (si avisan o no lo dice [tarjetasQueAvisan]). */
+    val tarjetasPorAbrir: List<TarjetaPorAbrir> = emptyList(),
+    /** D661 (Ruling 67): con turnos encendidos, esta terminal no tiene turno abierto: sigue sonando y el aviso dice cómo entrar. */
+    val sinTurno: Boolean = false,
+    /**
+     * D661 (Ruling 67): la checada es obligatoria y no hay entrada registrada (con o sin turno): igual, el aviso dice cómo entrar. Ronda 4:
+     * va antes que [sinTurno], como en el recuadro del Inicio.
+     */
+    val sinEntrada: Boolean = false,
+    /** D661 (Ruling 69): lo que ESTA terminal abrió y cuya comanda no salió aquí, mientras el SERVIDOR siga pidiendo su papel. */
+    val comandasSinSalir: List<ComandaPorImprimir> = emptyList(),
 )

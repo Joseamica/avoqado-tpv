@@ -256,8 +256,9 @@ y servidor. Incluir expresamente la celda «reembolso remoto mientras se está c
   En las rutas de pago, calificación, propina y selección de cuenta publican un intento activo:
   con esa bandera publicada, `AppNavigation` rechaza el remoto antes de autorizarlo. No afirmar
   que el paso 3 se abandona siempre. Fuera de esas rutas puede abrirse el cobro remoto:
-  `FastPaymentEntryScreen` guarda el monto con `remember`, por lo que puede perderlo al salir
-  de composición. En Checkout, la navegación por sí sola no demuestra pérdida del carrito:
+  desde D661 (Rulings 109 y 115) `FastPaymentEntryScreen` guarda el monto con su entrada
+  (`rememberSaveable`) y sólo «Cobrar» lo regresa a $0, así que si se vuelve a ESA entrada
+  (tras «Ver» o un cobro remoto encima) el monto sigue; sin acreditar en hardware. En Checkout, la navegación por sí sola no demuestra pérdida del carrito:
   su ViewModel y la entrada anterior pueden conservarlo. Probar las celdas 2, 3 y 9, incluidas
   las transiciones de la bandera y el regreso desde el cobro remoto, y decidir qué trabajo se
   conserva o qué solicitud nueva se rechaza. Estas celdas no están acreditadas en hardware.
@@ -333,8 +334,8 @@ y servidor. Incluir expresamente la celda «reembolso remoto mientras se está c
   POS sabe que está dormida.
 - 🔴 **En HEAD, el cobro remoto reemplaza la pantalla y el cancel manda al Inicio**: el carrito de Cobrar
   ($100) y el monto tecleado en Pago rápido ($75) se PERDIERON, medido en la N86 el 10-sep (celdas 2 y 9). El
-  árbol rechaza el remoto sólo con la bandera de intento activo publicada (ver arriba); fuera de esas rutas navega igual al cobro remoto encima de la pantalla actual (el monto de
-  `FastPaymentEntryScreen` se pierde en los dos por el `remember`), pero **no navega al Inicio al cancelar**
+  árbol rechaza el remoto sólo con la bandera de intento activo publicada (ver arriba); fuera de esas rutas navega igual al cobro remoto encima de la pantalla actual (en HEAD el monto de
+  `FastPaymentEntryScreen` se pierde por el `remember`; en el árbol se guarda con su entrada desde D661), pero **no navega al Inicio al cancelar**
   (`HomeViewModel.kt:1092`; el handler durable de `SocketManager` nunca navega), así que la pérdida del carrito
   medida en HEAD no está acreditada en el árbol — allí el defecto es el anterior: la terminal sigue pidiendo tarjeta.
   Qué trabajo se conserva sigue sin decidirse.

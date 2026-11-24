@@ -381,8 +381,32 @@ sealed class NavRoute(val route: String) {
          *
          * Vive aquí, con las rutas de verdad, para que una prueba pueda vigilarlo: dentro del
          * composable nadie lo alcanzaba. Ver `AvisoDeCobrosPendientes`.
+         *
+         * `by lazy` (D661): este companion se inicializa con la clase `NavRoute`, y la primera ruta que se toque
+         * inicializa antes a `NavRoute`. Si era una de las de este conjunto, su `INSTANCE` todavía era null y
+         * la clase entera fallaba (`ExceptionInInitializerError`). Perezoso, se arma ya con las rutas listas.
          */
-        val RUTAS_QUE_AVISAN_DE_COBROS_PENDIENTES: Set<String> =
+        val RUTAS_QUE_AVISAN_DE_COBROS_PENDIENTES: Set<String> by lazy {
             setOf(Home.route, FastPaymentEntry.route, Checkout.route)
+        }
+
+        /**
+         * D661 (Ruling 68, enmendado): donde la cajera NO puede usar la terminal, ni hay banda de los pedidos pagados en línea ni
+         * la caja se anuncia como «puedo avisar»: antes de la sesión (arranque, activación, entrada, checador) y el kiosco (legacy).
+         * El bloqueo y el mantenimiento de la app cuentan igual, pero no son rutas: los mira el vigía.
+         */
+        val RUTAS_SIN_AVISO_DE_PAGADOS_EN_LINEA: Set<String> by lazy {
+            setOf(
+                Splash.route, Activation.route, Login.route, Timeclock.route,
+                KioskWelcome.route, KioskMenu.route, KioskCart.route, KioskSuccess.route,
+            )
+        }
+
+        /**
+         * D661 (Ruling 68, enmendado): el cobro con tarjeta. Ahí la banda se esconde sólo MIENTRAS hay una venta en curso. Ruling 106: también
+         * la confirmación de una devolución, donde la Nexgo le pide a AngelPay devolver (en la PAX se devuelve en `Payment`): mientras
+         * la devolución está en curso, ni banda ni «Ver» (sacar la pantalla cancelaba la devolución a media llamada); terminada, como el recibo.
+         */
+        val RUTAS_DEL_COBRO_CON_TARJETA: Set<String> by lazy { setOf(Payment.route, AngelPayPayment.route, RefundConfirmation.route) }
     }
 }

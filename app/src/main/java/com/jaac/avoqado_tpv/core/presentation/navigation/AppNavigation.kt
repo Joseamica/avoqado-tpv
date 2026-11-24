@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Spacer
@@ -25,6 +26,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -32,6 +34,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import android.content.Context
@@ -41,6 +44,7 @@ import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -61,7 +65,17 @@ import androidx.navigation.compose.rememberNavController
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoBrandLoader
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.components.VenueStatusBanner
 import com.jaac.avoqado_tpv.core.presentation.screens.FastPaymentEntryScreen
+import com.jaac.avoqado_tpv.core.presentation.screens.avisoDePagadosEnLinea
+import com.jaac.avoqado_tpv.core.presentation.screens.avisoDeSaldoSinConfirmar
+import com.jaac.avoqado_tpv.core.presentation.screens.AvisoDePagados
+import com.jaac.avoqado_tpv.core.presentation.screens.avisoALaVista
+import com.jaac.avoqado_tpv.core.presentation.screens.avisoDeComandasSinSalir
+import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
+import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
+import com.jaac.avoqado_tpv.features.onlineorders.presentation.TextosPorPagar
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
 import com.jaac.avoqado_tpv.core.presentation.screens.WelcomeScreen
 import com.jaac.avoqado_tpv.features.checkout.presentation.CheckoutScreen
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ComandaDeFolio
@@ -141,6 +155,9 @@ interface AppNavigationEntryPoint {
     fun cobroConSaldo(): com.jaac.avoqado_tpv.features.giftcards.data.CobroConSaldoRepository
     fun recordAngelPayRefundUseCase(): com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordAngelPayRefundUseCase
     fun paymentStateProvider(): com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
+    // D661 (ronda 4): el bloqueo y el mantenimiento de la app; bajo sus velos no sale la banda de pagados en línea.
+    fun lockScreenManager(): com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
+    fun maintenanceManager(): com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
     fun connectionStateManager(): com.jaac.avoqado_tpv.core.util.ConnectionStateManager
     fun tpvSettingsRepository(): com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
     fun retiroDeVentaSinCobro(): com.jaac.avoqado_tpv.features.checkout.data.RetiroDeVentaSinCobro
@@ -264,6 +281,115 @@ private suspend fun ensureAngelPayRefundAccount(
 }
 
 /**
+ * 🔔 D661 (Ruling 19 · 67 · 68 · 69): los avisos de la tienda en línea arriba de la app, sólo donde la cajera puede verlos
+ * ([avisoALaVista]; la misma regla con la que el vigía se anuncia como «puedo avisar»). La banda de «Pedido pagado en línea · ábrelo
+ * para cobrar» lleva a «Pedidos por pagar»; sin turno o sin entrada sólo dice por dónde se entra. Debajo, UNA banda con las comandas de
+ * lo que ESTA caja abrió y no salió aquí, con «Entendido». Lleva su propio reloj (cada 15 s) para que una copia que envejece se quite
+ * sola, y en el cobro con tarjeta mira cada 250 ms si hay una venta en curso (esas banderas no avisan). Ronda 4: con la app bloqueada o
+ * en mantenimiento ([bloqueo], [mantenimiento]) no sale ninguna: sus velos son translúcidos y dejan ver la app de abajo.
+ */
+@Composable
+private fun AvisosDeLaTienda(
+    estado: StateFlow<EstadoDeFolios>,
+    ruta: String?,
+    cobro: PaymentStateProvider,
+    bloqueo: StateFlow<Boolean>,
+    mantenimiento: StateFlow<Boolean>,
+    onVer: () -> Unit,
+    onEntendido: (List<String>) -> Unit,
+) {
+    val folios by estado.collectAsStateWithLifecycle()
+    val ahoraMs by produceState(System.currentTimeMillis()) {
+        while (true) {
+            delay(15_000)
+            value = System.currentTimeMillis()
+        }
+    }
+    val ventaEnCurso by produceState(false, ruta) {
+        while (ruta in NavRoute.RUTAS_DEL_COBRO_CON_TARJETA) {
+            value = cobro.isChargeAttemptActive() || cobro.isCharging()
+            delay(250)
+        }
+        value = false
+    }
+    val bloqueada by bloqueo.collectAsStateWithLifecycle()
+    val enMantenimiento by mantenimiento.collectAsStateWithLifecycle()
+    val aLaVista = avisoALaVista(ruta, ventaEnCurso, bloqueada = bloqueada, mantenimiento = enMantenimiento)
+    avisoDePagadosEnLinea(folios, ahoraMs, aLaVista)?.let { BandaDePagadosEnLinea(it, onVer) }
+    if (aLaVista) {
+        val comandas = folios.comandasSinSalir
+        avisoDeComandasSinSalir(comandas)?.let { texto -> BandaDeComandaSinSalir(texto) { onEntendido(comandas.map { it.orderId }) } }
+    }
+}
+
+/** Ruling 67: sin turno o sin entrada, la banda sólo informa (nunca entra a «Pedidos por pagar» saltándose las puertas del Inicio). */
+@Composable
+private fun BandaDePagadosEnLinea(aviso: AvisoDePagados, onVer: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        modifier = if (aviso.llevaAPorPagar) Modifier.fillMaxWidth().clickable(onClick = onVer) else Modifier.fillMaxWidth(),
+    ) {
+        Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = aviso.texto,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+            )
+            if (aviso.llevaAPorPagar) TextButton(onClick = onVer) { Text(TextosPorPagar.VER) }
+        }
+    }
+}
+
+/** Ruling 69: sólo «Entendido» la quita (tocar la banda no hace nada: que no se vaya por un roce). */
+@Composable
+private fun BandaDeComandaSinSalir(texto: String, onEntendido: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer) {
+        Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = texto,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+            )
+            TextButton(onClick = onEntendido) { Text(TextosPorPagar.ENTENDIDO) }
+        }
+    }
+}
+
+/** D12: un cobro con saldo de un folio guardado sin desenlace, con la lista de folios desactualizada. */
+@Composable
+private fun AvisoDeSaldoSinConfirmar(texto: String) {
+    Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
+        Text(
+            text = texto,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+        )
+    }
+}
+
+/** TPV regla 19: los avisos en la PAX A910S (360×640), debajo de la banda del negocio y del aviso de D12. */
+@Preview(showBackground = true, widthDp = 360, heightDp = 640)
+@Composable
+private fun AvisosDeLaTiendaPreview() {
+    AvoqadoTheme {
+        Column(Modifier.fillMaxSize()) {
+            VenueStatusBanner(status = VenueStatus.TRIAL)
+            AvisoDeSaldoSinConfirmar(
+                "Cobro con saldo sin confirmar en el folio W494E (\$20.00). No lo cobres otra vez: se comprueba en «Pedidos por pagar» " +
+                    "cuando haya conexión.",
+            )
+            BandaDePagadosEnLinea(AvisoDePagados(TextosPorPagar.avisoDePagadosEnLinea(2), llevaAPorPagar = true)) {}
+            BandaDePagadosEnLinea(AvisoDePagados(TextosPorPagar.abreTuTurno(1), llevaAPorPagar = false)) {}
+            BandaDeComandaSinSalir(TextosPorPagar.comandasNoSalieron(2)) {}
+        }
+    }
+}
+
+/**
  * AppNavigation
  *
  * Main navigation graph for Avoqado TPV.
@@ -377,6 +503,8 @@ fun AppNavigation(
     }
     val recordAngelPayRefundUseCase = remember { kioskEntryPoint.recordAngelPayRefundUseCase() }
     val paymentStateProvider = remember { kioskEntryPoint.paymentStateProvider() }
+    val lockScreenManager = remember { kioskEntryPoint.lockScreenManager() }
+    val maintenanceManager = remember { kioskEntryPoint.maintenanceManager() }
     val autorizacionDeGerente = remember { kioskEntryPoint.autorizacionDeGerente() }
 
     // Durable approved-but-unregistered attempts catch up after reconnect. Unique
@@ -1089,18 +1217,29 @@ fun AppNavigation(
                 ) {
                     value = withContext(Dispatchers.IO) { cobroConSaldo.pendientes() }
                 }
-                com.jaac.avoqado_tpv.core.presentation.screens.avisoDeSaldoSinConfirmar(estadoDeLosFolios, saldosGuardados)?.let { texto ->
-                    Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
-                        Text(
-                            text = texto,
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                        )
-                    }
-                }
+                avisoDeSaldoSinConfirmar(estadoDeLosFolios, saldosGuardados)?.let { AvisoDeSaldoSinConfirmar(it) }
             }
         }
+
+        // 🔔 D661 (Ruling 19 · 68 · 69): mientras suena un pedido pagado en línea, lo dice arriba toda pantalla donde la cajera puede usar
+        // la terminal (no con una venta en curso en el cobro con tarjeta, ni en el kiosco o antes de la sesión) y lleva a «Pedidos por
+        // pagar»; y la comanda de lo que esta caja abrió y no salió aquí, también. Ruling 68: el vigía sólo se anuncia como «puedo avisar»
+        // con el aviso a la vista; para eso sabe qué pantalla hay enfrente.
+        LaunchedEffect(bannerRoute) { vigiaDeFolios.rutaALaVista = bannerRoute }
+        AvisosDeLaTienda(
+            estado = vigiaDeFolios.estado,
+            ruta = bannerRoute,
+            cobro = paymentStateProvider,
+            bloqueo = lockScreenManager.isLocked,
+            mantenimiento = maintenanceManager.isInMaintenance,
+            // Ronda 4: desde el cobro con tarjeta sale primero al Inicio, como toda salida del cobro; la venta en curso se lee al tocar.
+            onVer = {
+                navController.verPedidosPorPagar(
+                    ventaEnCurso = paymentStateProvider.isChargeAttemptActive() || paymentStateProvider.isCharging(),
+                )
+            },
+            onEntendido = vigiaDeFolios::descartarComandasSinSalir,
+        )
 
         // Main navigation content (takes remaining space)
         Box(modifier = Modifier.weight(1f)) {
@@ -1287,6 +1426,7 @@ fun AppNavigation(
                 window.beginAction()
                 try { block() } finally { window.endAction() }
             }
+            val envioDePagoRapido = remember { EnvioDePagoRapido(NavRoute.Home.route) }
 
 
             // Refresh attendance when returning from TimeclockScreen
@@ -1339,17 +1479,18 @@ fun AppNavigation(
                 estadoDeFolios = estadoDeFolios,
                 onNavigateToFolios = { navController.navigate(NavRoute.PorPagar.route) { launchSingleTop = true } },
                 onStartPaymentWithAmount = { amount ->
-                    launchHomeAction action@ {
-                        val soloEfectivo = pagoRapidoVaEnSoloEfectivo()
-                        if (!soloEfectivo && !awaitPaxPaymentReady(homeContext, initializationManager, "Welcome fast payment")) {
-                            return@action
+                    // D667: la hoja de Pago rápido del Inicio tenía el mismo hueco (otro «Cobrar» mientras se prepara la PAX).
+                    val soloEfectivo = pagoRapidoVaEnSoloEfectivo()
+                    val lanzado = envioDePagoRapido.lanzar(sinEspera = soloEfectivo) { turno ->
+                        launchHomeAction action@ {
+                            if (!soloEfectivo && !awaitPaxPaymentReady(homeContext, initializationManager, "Welcome fast payment")) {
+                                return@action
+                            }
+                            Timber.d("[PERF] NAV: Welcome → PaymentScreen START (nexgo=${isAppToAppPayment()}, soloEfectivo=$soloEfectivo)")
+                            envioDePagoRapido.abrir(turno, navController, getPaymentRoute(), amount, soloEfectivo)
                         }
-                        Timber.d("[PERF] NAV: Welcome → PaymentScreen START (nexgo=${isAppToAppPayment()}, soloEfectivo=$soloEfectivo)")
-                        navController.currentBackStackEntry?.savedStateHandle?.let { handle ->
-                            prepareManualPaymentArgs(handle, amount, soloEfectivo)
-                        }
-                        navController.navigate(getPaymentRoute())
                     }
+                    if (!lanzado) avisarQueYaSeAbreUnCobro(homeContext)
                 },
                 onNavigateToShifts = {
                     Timber.d("[PERF] NAV: Welcome → Shifts START")
@@ -1570,21 +1711,24 @@ fun AppNavigation(
         // Fast Payment Entry Screen - Dedicated screen for amount input
         composable(NavRoute.FastPaymentEntry.route) {
             val fastPaymentScope = rememberCoroutineScope()
+            // D667: un «Cobrar» a la vez, y el cobro sólo se abre si Pago rápido sigue arriba.
+            val envio = remember { EnvioDePagoRapido(NavRoute.FastPaymentEntry.route) }
             FastPaymentEntryScreen(
                 onNavigateBack = {
                     navController.safePopBackStack()
                 },
                 onAmountSubmit = { amount ->
-                    fastPaymentScope.launch {
-                        val soloEfectivo = pagoRapidoVaEnSoloEfectivo()
-                        if (!soloEfectivo && !awaitPaxPaymentReady(context, initializationManager, "Fast payment entry")) {
-                            return@launch
+                    // Sólo efectivo no espera al lector: no pasa por el candado (D667, Codex r1 #1).
+                    val soloEfectivo = pagoRapidoVaEnSoloEfectivo()
+                    val lanzado = envio.lanzar(sinEspera = soloEfectivo) { turno ->
+                        fastPaymentScope.launch {
+                            if (!soloEfectivo && !awaitPaxPaymentReady(context, initializationManager, "Fast payment entry")) {
+                                return@launch
+                            }
+                            envio.abrir(turno, navController, getPaymentRoute(), amount, soloEfectivo)
                         }
-                        navController.currentBackStackEntry?.savedStateHandle?.let { handle ->
-                            prepareManualPaymentArgs(handle, amount, soloEfectivo)
-                        }
-                        navController.navigate(getPaymentRoute())
                     }
+                    if (!lanzado) avisarQueYaSeAbreUnCobro(context)
                 }
             )
         }
@@ -2038,8 +2182,11 @@ fun AppNavigation(
                     }
                 },
                 onNavigateToShifts = {
-                    // 🆕 Navigate to Shifts screen (for "No shift open" errors)
-                    navController.navigate(NavRoute.Shifts.route)
+                    // 🆕 «Abrir caja» del error «No hay turno abierto». D666: este cobro SALE de la pila (su ViewModel muere y deja de
+                    // escribir las banderas del cobro) y, si es de esta terminal, al volver de Turnos se retoma la MISMA venta en una
+                    // pantalla nueva (ver irATurnosDesdeElCobro). No se retira nada (D36): la venta no se abandona. Siempre se retoma:
+                    // PaymentScreen llama resetPayment() antes, que ya soltó las llaves del intento; la pantalla vieja no guardaba nada más.
+                    navController.irATurnosDesdeElCobro(NavRoute.Payment.route, argumentosDelCobro, retomar = true)
                 },
                 onNavigateToNewOrder = {
                     if (folio != null) {
@@ -2510,10 +2657,7 @@ fun AppNavigation(
                                             )
                                             Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                                             // Force Pagos to refresh so the "Reembolsado" badge shows up.
-                                            navController.previousBackStackEntry
-                                                ?.savedStateHandle
-                                                ?.set("refreshAfterRefund", true)
-                                            navController.safePopBackStack()
+                                            navController.salirDeLaDevolucion(backStackEntry, refrescarPagos = true)
                                         },
                                         onFailure = { backendError ->
                                             Timber.e(
@@ -2543,7 +2687,7 @@ fun AppNavigation(
                                             Toast.makeText(context, aviso, Toast.LENGTH_LONG).show()
                                             // Still pop back — the SDK cancellation
                                             // already returned money to the customer.
-                                            navController.safePopBackStack()
+                                            navController.salirDeLaDevolucion(backStackEntry, refrescarPagos = false)
                                         }
                                     )
                                 },
@@ -2561,6 +2705,9 @@ fun AppNavigation(
                         if (!awaitPaxPaymentReady(context, initializationManager, "Refund payment")) {
                             return@launch
                         }
+                        // D661 · Ruling 116: mientras se preparaba el sistema de pagos, «Ver» o un cobro del POS pudieron poner otra
+                        // pantalla: la devolución sólo abre el cobro si la confirmación sigue arriba.
+                        if (navController.currentBackStackEntry !== backStackEntry) return@launch
 
                         navController.currentBackStackEntry?.savedStateHandle?.apply {
                             // Refund mode flag
@@ -3089,7 +3236,12 @@ fun AppNavigation(
                     }
                 },
                 onNavigateToShifts = {
-                    navController.navigate(NavRoute.Shifts.route)
+                    paymentArgsHandle?.let(::clearPaymentArgs)
+                    // D666: igual que el riel Blumon. Este cobro SALE de la pila y, si es de esta terminal, al volver de Turnos se retoma la
+                    // MISMA venta en una pantalla nueva (ver irATurnosDesdeElCobro). No se retira nada (D36). Sólo se retoma si esta
+                    // pantalla nunca intentó cobrar (el aviso salió al entrar): tras un intento guarda la llave del QR de cripto, que una
+                    // pantalla nueva no tendría (Codex r2 #1); entonces se regresa a donde se lanzó, como «Regresar».
+                    navController.irATurnosDesdeElCobro(NavRoute.AngelPayPayment.route, argumentosDelCobro, retomar = !angelVm.yaSeIntentoCobrar())
                 },
                 onStartNewPaymentOverride = if (folio != null) {
                     {
@@ -3469,6 +3621,46 @@ internal fun prepareManualPaymentArgs(handle: SavedStateHandle, amount: String, 
 }
 
 /**
+ * D667 (21-nov) · TPV · PAGO RÁPIDO: «Cobrar» abre UN cobro por envío.
+ *
+ * Con la PAX lenta («Preparando sistema de pagos») la pantalla ya está en $0 (Ruling 115) y el cajero vuelve a teclear y a
+ * cobrar. Antes arrancaban dos envíos, los dos navegaban, el segundo escribía su importe en la entrada del PRIMER cobro y
+ * apilaba otro encima: al salir del segundo con «atrás» quedaba el primero listo para cobrar.
+ *  - [lanzar]: mientras un envío espera al sistema de pagos, otro no arranca. Se suelta cuando ese envío termina como sea:
+ *    abrió el cobro, el sistema de pagos falló, o la pantalla salió (su scope se cancela). Un envío en sólo efectivo
+ *    ([sinEspera]: sin red, D7) no espera al lector y no respeta el candado: si la red se cae mientras otro «Cobrar»
+ *    espera, el efectivo abre ya (Codex r1 #1) y deja suelto el candado.
+ *  - Cada envío que arranca recibe su turno y sólo el ÚLTIMO puede abrir: el que esperaba al lector cuando arrancó el
+ *    efectivo ya no abre nada aunque el cajero regrese a esta pantalla antes de que el lector termine (Codex r2).
+ *  - [abrir]: además, sólo si la pantalla que lo pidió ([origen]) sigue arriba. Si no (el cobro ya se abrió y un toque cae
+ *    en la animación de salida, el POS abrió su cobro primero), no escribe en la entrada de nadie ni apila otro.
+ * Una instancia por pantalla (`remember`), usada sólo en el hilo principal.
+ */
+internal class EnvioDePagoRapido(private val origen: String) {
+    private var ultimoTurno = 0
+    private var turnoEsperando: Int? = null
+
+    fun lanzar(sinEspera: Boolean = false, arrancar: (turno: Int) -> kotlinx.coroutines.Job): Boolean {
+        if (!sinEspera && turnoEsperando != null) return false
+        val turno = ++ultimoTurno
+        turnoEsperando = if (sinEspera) null else turno
+        arrancar(turno).invokeOnCompletion { if (turnoEsperando == turno) turnoEsperando = null }
+        return true
+    }
+
+    fun abrir(turno: Int, navController: androidx.navigation.NavController, rutaDelCobro: String, amount: String, soloEfectivo: Boolean): Boolean {
+        val arriba = navController.currentDestination?.route
+        if (turno != ultimoTurno || arriba != origen) {
+            Timber.w("💳 [Pago rápido] No se abre el cobro del turno $turno (último $ultimoTurno; arriba «$arriba», origen «$origen») (D667)")
+            return false
+        }
+        navController.currentBackStackEntry?.savedStateHandle?.let { prepareManualPaymentArgs(it, amount, soloEfectivo) }
+        navController.navigate(rutaDelCobro)
+        return true
+    }
+}
+
+/**
  * Todas las claves que las dos pantallas de cobro (Blumon y AngelPay) leen de quien las lanzó.
  * Una clave que se lea en esas pantallas y no esté aquí llegaría siempre nula: lo vigila
  * `ArgumentosDelCobroSeLeenUnaVezTest`.
@@ -3493,7 +3685,7 @@ internal val CLAVES_DE_COBRO: List<String> = listOf(
     "soloEfectivo", "ventaLocalJson", "folio",
 )
 
-private const val CLAVE_ARGUMENTOS_CONGELADOS = "paymentArgsFrozen"
+internal const val CLAVE_ARGUMENTOS_CONGELADOS = "paymentArgsFrozen"
 
 /** Marca en la entrada de «Pedidos por pagar»: el cobro del folio terminó (se vuelve a la lista, no al folio). */
 private const val FOLIO_COBRADO = "folioCobrado"
@@ -3549,6 +3741,12 @@ private fun formatAmountFromCents(amountCents: Long): String {
         .movePointLeft(2)
         .setScale(2, RoundingMode.HALF_UP)
         .toPlainString()
+}
+
+/** D667: un segundo «Cobrar» de Pago rápido mientras el primero se prepara no hace nada, pero se dice. */
+private fun avisarQueYaSeAbreUnCobro(context: Context) {
+    Timber.w("💳 [Pago rápido] «Cobrar» ignorado: ya se está abriendo un cobro (D667)")
+    Toast.makeText(context, "Ya se está abriendo un cobro. Espera un momento.", Toast.LENGTH_SHORT).show()
 }
 
 private suspend fun awaitPaxPaymentReady(

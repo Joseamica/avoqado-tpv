@@ -10,7 +10,7 @@ import com.avoqado.cobropropio.red.Segmento
 import java.math.BigDecimal
 import java.time.Instant
 
-sealed interface DesenlaceDeVenta {
+internal sealed interface DesenlaceDeVenta {
     data class Aprobada(val operationNumber: Long, val autorizacion: String) : DesenlaceDeVenta
     data class Rechazada(val codigo: String, val leyenda: String) : DesenlaceDeVenta
     data object NoSe : DesenlaceDeVenta
@@ -20,7 +20,7 @@ sealed interface DesenlaceDeVenta {
     data object NoEnviada : DesenlaceDeVenta
 }
 
-sealed interface DesenlaceDeCancelacion {
+internal sealed interface DesenlaceDeCancelacion {
     data class Cancelada(val operationNumber: Long) : DesenlaceDeCancelacion
     data class Rechazada(val codigo: String, val leyenda: String) : DesenlaceDeCancelacion
     data object NoSe : DesenlaceDeCancelacion
@@ -28,7 +28,7 @@ sealed interface DesenlaceDeCancelacion {
 }
 
 /** `codigo` va normalizado: del catálogo, de las listas del plan o `DESCONOCIDO`. Nunca un texto crudo del procesador. */
-sealed interface ClaseDelReverso {
+internal sealed interface ClaseDelReverso {
     data class Confirmado(val hora: Instant) : ClaseDelReverso
     data class Rechazado(val codigo: String, val hora: Instant) : ClaseDelReverso
     data class Reintentar(val codigo: String, val pruebaQueNoEntro: Boolean, val hora: Instant) : ClaseDelReverso
@@ -62,7 +62,7 @@ internal class SobreDeBlumon private constructor(
     val simulation: Boolean?,
     /** `dataResponse.description`, sólo si es la única `description` del cuerpo. */
     val descripcion: String?,
-    /** P1: `error` (raíz) trae algo ([Apariciones.tieneAlgoBajo]). Un sobre así nunca es un éxito definitivo. */
+    /** P1: `error` trae algo en CUALQUIER lugar del sobre ([Apariciones.tieneAlgoBajoEnCualquierRuta], bloque 1b · fila 13). Un sobre así nunca es un éxito definitivo. */
     val conError: Boolean,
     /** P2: `dataResponse` (raíz) trae algo. Un sobre así nunca es un definitivo de error. */
     val conDatos: Boolean,
@@ -99,8 +99,8 @@ internal class SobreDeBlumon private constructor(
         private val HTTP = Regex("^[1-5][0-9]{2}$")
         /**
          * Ronda 4 · Y: los nombres que este clasificador busca por nombre exacto, sacados de todas sus búsquedas en el lector:
-         * `de`, `deSalvo`, `en`, `unico`, `unica`, `soloEn`, `tieneAlgoBajo`, `contenedorDirectoBajo`, `segmentosDirectosBajo`,
-         * `CAMPOS_DE_CODIGO` y `pideLlavesNuevas`. Uno nuevo se agrega aquí.
+         * `de`, `deSalvo`, `en`, `unico`, `unica`, `soloEn`, `tieneAlgoBajo`, `tieneAlgoBajoEnCualquierRuta`, `contenedorDirectoBajo`,
+         * `segmentosDirectosBajo`, `CAMPOS_DE_CODIGO` y `pideLlavesNuevas`. Uno nuevo se agrega aquí.
          */
         private val NOMBRES_QUE_SE_BUSCAN = CAMPOS_DE_CODIGO + listOf(
             "status", "error", "dataResponse", "httpStatusCode", "id", "authorization", "reference", "batch", "amount",
@@ -194,7 +194,7 @@ internal class SobreDeBlumon private constructor(
                 importesCentavos = importes,
                 simulation = simulation,
                 descripcion = descripcion,
-                conError = a.tieneAlgoBajo("error"),
+                conError = a.tieneAlgoBajoEnCualquierRuta("error"),
                 conDatos = a.tieneAlgoBajo("dataResponse"),
                 httpDelError = httpDelError,
                 httpDelErrorRaro = httpDelErrorRaro,
@@ -212,7 +212,7 @@ internal class SobreDeBlumon private constructor(
  * rechazo exige 2xx o 4xx de negocio + el sobre de error + un código de la lista de negativas definitivas de ESA
  * operación. Nunca lanza: lo que no cuadra es duda.
  */
-object Clasificador {
+internal object Clasificador {
 
     /**
      * El contrato congelado del intento. **Todo veredicto definitivo** exige que, si el sobre trae `reference` o importe,
@@ -284,7 +284,7 @@ object Clasificador {
      * con el ECO de nuestro `AttemptId`: en `dataResponse.batch` o en una `reference` que no sea el folio de Blumon. Sin eco
      * nada lo ata a este intento (podría ser otra operación del mismo importe). `confiable` ya exige que todas sean la nuestra.
      * Falla cerrado: si producción no repite nuestro folio en ningún campo, TODA venta sale `NoSe` y se reversa.
-     * Ronda 2 · P1 (éxito puro): además, nada bajo `error` y todos los códigos de éxito. Un solo lugar para todos los éxitos;
+     * Ronda 2 · P1 (éxito puro): además, nada bajo `error` (en cualquier lugar del sobre desde el bloque 1b · fila 13) y todos los códigos de éxito. Un solo lugar para todos los éxitos;
      * el preflight, que no lleva eco, usa [exitoPuro].
      */
     private fun exitoAtado(s: SobreDeBlumon, exito: String = APROBADA) = s.referencias.isNotEmpty() && exitoPuro(s, exito)

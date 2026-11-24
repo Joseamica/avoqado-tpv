@@ -8,7 +8,7 @@ import com.avoqado.cobropropio.libreta.ResultadoParaReportar
 import kotlin.time.Duration
 
 /** La respuesta del SERVIDOR a `…/reverso/intencion` (CON §2.1). Sólo `Concedido` autoriza a reversar con permiso. */
-sealed interface PermisoDeReverso {
+internal sealed interface PermisoDeReverso {
     /** 200 + `reversing`. */
     data class Concedido(val eventLogId: String) : PermisoDeReverso {
         override fun toString() = "Concedido(oculto)"
@@ -55,7 +55,7 @@ sealed interface PermisoDeReverso {
 }
 
 /** La respuesta del SERVIDOR a `…/reverso/resultado` (CON §2.2). */
-sealed interface AcuseDelResultado {
+internal sealed interface AcuseDelResultado {
     data class Guardado(val estado: EstadoDelReversoEnServidor, val eventLogId: String, val paymentId: String?) : AcuseDelResultado {
         override fun toString() = "Guardado(estado=$estado)"
     }
@@ -76,7 +76,7 @@ sealed interface AcuseDelResultado {
 }
 
 /** El cuerpo de `/resultado`. `reversadoEn` es la hora OBSERVADA guardada (ISO 8601 con zona), nunca la hora de la cola. */
-data class ResultadoDelReverso(
+internal data class ResultadoDelReverso(
     val descripcion: String?,
     val codigo: String?,
     val operationNumber: Long?,
@@ -105,16 +105,16 @@ data class ResultadoDelReverso(
  * El JWT de ESTA terminal para el SERVIDOR (v5 §2.5). Lo implementa la app en la fase 3 con el refresco de `TokenAuthenticator`.
  * Nunca el de otra terminal ni de otra sucursal: si fallara, el SERVIDOR contesta 404 y eso nunca da un desenlace falso.
  */
-interface CredencialDelServidor {
+public interface CredencialDelServidor {
     /** El JWT vigente, sin red. `null` = no hay sesión. */
-    fun vigente(): String?
+    public fun vigente(): String?
 
     /** Un JWT nuevo de la MISMA terminal, dado el que el SERVIDOR rechazó; `null` si no se pudo. Se acota con [espera]. */
-    suspend fun renovar(rechazado: String, espera: Duration): String?
+    public suspend fun renovar(rechazado: String, espera: Duration): String?
 }
 
 /** El contrato del reverso con el SERVIDOR. La identidad (la terminal) sale del JWT de [CredencialDelServidor]. */
-interface ReversoDelServidor {
+internal interface ReversoDelServidor {
     /**
      * Regresa a más tardar en `espera`: ése es el ÚNICO reloj de la llamada (r2 familia B). Si llegó un código HTTP, nunca es
      * `SinRespuesta`, aunque el cuerpo no alcance a leerse; `SinRespuesta` sólo si no llegó nada.

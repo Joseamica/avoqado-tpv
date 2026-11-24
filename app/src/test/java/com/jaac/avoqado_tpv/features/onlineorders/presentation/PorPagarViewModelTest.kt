@@ -10,6 +10,7 @@ import com.jaac.avoqado_tpv.features.giftcards.data.DesenlaceDeSaldo
 import com.jaac.avoqado_tpv.features.giftcards.data.SaldoGuardado
 import com.jaac.avoqado_tpv.features.onlineorders.data.DespuesDeCobrarFolio
 import com.jaac.avoqado_tpv.features.onlineorders.data.FoliosRepository
+import com.jaac.avoqado_tpv.features.onlineorders.data.PedidoYaCambio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.BeneficioDeFolio
 import com.jaac.avoqado_tpv.features.onlineorders.data.VigiaDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.ConteoDeFolios
@@ -17,14 +18,19 @@ import com.jaac.avoqado_tpv.features.onlineorders.domain.EstadoDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.Folio
 import com.jaac.avoqado_tpv.features.onlineorders.domain.FolioModificador
 import com.jaac.avoqado_tpv.features.onlineorders.domain.FolioProducto
+import com.jaac.avoqado_tpv.features.onlineorders.domain.MarcaDeCierre
 import com.jaac.avoqado_tpv.features.onlineorders.domain.PaginaDeFolios
 import com.jaac.avoqado_tpv.features.onlineorders.domain.SeccionDeFolios
+import com.jaac.avoqado_tpv.features.onlineorders.domain.TarjetaPorAbrir
+import com.jaac.avoqado_tpv.features.onlineorders.domain.marcaDeCierre
 import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder
 import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
+import io.mockk.clearMocks
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -208,7 +214,11 @@ class PorPagarViewModelTest {
         assertThat(TextosPorPagar.VACIO).isEqualTo("No hay pedidos por pagar")
         assertThat(TextosPorPagar.VACIO_AYUDA).isEqualTo("Cuando alguien pida por el QR, aparece aquí con su folio y su nombre.")
         assertThat(TextosPorPagar.SIN_CONEXION_TITULO).isEqualTo("Pedidos por pagar · Sin conexión:")
-        assertThat(TextosPorPagar.SIN_CONEXION_CUERPO).isEqualTo("los pedidos nuevos no se ven. Cobra en \"Cobrar\" como venta normal")
+        // D661 · W1: sin red no se ven los pagados en línea; cobrarlos en caja haría un segundo cobro al abrirlos después.
+        assertThat(TextosPorPagar.SIN_CONEXION_CUERPO).isEqualTo(
+            "los pedidos nuevos no se ven. Cobra en \"Cobrar\" como venta normal. " +
+                "Si ya pagó en línea, no lo cobres: ábrelo cuando vuelva la conexión.",
+        )
     }
 
     // endregion
@@ -1118,6 +1128,330 @@ class PorPagarViewModelTest {
         vm.cancelar(ana)
 
         coVerify(exactly = 1) { folios.cancelar("v1", "a1") }
+    }
+
+    // endregion
+
+    // region — D661 (Task 12): pagados con tarjeta en línea en «No, entran solos». Abrir = cobrar (lo cobra el SERVIDOR)
+
+    private fun tarjeta(id: String, folio: String = "W${id.uppercase()}", cobrando: Boolean = false) =
+        TarjetaPorAbrir(id, folio, "Ana", BigDecimal("250.50"), ahora.minusSeconds(120), cobrando)
+
+    private fun conTarjetas(vararg tarjetas: TarjetaPorAbrir, sinConexion: Boolean = false, actualizadoEnMs: Long = 1_000L) {
+        estado.value = EstadoDeFolios(
+            showTile = true, tarjetasPorAbrir = tarjetas.toList(), sinConexion = sinConexion, actualizadoEnMs = actualizadoEnMs,
+        )
+    }
+
+    @Test
+    // El nombre del brief lleva «;» después de «aceptar»: la JVM no lo acepta en el nombre de un método («Name contains illegal characters»).
+    fun `solo el boton Abrir y cobrar de ese pedido llama aceptar - entrar, filtrar o paginar no`() = runTest {
+        val t1 = tarjeta("t1", folio = "W7K3P")
+        val t2 = tarjeta("t2", folio = "W4R9T")
+        conTarjetas(t1, t2)
+        coEvery { folios.aceptar("v1", "t1", true) } returns Result.success(Unit)
+        val vm = vm()
+
+        vm.pantallaVisible()
+        vm.buscar("ana")
+        vm.buscar("")
+        vm.cargarMas(SeccionDeFolios.POR_ENTREGAR)
+        vm.cargarMas(SeccionDeFolios.POR_PAGAR)
+        assertThat(vm.ui.value.tarjetasPorAbrir.map { it.orderId }).containsExactly("t1", "t2").inOrder()
+        coVerify(exactly = 0) { folios.aceptar(any(), any(), any()) }
+
+        vm.abrirYCobrar(t1)
+
+        coVerify(exactly = 1) { folios.aceptar("v1", "t1", true) }
+        coVerify(exactly = 0) { folios.aceptar("v1", "t2", any()) }
+    }
+
+    @Test
+    fun `abrir manda abrirPagadoEnLinea true`() = runTest {
+        val t1 = tarjeta("t1", folio = "W7K3P")
+        conTarjetas(t1)
+        coEvery { folios.aceptar(any(), any(), any()) } returns Result.success(Unit)
+        val vm = vm()
+
+        vm.abrirYCobrar(t1)
+
+        coVerify(exactly = 1) { folios.aceptar("v1", "t1", abrirPagadoEnLinea = true) }
+        // Lo dice, deja de ofrecerlo y el vigía lee ya: el sonido para y la comanda sale de esa lectura (no de esta respuesta).
+        assertThat(vm.ui.value.toast).isEqualTo("El pedido W7K3P ya está en «Por entregar».")
+        assertThat(vm.ui.value.tarjetasPorAbrir).isEmpty()
+        verify(atLeast = 1) { vigia.sondearYa() }
+    }
+
+    @Test
+    fun `si otra caja ya lo abrio muestra que ya esta en Por entregar`() = runTest {
+        val t1 = tarjeta("t1", folio = "W7K3P")
+        conTarjetas(t1)
+        val yaCambio = "El pedido ya cambió de estado (otro aparato, el cliente, la caja o el tiempo). Actualiza la bandeja."
+        coEvery { folios.aceptar("v1", "t1", true) } returns Result.failure(PedidoYaCambio("ACCEPTED", null, yaCambio))
+        val vm = vm()
+
+        vm.abrirYCobrar(t1)
+
+        val aviso = vm.ui.value.aviso!!
+        assertThat(aviso.cuerpo).isEqualTo("El pedido W7K3P ya está en «Por entregar».")
+        assertThat(aviso.boton).isEqualTo("Ver en «Por entregar»")
+        assertThat(aviso.irAPorEntregar).isTrue()
+        verify(atLeast = 1) { vigia.sondearYa() }
+
+        // «Listo» también está en «Por entregar»; ya cerrado no hay nada que abrir; liberado o vencido ya no está.
+        vm.cerrarAviso()
+        coEvery { folios.aceptar("v1", "t1", true) } returns Result.failure(PedidoYaCambio("READY", null, yaCambio))
+        vm.abrirYCobrar(t1)
+        assertThat(vm.ui.value.aviso!!.cuerpo).isEqualTo("El pedido W7K3P ya está en «Por entregar».")
+        vm.cerrarAviso()
+        coEvery { folios.aceptar("v1", "t1", true) } returns Result.failure(PedidoYaCambio("COMPLETED", null, yaCambio))
+        vm.abrirYCobrar(t1)
+        assertThat(vm.ui.value.aviso!!.cuerpo).isEqualTo("El pedido W7K3P ya está cerrado: no hay nada que abrir.")
+        vm.cerrarAviso()
+        coEvery { folios.aceptar("v1", "t1", true) } returns Result.failure(PedidoYaCambio("EXPIRED", null, yaCambio))
+        vm.abrirYCobrar(t1)
+        assertThat(vm.ui.value.aviso!!.titulo).isEqualTo("Ese pedido ya no está disponible")
+    }
+
+    @Test
+    fun `abrir sin red no manda nada y el boton dice que necesita conexion`() = runTest {
+        val t1 = tarjeta("t1", folio = "W7K3P")
+        conTarjetas(t1, sinConexion = true)
+        val vm = vm()
+
+        assertThat(botonDeAbrir(t1, vm.ui.value)).isEqualTo(BotonDeAbrir(false, "Abrir y cobrar necesita conexión"))
+        vm.abrirYCobrar(t1)
+        coVerify(exactly = 0) { folios.aceptar(any(), any(), any()) }
+
+        // Con red, pero la petición se pierde: no se encola ni se reintenta; se dice que no se pudo confirmar.
+        conTarjetas(t1)
+        assertThat(botonDeAbrir(t1, vm.ui.value)).isEqualTo(BotonDeAbrir(true, "Abrir y cobrar"))
+        coEvery { folios.aceptar("v1", "t1", true) } returns Result.failure(IOException("sin red"))
+        vm.abrirYCobrar(t1)
+        assertThat(vm.ui.value.aviso!!.cuerpo)
+            .isEqualTo("Sin conexión: no se pudo confirmar. Al volver la conexión la lista dice dónde quedó; nunca se cobra dos veces.")
+        coVerify(exactly = 1) { folios.aceptar("v1", "t1", true) }
+    }
+
+    @Test
+    fun `sin orders update no hay boton de abrir y se dice a quien pedirselo`() = runTest {
+        coEvery { permisos.hasPermission("orders:update") } returns false
+        val t1 = tarjeta("t1")
+        conTarjetas(t1)
+        val vm = vm()
+
+        assertThat(botonDeAbrir(t1, vm.ui.value)).isNull()
+        assertThat(TextosPorPagar.PAGADOS_EN_LINEA_SIN_PERMISO).isEqualTo("Pide a quien pueda atender pedidos que lo abra.")
+        vm.abrirYCobrar(t1)
+        coVerify(exactly = 0) { folios.aceptar(any(), any(), any()) }
+    }
+
+    @Test
+    fun `otra caja lo esta cobrando - no se ofrece abrirlo`() = runTest {
+        val t1 = tarjeta("t1", cobrando = true)
+        conTarjetas(t1)
+        val vm = vm()
+
+        assertThat(botonDeAbrir(t1, vm.ui.value)).isEqualTo(BotonDeAbrir(false, "Cobrándose en otra caja…"))
+        vm.abrirYCobrar(t1)
+        coVerify(exactly = 0) { folios.aceptar(any(), any(), any()) }
+    }
+
+    @Test
+    fun `tras Confirmando y una relectura fallida el pedido sigue esperando hasta una lectura buena`() = runTest {
+        val t1 = tarjeta("t1")
+        conTarjetas(t1, actualizadoEnMs = 1_000L)
+        coEvery { folios.aceptar("v1", "t1", true) } returns Result.failure(
+            BackendHttpException(409, "Confirmando el pago con el banco. Espera unos segundos.", errorCode = "ONLINE_ORDER_CONFIRMING_PAYMENT"),
+        )
+        val vm = vm()
+
+        vm.abrirYCobrar(t1)
+        assertThat(vm.ui.value.cobrandoEnOtraCaja).containsExactly("t1")
+        assertThat(botonDeAbrir(t1, vm.ui.value)).isEqualTo(BotonDeAbrir(false, "Cobrándose en otra caja…"))
+
+        // La relectura falla (sin red o 5xx): la lista vieja todavía lo trae sin «cobrando», y el botón NO regresa.
+        estado.value = estado.value.copy(sinConexion = true)
+        assertThat(vm.ui.value.cobrandoEnOtraCaja).containsExactly("t1")
+        vm.abrirYCobrar(t1)
+        coVerify(exactly = 1) { folios.aceptar(any(), any(), any()) }
+
+        // Una lectura buena posterior dice dónde quedó: se suelta.
+        estado.value = estado.value.copy(sinConexion = false, actualizadoEnMs = 2_000L)
+        assertThat(vm.ui.value.cobrandoEnOtraCaja).isEmpty()
+    }
+
+    @Test
+    fun `Ruling 45 la pantalla nunca manda la cabecera de aviso de tarjetas al releer`() = runTest {
+        val sofia = folio("b", folio = "W4R9T", nombre = "Sofía", total = "185.00", falta = "85.00")
+        cargado(porPagar = listOf(sofia))
+        coEvery { folios.listar("v1", false, false) } returns Result.success(pagina(porPagar = listOf(sofia)))
+        val vm = vm()
+
+        assertThat(vm.cobrar(sofia)).isNotNull()
+
+        coVerify(exactly = 1) { folios.listar("v1", false, false) }
+        coVerify(exactly = 0) { folios.listar(any(), any(), true) }
+    }
+
+    @Test
+    fun `Ruling 36 un pedido devolviendose dice Devolviendo y no ofrece Entregado`() {
+        val f = folio("m2c", falta = "0.00", estado = "ACCEPTED").copy(marca = MarcaDeCierre.DEVOLVIENDO)
+        assertThat(f.marca!!.texto).isEqualTo("Devolviendo…")
+        assertThat(sePuedeEntregar(f)).isFalse()
+        assertThat(marcaDeCierre(noLoRecogio = false, devolviendo = true, devuelto = false)).isEqualTo(MarcaDeCierre.DEVOLVIENDO)
+    }
+
+    @Test
+    fun `Ruling 36 un pedido devuelto dice Devuelto por encima de Devolviendo y de No lo recogio`() {
+        assertThat(marcaDeCierre(noLoRecogio = true, devolviendo = true, devuelto = true)).isEqualTo(MarcaDeCierre.DEVUELTO)
+        assertThat(marcaDeCierre(noLoRecogio = false, devolviendo = true, devuelto = true)).isEqualTo(MarcaDeCierre.DEVUELTO)
+        assertThat(marcaDeCierre(noLoRecogio = true, devolviendo = true, devuelto = false)).isEqualTo(MarcaDeCierre.DEVOLVIENDO)
+        assertThat(MarcaDeCierre.DEVUELTO.texto).isEqualTo("Devuelto")
+        assertThat(sePuedeEntregar(folio("x", falta = "0.00").copy(marca = MarcaDeCierre.DEVUELTO))).isFalse()
+    }
+
+    @Test
+    fun `Ruling 36 un pedido cerrado al terminar el dia dice No lo recogio`() {
+        assertThat(marcaDeCierre(noLoRecogio = true, devolviendo = false, devuelto = false)).isEqualTo(MarcaDeCierre.NO_LO_RECOGIO)
+        assertThat(MarcaDeCierre.NO_LO_RECOGIO.texto).isEqualTo("No lo recogió")
+        assertThat(sePuedeEntregar(folio("x", falta = "0.00").copy(marca = MarcaDeCierre.NO_LO_RECOGIO))).isFalse()
+    }
+
+    @Test
+    fun `Ruling 36 sin marcas nada cambia`() {
+        assertThat(marcaDeCierre(noLoRecogio = false, devolviendo = false, devuelto = false)).isNull()
+        assertThat(sePuedeEntregar(folio("x", falta = "0.00", estado = "ACCEPTED"))).isTrue()
+    }
+
+    @Test
+    fun `Ruling 36 Entregado rechazado porque se cerro o se devuelve no es Hecho - dice lo del servidor y relee`() = runTest {
+        val leo = folio("m2c", folio = "W8M2C", nombre = "Leo", falta = "0.00", estado = "ACCEPTED")
+        cargado(porEntregar = listOf(leo))
+        val texto = "Este pedido se cerró como «No lo recogió» al terminar el día: no se marca entregado. No se aplicó nada."
+        coEvery { folios.entregado("v1", "m2c") } returns Result.failure(PedidoYaCambio("COMPLETED", MarcaDeCierre.NO_LO_RECOGIO, texto))
+        val vm = vm()
+
+        vm.entregado(leo)
+
+        assertThat(vm.ui.value.toast).isNull()
+        assertThat(vm.ui.value.aviso!!.cuerpo).isEqualTo(texto)
+        assertThat(vm.ui.value.porEntregar.map { it.orderId }).containsExactly("m2c") // no se esconde: lo dice la relectura
+        verify(atLeast = 1) { vigia.sondearYa() }
+    }
+
+    @Test
+    fun `Ruling 36 un 409 COMPLETED sin marcas sigue como hoy`() = runTest {
+        val leo = folio("m2c", folio = "W8M2C", nombre = "Leo", falta = "0.00", estado = "ACCEPTED")
+        cargado(porEntregar = listOf(leo))
+        coEvery { folios.entregado("v1", "m2c") } returns Result.failure(
+            PedidoYaCambio("COMPLETED", null, "El pedido ya cambió de estado (otro aparato, el cliente, la caja o el tiempo). Actualiza la bandeja."),
+        )
+        val vm = vm()
+
+        vm.entregado(leo)
+
+        assertThat(vm.ui.value.aviso).isEqualTo(TextosPorPagar.YA_CAMBIO)
+    }
+
+    @Test
+    fun `mientras esta caja lo abre dice Abriendo aunque la lista ya lo traiga cobrandose`() {
+        val t1 = tarjeta("t1", cobrando = true)
+        val abriendo = PorPagarUi(puedeEntregar = true, ocupados = setOf("t1"))
+        assertThat(botonDeAbrir(t1, abriendo)).isEqualTo(BotonDeAbrir(false, "Abriendo…"))
+        assertThat(botonDeAbrir(tarjeta("t1"), abriendo.copy(cobrandoEnOtraCaja = setOf("t1")))).isEqualTo(BotonDeAbrir(false, "Abriendo…"))
+        // Sin su toque en curso, es otra caja.
+        assertThat(botonDeAbrir(t1, abriendo.copy(ocupados = emptySet()))).isEqualTo(BotonDeAbrir(false, "Cobrándose en otra caja…"))
+    }
+
+    @Test
+    fun `Ruling 69 el vigia sabe que esta caja lo abrio ANTES de mandarlo - tambien si la respuesta se pierde, es un 5xx o se confirma`() =
+        runTest {
+            val desenlaces = listOf<Result<Unit>>(
+                Result.success(Unit),
+                Result.failure(IOException("sin red")),
+                Result.failure(BackendHttpException(503, "Servicio no disponible")),
+                Result.failure(
+                    BackendHttpException(409, "Confirmando el pago con el banco.", errorCode = "ONLINE_ORDER_CONFIRMING_PAYMENT"),
+                ),
+            )
+            for (desenlace in desenlaces) {
+                clearMocks(vigia, folios, answers = false)
+                val t1 = tarjeta("t1", folio = "T-0042")
+                conTarjetas(t1)
+                coEvery { folios.aceptar("v1", "t1", true) } returns desenlace
+                val vm = vm()
+
+                vm.abrirYCobrar(t1)
+
+                // Antes de mandarlo: el aviso sólo sale si después el SERVIDOR lista su comanda (un pedido que no se abrió, nunca).
+                coVerifyOrder {
+                    vigia.abiertoAqui("t1", "T-0042")
+                    folios.aceptar("v1", "t1", true)
+                }
+            }
+        }
+
+    @Test
+    fun `Ruling 69 sin permiso no se manda ni se anota`() = runTest {
+        val t1 = tarjeta("t1", folio = "T-0042")
+        conTarjetas(t1)
+        coEvery { permisos.hasPermission("orders:update") } returns false
+        vm().abrirYCobrar(t1)
+
+        verify(exactly = 0) { vigia.abiertoAqui(any(), any()) }
+    }
+
+    @Test
+    fun `Ruling 70 el pedido abierto que ya no viene en la lista se relee y mientras no ofrece Listo ni Entregado`() = runTest {
+        val leo = folio("m2c", folio = "W8M2C", nombre = "Leo", falta = "0.00", estado = "ACCEPTED")
+        cargado(porEntregar = listOf(leo))
+        val relectura = CompletableDeferred<Result<Folio>>()
+        coEvery { folios.leerPedido("v1", "m2c") } coAnswers { relectura.await() }
+        val vm = vm()
+        vm.abrir(leo)
+        assertThat(vm.ui.value.seleccionadoActualizando).isFalse()
+
+        // Lo devolvieron desde el panel: la lista buena siguiente ya no lo trae. En esa MISMA pasada se apagan «Listo» y «Entregado».
+        estado.value = estado.value.copy(porEntregar = emptyList(), counts = ConteoDeFolios(0, 0), actualizadoEnMs = 2_000L)
+        assertThat(vm.ui.value.seleccionado?.orderId).isEqualTo("m2c")
+        assertThat(vm.ui.value.seleccionadoActualizando).isTrue()
+        coVerify(exactly = 1) { folios.leerPedido("v1", "m2c") }
+
+        // La relectura contesta: se ve su marca y no se ofrece entregarlo.
+        relectura.complete(Result.success(leo.copy(estado = "COMPLETED", marca = MarcaDeCierre.DEVUELTO)))
+        assertThat(vm.ui.value.seleccionadoActualizando).isFalse()
+        assertThat(vm.ui.value.seleccionado?.marca).isEqualTo(MarcaDeCierre.DEVUELTO)
+        assertThat(sePuedeEntregar(vm.ui.value.seleccionado!!)).isFalse()
+    }
+
+    @Test
+    fun `Ruling 70 sin red no se relee ni se apaga nada`() = runTest {
+        val leo = folio("m2c", folio = "W8M2C", nombre = "Leo", falta = "0.00", estado = "ACCEPTED")
+        cargado(porEntregar = listOf(leo))
+        val vm = vm()
+        vm.abrir(leo)
+
+        estado.value = estado.value.copy(porEntregar = emptyList(), sinConexion = true)
+
+        assertThat(vm.ui.value.seleccionadoActualizando).isFalse()
+        coVerify(exactly = 0) { folios.leerPedido(any(), any()) }
+    }
+
+    @Test
+    fun `Ruling 71 ORDER_CLOSED_NOT_DELIVERED no es Hecho aunque no traiga marca - dice lo del servidor, deja la fila y relee`() = runTest {
+        val leo = folio("m2c", folio = "W8M2C", nombre = "Leo", falta = "0.00", estado = "ACCEPTED")
+        cargado(porEntregar = listOf(leo))
+        val texto = "Este pedido se devolvió: no se marca entregado. No se aplicó nada."
+        coEvery { folios.entregado("v1", "m2c") } returns Result.failure(PedidoYaCambio("COMPLETED", null, texto, cerradoSinEntregar = true))
+        val vm = vm()
+
+        vm.entregado(leo)
+
+        assertThat(vm.ui.value.toast).isNull()
+        assertThat(vm.ui.value.aviso!!.cuerpo).isEqualTo(texto)
+        assertThat(vm.ui.value.porEntregar.map { it.orderId }).containsExactly("m2c")
+        verify(atLeast = 1) { vigia.sondearYa() }
     }
 
     // endregion

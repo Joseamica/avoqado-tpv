@@ -34,6 +34,7 @@ import com.avoqado.cobropropio.dominio.SolicitudDeCancelacion
 import com.avoqado.cobropropio.dominio.SolicitudDeVenta
 import com.avoqado.cobropropio.fixtures.LecturasDePrueba
 import com.avoqado.cobropropio.fixtures.LecturasDePrueba.con
+import com.avoqado.cobropropio.fixtures.LecturasDePrueba.toque
 import com.avoqado.cobropropio.libreta.DatosDelEnvio
 import com.avoqado.cobropropio.libreta.EstadoDelIntento
 import com.avoqado.cobropropio.libreta.IntentoEntity
@@ -131,7 +132,8 @@ class MotorDeCobroCancelacionTest {
     private class LectorFalso : LectorDeTarjeta {
         val operaciones = mutableListOf<Operacion>()
         var demora = 1_000L
-        var venta: (Long) -> Lectura = { LecturasDePrueba.visaPlasticoVenta(it) }
+        var ventas = 0
+        var venta: (Long) -> Lectura = { LecturasDePrueba.visaPlasticoVenta(it).toque(++ventas) }
         var cancelacion: (Long) -> Lectura = { LecturasDePrueba.visaPlasticoCancelacion(it).con(tags = mapOf(0x9F36 to "0002")) }
 
         override suspend fun leer(operacion: Operacion, importeCentavos: Long, espera: Long): ResultadoDeLectura {
@@ -283,6 +285,8 @@ class MotorDeCobroCancelacionTest {
         val APROBADO_VISA = Aprobado(12345, "ABC123", null, Marca.VISA, Medio.PLASTICO, "411111", "1111", "0484")
         val SILENCIO: suspend () -> Respuesta = { delay(600_000); http(200, CANCELADA) }
         const val CAJERA = 30_000L
+        /** Un folio con el formato viejo (36): Room lo lee, la validación de hoy no lo pasa. */
+        const val ID_DE_36 = "0f8fad5b-d9cb-469f-a165-b0867728950e"
 
         fun http(codigo: Int, cuerpo: String) = Respuesta.Http(codigo, cuerpo)
         fun error(codigo: String) = """{"status":false,"error":{"code":"$codigo"}}"""
@@ -623,6 +627,78 @@ class MotorDeCobroCancelacionTest {
         assertEquals(PorConfirmar(0), eventos.last())
         assertTrue(eventos.none { it is NoSalioAlBanco })
         assertTrue(blumon.cancelaciones.isEmpty())
+    }
+
+    /**
+     * C1 (Codex b1 r1 y r2, D4): una cancelación hermana ilegible hace tronar `anotarCancelacion` ANTES de que exista la fila del
+     * folio nuevo. La cajera sale con «por confirmar» desde la memoria; después rige la regla N: el veto queda en la libreta y el
+     * folio contesta «No salió (interrumpido)» desde ahí (tarde, al volver a pedirlo y tras reiniciar). Con OTRA venta es otro
+     * contrato. Cero llamadas a Blumon y la hermana ilegible no se toca.
+     */
+    @Test fun `una cancelacion frenada por una hermana ilegible deja su veto y no sale`() = prueba {
+        val v = ventaAprobada()
+        val w = ventaAprobada() // otra venta APROBADO del mismo venue y ámbito
+        // Como en LibretaTest: una hermana cerrada con un folio de 36 (Room la lee; la validación de hoy no la pasa).
+        assertTrue(
+            db.dao().insertar(
+                IntentoEntity(
+                    attemptId = ID_DE_36, operacion = Operacion.CANCELACION, venueId = v.venueId, importeCentavos = v.importeCentavos,
+                    vinculado = true, posId = identidad.posId, serieBlumon = identidad.serieBlumon, ambiente = identidad.ambiente,
+                    versionSdk = identidad.versionSdk, origen = v.origen, operacionOriginal = v.id.valor,
+                    estado = EstadoDelIntento.NO_SALIO, motivoNoSalio = MotivoNoSalio.OTRA_TARJETA, procesoId = Libreta.PROCESO_ID,
+                ),
+            ) != -1L,
+        )
+        fun hermana(): List<String?> =
+            db.openHelper.readableDatabase.query("SELECT * FROM intentos WHERE attemptId = ?", arrayOf(ID_DE_36)).use { cur ->
+                assertTrue(cur.moveToFirst())
+                (0 until cur.columnCount).map { cur.getString(it) }
+            }
+        val antes = hermana()
+        val c = cancelacionDe(v)
+        val interrumpido = noSalio(MotivoNoSalio.INTERRUMPIDO)
+        assertEquals("primero, desde la memoria", listOf<EventoDeCobro>(PorConfirmar(0)), cancelar(c).map { it.first })
+        esperarTodo()
+        assertEquals("el tardío sale de la fila", listOf(PorConfirmar(0), interrumpido), tardiasDe(c.id))
+        val f = fila(c.id)
+        assertEquals(EstadoDelIntento.NO_SALIO, f.estado)
+        assertEquals(MotivoNoSalio.INTERRUMPIDO, f.motivoNoSalio)
+        assertEquals(v.id.valor, f.operacionOriginal)
+        assertEquals(listOf<EventoDeCobro>(interrumpido), motor.cancelar(c).toList())
+        val conOtraVenta = SolicitudDeCancelacion(c.id, c.venueId, w.id)
+        assertEquals(listOf<EventoDeCobro>(EventoDeCobro.ContratoDistinto), motor.cancelar(conOtraVenta).toList())
+        esperarTodo()
+        assertTrue(blumon.preflights.isEmpty() && blumon.cancelaciones.isEmpty())
+        assertEquals(0, blumon.reversos)
+        assertEquals("la hermana ilegible no se toca", antes, hermana())
+        cerrar()
+        db.close()
+        val otro = Mundo(prueba, archivo = archivo, proceso = "otro-proceso")
+        try {
+            otro.motor.recuperar()
+            assertEquals("tras reiniciar", listOf<EventoDeCobro>(interrumpido), otro.motor.cancelar(c).toList())
+            assertEquals(listOf<EventoDeCobro>(EventoDeCobro.ContratoDistinto), otro.motor.cancelar(conOtraVenta).toList())
+            otro.esperarTodo()
+            assertEquals(EstadoDelIntento.NO_SALIO, otro.fila(c.id).estado)
+            assertTrue(otro.lector.operaciones.isEmpty())
+            assertTrue(otro.blumon.preflights.isEmpty() && otro.blumon.cancelaciones.isEmpty())
+        } finally {
+            otro.cerrar()
+        }
+    }
+
+    /** C1, la vecina: cualquier OTRA falla antes de anotar sigue la regla N (veto durable y «No salió, interrumpido» tardío). */
+    @Test fun `una cancelacion frenada por otra falla antes de anotar termina no salio interrumpido`() = prueba {
+        val v = ventaAprobada()
+        ganchos["anotarCancelacion"] = { throw IllegalStateException("falla inyectada") }
+        val c = cancelacionDe(v)
+        assertEquals(listOf<EventoDeCobro>(PorConfirmar(0)), cancelar(c).map { it.first })
+        esperarTodo()
+        assertEquals(listOf(PorConfirmar(0), noSalio(MotivoNoSalio.INTERRUMPIDO)), tardiasDe(c.id))
+        assertEquals(EstadoDelIntento.NO_SALIO, fila(c.id).estado)
+        assertEquals(MotivoNoSalio.INTERRUMPIDO, fila(c.id).motivoNoSalio)
+        assertEquals(listOf<EventoDeCobro>(noSalio(MotivoNoSalio.INTERRUMPIDO)), motor.cancelar(c).toList())
+        assertTrue(blumon.preflights.isEmpty() && blumon.cancelaciones.isEmpty())
     }
 
     /** N (R14-8): tras un apagón, la cancelación `ENVIADO` del proceso muerto queda `NO_SE` y sigue vetando un folio nuevo. */

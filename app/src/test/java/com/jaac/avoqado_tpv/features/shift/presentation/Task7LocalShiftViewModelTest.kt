@@ -68,7 +68,12 @@ class Task7LocalShiftViewModelTest {
         coEvery { repo.pagosQueBloqueanCierre("venue", any()) } returns PaginaPagosDelCierre(0, emptyList(), 0)
     }
     @After fun cleanup() { vms.forEach { it.viewModelScope.cancel() }; unmockkAll() }
-    private fun vm() = ShiftViewModel(repo, storage, events, cache, connectivity, permissions, refunds, com.jaac.avoqado_tpv.core.util.ConnectionStateManager()).also(vms::add)
+    /** D24: sin permiso de abrir se pide el PIN; sin red, quien estaba ahí lo cancela (el PIN necesita internet). */
+    private val autorizacion = mockk<com.jaac.avoqado_tpv.features.permissions.presentation.override.AutorizacionDeGerente>().also {
+        coEvery { it.paraPermiso(any(), any(), any(), any(), any(), any()) } returns
+            com.jaac.avoqado_tpv.features.permissions.presentation.override.Autorizacion.Cancelada
+    }
+    private fun vm() = ShiftViewModel(repo, storage, events, cache, connectivity, permissions, refunds, com.jaac.avoqado_tpv.core.util.ConnectionStateManager(), autorizacion).also(vms::add)
 
     @Test fun `empty local storage and network failure allow a local opening without claiming remote absence`() = runTest {
         coEvery { repo.leerCajaLocal("venue") } returns null
@@ -115,6 +120,25 @@ class Task7LocalShiftViewModelTest {
         assertThat(vm.canOpenShift.value).isFalse()
         vm.openShift(750.0); runCurrent()
         coVerify(exactly = 0) { repo.openShift(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { repo.abrirCajaConPin(any(), any(), any(), any()) }
+    }
+
+    /** D24 (Codex r1 #5): «Usar la caja vinculada» sin permiso ya no queda en gris: dice a quién pedírselo, sin PIN y sin escribir. */
+    @Test fun `usar la caja vinculada sin permiso dice a quien pedirselo y no escribe nada`() = runTest {
+        val vinculada = row.copy(openingStatus = "CONFIRMED", openingDisposition = "ADOPTED", serverShiftId = "cshift00000000000000000001",
+            cashDrawerSessionId = "cdrawer0000000000000000001", remoteStartingCash = "100.00")
+        coEvery { repo.leerCajaLocal("venue") } returns com.jaac.avoqado_tpv.features.shift.data.repository.CajaLocalSnapshot(
+            shift, vinculada, LocalShiftSummary(BigDecimal("50.00"), null, "OPEN", "CONFIRMED", "NONE", null))
+        coEvery { permissions.hasPermission("tpv-shifts:create") } returns false
+        val vm = vm(); runCurrent()
+        assertThat(vm.localCaja.value!!.canAdopt).isTrue()
+
+        vm.adoptRemoteCaja(); runCurrent()
+
+        assertThat((vm.state.value as ShiftState.Error).message).isEqualTo(
+            "Tu puesto no puede cambiar de caja. Pide a un cajero, gerente o al dueño que entre y la use.")
+        coVerify(exactly = 0) { repo.adoptarCajaRemotaParaNuevosGestos(any(), any()) }
+        coVerify(exactly = 0) { autorizacion.paraPermiso(any(), any(), any(), any(), any(), any()) }
     }
 
     @Test fun `late offline error after actor change cannot publish the opening alternative`() = runTest {

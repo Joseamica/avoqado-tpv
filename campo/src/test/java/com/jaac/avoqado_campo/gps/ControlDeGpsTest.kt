@@ -10,6 +10,7 @@ import android.provider.Settings
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.jaac.avoqado_campo.checada.Ubicacion
+import com.jaac.avoqado_campo.checada.limiteEnElCelular
 import com.jaac.avoqado_campo.cola.BaseDeCampo
 import com.jaac.avoqado_campo.cola.TurnoLocal
 import com.jaac.avoqado_campo.identidad.AlmacenEnMemoria
@@ -59,20 +60,22 @@ class ControlDeGpsTest {
     @After fun tearDown() = db.close()
 
     private fun conPermiso() = shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
-    private fun control(arrancar: ((Intent) -> Unit)? = null) = if (arrancar == null) ControlDeGpsReal(app, estado, puerta, quienSoy, db.piezaDao())
-        else ControlDeGpsReal(app, estado, puerta, quienSoy, db.piezaDao(), arrancar)
+    private fun control(ahora: Long = AHORA, arrancar: ((Intent) -> Unit)? = null) =
+        if (arrancar == null) ControlDeGpsReal(app, estado, puerta, quienSoy, db.piezaDao(), ahora = { ahora })
+        else ControlDeGpsReal(app, estado, puerta, quienSoy, db.piezaDao(), ahora = { ahora }, arrancar = arrancar)
     /** Lo que trae un latido: la sucursal v1 con el ajuste de seguimiento que diga el SERVIDOR. */
     private fun sucursalSigue(sigue: Boolean?) =
         quienSoy.guardarLatido(DatosDeLatido("VINCULADO", null, null, listOf(Sucursal("v1", "Centro", null, sigue))))
-    private fun seguimiento(ahora: Long = 1_000L) =
+    private fun seguimiento(ahora: Long = AHORA) =
         SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), db.piezaDao(), quienSoy) { ahora }
 
     /** Lo que hizo el servicio en `onStartCommand`, en orden. */
     private val pasos = mutableListOf<String>()
     private suspend fun arrancarServicio(tienePermiso: Boolean = true, primerPlano: () -> Unit = { pasos += "primerPlano" }) =
         seguimiento().arrancar(tienePermiso, primerPlano) { pasos += "quitar" }
-    private suspend fun abrirTurno(staffId: String = "s1") =
-        db.piezaDao().guardarTurno(TurnoLocal(staffId = staffId, llaveEntrada = "e1", timeEntryId = null, venueId = "v1", abiertoAt = 1L))
+    /** El turno se abrió hace un minuto (hoy): vigente. [haceMs] grande = un turno de un día ya terminado (D3, olvidado). */
+    private suspend fun abrirTurno(staffId: String = "s1", haceMs: Long = 60_000L) =
+        db.piezaDao().guardarTurno(TurnoLocal(staffId = staffId, llaveEntrada = "e1", timeEntryId = null, venueId = "v1", abiertoAt = AHORA - haceMs))
 
     @Test fun `sin permiso no arranca nada y dice por que`() = runBlocking<Unit> {
         val r = control().iniciar()
@@ -91,10 +94,10 @@ class ControlDeGpsTest {
 
     @Test fun `si Android no deja arrancar el servicio no sigue y no truena`() = runBlocking<Unit> {
         conPermiso()
-        val r = control { throw SecurityException("Android 14") }.iniciar()
+        val r = control(arrancar = { throw SecurityException("Android 14") }).iniciar()
         assertTrue(r is ResultadoGps.NoSigue)
         assertEquals(r, estado.estado.value)
-        val r2 = control { throw IllegalStateException("ForegroundServiceStartNotAllowedException") }.iniciar()
+        val r2 = control(arrancar = { throw IllegalStateException("ForegroundServiceStartNotAllowedException") }).iniciar()
         assertTrue(r2 is ResultadoGps.NoSigue)
     }
 
@@ -132,10 +135,10 @@ class ControlDeGpsTest {
     @Test fun `H-A1 - si un latido lo apaga con el turno abierto, el siguiente reanudar para el servicio`() = runBlocking<Unit> {
         conPermiso()
         abrirTurno()
-        assertEquals(ResultadoGps.Siguiendo, reanudarSiHayTurno(control(), db.piezaDao(), quienSoy))
+        assertEquals(ResultadoGps.Siguiendo, reanudarSiHayTurno(control(), db.piezaDao(), quienSoy, AHORA))
         assertTrue(arrancarServicio())
         sucursalSigue(false)
-        assertEquals(ResultadoGps.NoLoUsaLaTienda, reanudarSiHayTurno(control(), db.piezaDao(), quienSoy))
+        assertEquals(ResultadoGps.NoLoUsaLaTienda, reanudarSiHayTurno(control(), db.piezaDao(), quienSoy, AHORA))
         assertEquals(ServicioDeUbicacion::class.java.name, shadowOf(app).nextStoppedService.component!!.className)
         assertEquals(ResultadoGps.NoLoUsaLaTienda, estado.estado.value)
     }
@@ -219,7 +222,7 @@ class ControlDeGpsTest {
         turnoEnUnaYSesionEnOtra(delTurno = true, deLaSesion = false)
         c.revisar()
         assertNull(shadowOf(app).nextStartedService)
-        assertEquals(ResultadoGps.Siguiendo, reanudarSiHayTurno(c, db.piezaDao(), quienSoy))
+        assertEquals(ResultadoGps.Siguiendo, reanudarSiHayTurno(c, db.piezaDao(), quienSoy, AHORA))
     }
 
     @Test fun `G - cada cambio de sucursales guardado (latido, entrar) hace revisar el servicio`() = runBlocking<Unit> {
@@ -281,12 +284,12 @@ class ControlDeGpsTest {
 
     @Test fun `con turno abierto guarda un ping de su sucursal`() = runBlocking<Unit> {
         abrirTurno()
-        assertTrue(seguimiento(ahora = 5_000L).tomarUno())
+        assertTrue(seguimiento(ahora = AHORA + 5_000L).tomarUno())
         val p = db.pingDao().todos().single()
         assertEquals("v1", p.venueId)
         assertEquals(19.43, p.lat, 0.0)
         assertEquals(12f, p.precision)
-        assertEquals(5_000L, p.capturadoAt)
+        assertEquals(AHORA + 5_000L, p.capturadoAt)
     }
 
     @Test fun `sin turno o con el turno de otra persona el servicio se detiene sin guardar`() = runBlocking<Unit> {
@@ -315,10 +318,188 @@ class ControlDeGpsTest {
             override fun detener() = Unit
             override suspend fun revisar() = Unit
         }
-        assertNull(reanudarSiHayTurno(falso, db.piezaDao(), quienSoy))
+        assertNull(reanudarSiHayTurno(falso, db.piezaDao(), quienSoy, AHORA))
         abrirTurno()
-        assertEquals(ResultadoGps.Siguiendo, reanudarSiHayTurno(falso, db.piezaDao(), quienSoy))
+        assertEquals(ResultadoGps.Siguiendo, reanudarSiHayTurno(falso, db.piezaDao(), quienSoy, AHORA))
         assertEquals(1, intentos)
+    }
+
+    /** D3 en el GPS (hz:nube0000:na1c5a48): un turno de un día ya terminado («salida olvidada») ya no se sigue. */
+    @Test fun `D3 - con el turno olvidado de otro dia la lectura no guarda ping y detiene el servicio`() = runBlocking<Unit> {
+        abrirTurno(haceMs = DOS_DIAS)
+        assertFalse(seguimiento().tomarUno())
+        assertTrue(db.pingDao().todos().isEmpty())
+    }
+
+    @Test fun `D3 - el turno se vuelve olvidado con el servicio corriendo - la siguiente lectura lo para`() = runBlocking<Unit> {
+        abrirTurno()
+        assertTrue(seguimiento().tomarUno()) // hoy: sigue
+        assertFalse(seguimiento(ahora = AHORA + DOS_DIAS).tomarUno()) // dos días después, sin salida ni entrada nueva
+        assertEquals(1, db.pingDao().todos().size)
+    }
+
+    @Test fun `D3 - una lectura que cruza el limite del turno no guarda el ping (Codex r1 2)`() = runBlocking<Unit> {
+        abrirTurno()
+        val limite = limiteEnElCelular(AHORA - 60_000L)
+        var reloj = limite - 1_000L // la lectura empieza un segundo antes del límite…
+        coEvery { ubicacion.leer(any()) } coAnswers {
+            reloj = limite + 1_000L // …y el GPS contesta un segundo después
+            Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
+        }
+        val s = SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), db.piezaDao(), quienSoy) { reloj }
+        assertFalse(s.tomarUno())
+        assertTrue(db.pingDao().todos().isEmpty())
+    }
+
+    @Test fun `D3 - sin posicion y con el limite cruzado mientras buscaba, se para sin esperar otra vuelta (Codex r2 1)`() = runBlocking<Unit> {
+        abrirTurno()
+        val limite = limiteEnElCelular(AHORA - 60_000L)
+        var reloj = limite - 1_000L
+        coEvery { ubicacion.leer(any()) } coAnswers { reloj = limite + 1_000L; null }
+        val s = SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), db.piezaDao(), quienSoy) { reloj }
+        assertFalse(s.tomarUno())
+        // Sin posición dentro del turno vigente sigue como antes: otra vuelta.
+        abrirTurno()
+        reloj = AHORA
+        coEvery { ubicacion.leer(any()) } returns null
+        assertTrue(s.tomarUno())
+    }
+
+    @Test fun `D3 - una entrada nueva marcada mientras se leia no para el servicio ni se lleva esa lectura (Codex r2 2, r4 3)`() = runBlocking<Unit> {
+        abrirTurno()
+        val limite = limiteEnElCelular(AHORA - 60_000L)
+        var reloj = limite - 1_000L
+        coEvery { ubicacion.leer(any()) } coAnswers {
+            reloj = limite + 1_000L
+            // El promotor marcó su entrada de hoy mientras el GPS buscaba señal: la fila del turno ya es otra, y la posición
+            // que contestó el GPS puede ser de antes del toque (de otra sucursal).
+            db.piezaDao().guardarTurno(TurnoLocal(staffId = "s1", llaveEntrada = "e2", timeEntryId = null, venueId = "v1", abiertoAt = limite + 500L))
+            Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
+        }
+        val s = SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), db.piezaDao(), quienSoy) { reloj }
+        assertTrue(s.tomarUno()) // el servicio sigue: ahora es de la entrada nueva
+        assertTrue(db.pingDao().todos().isEmpty())
+        coEvery { ubicacion.leer(any()) } returns Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
+        assertTrue(s.tomarUno()) // la siguiente (que el arranque de la entrada pide de inmediato) sí es suya
+        assertEquals(limite + 1_000L, db.pingDao().todos().single().capturadoAt)
+    }
+
+    @Test fun `D3 - con la hora del celular corregida hacia atras, la misma entrada sigue guardando sus pings (Codex r4 2)`() = runBlocking<Unit> {
+        abrirTurno(haceMs = -3_600_000L) // la entrada quedó guardada una hora «en el futuro» (el reloj iba adelantado)
+        assertTrue(seguimiento().tomarUno())
+        assertEquals(1, db.pingDao().todos().size)
+    }
+
+    @Test fun `D3 - un arranque viejo que termina despues de uno nuevo no quita el aviso (Codex r4 1)`() = runBlocking<Unit> {
+        abrirTurno(haceMs = DOS_DIAS) // la fila que leyó el arranque viejo
+        val r = seguimiento().arrancar(true, primerPlano = { pasos += "primerPlano" }, esElUltimo = { false }) { pasos += "quitar" }
+        assertTrue(r) // decide el bucle, con la fila de ahora
+        assertEquals(listOf("primerPlano"), pasos)
+        assertTrue(puerta.enPrimerPlano)
+    }
+
+    @Test fun `D3 - un error del GPS al cruzar el limite no deja el aviso otra vuelta (Codex r3 1)`() = runBlocking<Unit> {
+        abrirTurno()
+        val limite = limiteEnElCelular(AHORA - 60_000L)
+        var reloj = limite - 1_000L
+        coEvery { ubicacion.leer(any()) } coAnswers { reloj = limite + 1_000L; throw SecurityException("permiso quitado") }
+        val s = SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), db.piezaDao(), quienSoy) { reloj }
+        assertFalse(s.tomarUno())
+        // Dentro del turno, un error sigue como antes: otra vuelta, sin ping.
+        reloj = AHORA
+        coEvery { ubicacion.leer(any()) } throws IllegalStateException("proveedor")
+        assertTrue(s.tomarUno())
+        assertTrue(db.pingDao().todos().isEmpty())
+    }
+
+    @Test fun `bucle - un arranque nuevo mientras la lectura decidia parar no para el servicio (Codex r3 2)`() = runBlocking<Unit> {
+        var arranques = 0
+        val respuestas = ArrayDeque(listOf(false, true, false)) // la vieja dice «para», la de la entrada nueva «sigue», luego «para»
+        var esperas = 0
+        correrBucle(
+            tomarUno = { respuestas.removeFirst().also { if (respuestas.size == 2) arranques++ } }, // el arranque llega en la 1ª
+            arranques = { arranques },
+        ) { esperas++ }
+        assertTrue(respuestas.isEmpty()) // decidió otra vez con la fila nueva en vez de parar
+        assertEquals(1, esperas)
+    }
+
+    @Test fun `bucle - con un arranque nuevo durante la lectura, la siguiente es ya, no en 30 min (Codex r3 3)`() = runBlocking<Unit> {
+        var arranques = 0
+        val respuestas = ArrayDeque(listOf(true, true, false))
+        var esperas = 0
+        correrBucle(
+            tomarUno = { respuestas.removeFirst().also { if (respuestas.size == 2) arranques++ } },
+            arranques = { arranques },
+        ) { esperas++ }
+        assertEquals(1, esperas) // sólo después de la 2ª (la del arranque nuevo no esperó)
+    }
+
+    @Test fun `bucle - sin arranques nuevos para cuando ya no hay turno y un error cuenta como seguir`() = runBlocking<Unit> {
+        val respuestas = ArrayDeque<() -> Boolean>(listOf({ throw IllegalStateException("x") }, { true }, { false }))
+        var esperas = 0
+        correrBucle(tomarUno = { respuestas.removeFirst()() }, arranques = { 0 }) { esperas++ }
+        assertTrue(respuestas.isEmpty())
+        assertEquals(2, esperas)
+    }
+
+    @Test fun `D3 - la misma entrada ya subida (con timeEntryId) sigue guardando su ping`() = runBlocking<Unit> {
+        abrirTurno()
+        coEvery { ubicacion.leer(any()) } coAnswers {
+            db.piezaDao().guardarTurno(TurnoLocal(staffId = "s1", llaveEntrada = "e1", timeEntryId = "te1", venueId = "v1", abiertoAt = AHORA - 60_000L))
+            Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
+        }
+        assertTrue(seguimiento().tomarUno())
+        assertEquals(1, db.pingDao().todos().size)
+    }
+
+    @Test fun `D3 - al volver al frente con el turno olvidado no arranca el GPS y para el servicio vivo`() = runBlocking<Unit> {
+        conPermiso()
+        abrirTurno()
+        val c = control()
+        assertEquals(ResultadoGps.Siguiendo, c.iniciar())
+        shadowOf(app).nextStartedService
+        assertTrue(arrancarServicio())
+        // Dos días después la persona abre la app sin haber marcado salida.
+        assertNull(reanudarSiHayTurno(control(ahora = AHORA + DOS_DIAS), db.piezaDao(), quienSoy, AHORA + DOS_DIAS))
+        assertNull(shadowOf(app).nextStartedService)
+        assertEquals(ServicioDeUbicacion::class.java.name, shadowOf(app).nextStoppedService.component!!.className)
+    }
+
+    @Test fun `D3 - el turno olvidado no se reanuda nunca, ni con un control falso`() = runBlocking<Unit> {
+        var intentos = 0
+        var detenidos = 0
+        val falso = object : ControlDeGps {
+            override suspend fun iniciar(): ResultadoGps { intentos++; return ResultadoGps.Siguiendo }
+            override fun detener() { detenidos++ }
+            override suspend fun revisar() = Unit
+        }
+        abrirTurno(haceMs = DOS_DIAS)
+        assertNull(reanudarSiHayTurno(falso, db.piezaDao(), quienSoy, AHORA))
+        assertEquals(0, intentos)
+        assertEquals(1, detenidos)
+        // El de otra persona (aunque sea viejo) no se toca: no es de esta sesión.
+        abrirTurno(staffId = "otra", haceMs = DOS_DIAS)
+        assertNull(reanudarSiHayTurno(falso, db.piezaDao(), quienSoy, AHORA))
+        assertEquals(1, detenidos)
+    }
+
+    @Test fun `D3 - el reinicio de Android con el turno olvidado se para en la primera lectura`() = runBlocking<Unit> {
+        conPermiso()
+        abrirTurno(haceMs = DOS_DIAS)
+        // START_STICKY: Android revive el servicio sin pasar por iniciar(). Cumple el primer plano y se quita.
+        assertFalse(arrancarServicio())
+        assertEquals(listOf("primerPlano", "quitar"), pasos)
+        assertFalse(puerta.enPrimerPlano)
+        assertTrue(db.pingDao().todos().isEmpty())
+    }
+
+    @Test fun `D3 - la sucursal de un turno olvidado ya no decide el seguimiento`() {
+        val yo = quienSoy.instantanea()
+        val viejo = TurnoLocal(staffId = "s1", llaveEntrada = "e1", timeEntryId = null, venueId = "v9", abiertoAt = AHORA - DOS_DIAS)
+        // v9 no es suya: con el turno vivo no se sigue; olvidado, decide la sesión (v1, que sí sigue).
+        assertFalse(debeSeguir(yo, viejo.copy(abiertoAt = AHORA - 60_000L), AHORA))
+        assertTrue(debeSeguir(yo, viejo, AHORA))
     }
 
     @Test fun `bateria - sin la pantalla directa abre la lista de ajustes, y sin ninguna no hay boton`() {
@@ -327,5 +508,11 @@ class ControlDeGpsTest {
         val ajustes = ResolveInfo().apply { activityInfo = ActivityInfo().apply { packageName = "com.android.settings"; name = "Lista" } }
         shadowOf(app.packageManager).addResolveInfoForIntent(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS), ajustes)
         assertEquals(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS, Bateria.intentParaArreglar(app)!!.action)
+    }
+
+    private companion object {
+        /** Un martes cualquiera a mediodía (UTC); las pruebas no dependen del reloj de la máquina. */
+        const val AHORA = 1_763_985_600_000L
+        const val DOS_DIAS = 2 * 24 * 3_600_000L
     }
 }

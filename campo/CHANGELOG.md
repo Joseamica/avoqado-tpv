@@ -4,6 +4,13 @@ Esta app tiene su propia versión y su propio release firmado (`.github/workflow
 las terminales: por eso sus cambios van aquí y no en el `CHANGELOG.md` de la raíz, que es el de las notas de versión de la
 TPV (`/avoqado:release-production`).
 
+## Sin publicar
+- GPS del turno: si la persona no marcó salida y el turno ya es de un día terminado («salida olvidada»), el celular deja de
+  guardar y mandar su ubicación: ninguna lectura de después del límite se guarda (tampoco la que lo cruza mientras busca la
+  señal). El servicio se para en su siguiente lectura (cada 30 min con el celular despierto) o al abrir la app, y se quita
+  el aviso fijo «Turno activo»; si Android revive el servicio solo, se para de inmediato. Antes el GPS seguía a nombre de un
+  turno que el servidor ya había cerrado (hz:nube0000:na1c5a48).
+
 ## 0.5.0 (código 5) — lo que pidió PlayTelecom en sus pruebas (Asana 1220750328814319, 20-nov)
 - Venta sin costo: si la SIM no trae precio fijo, el importe puede ser $0 (como «Regalar (Gratis)» en la terminal); la
   confirmación dice «Sin costo».

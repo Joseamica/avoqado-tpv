@@ -169,6 +169,23 @@ class PaymentSyncWorkerTest {
     }
 
     @Test
+    fun `P1 un 404 de la orden y el respaldo sin respuesta si gasta intento (Codex r2)`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-404-plazo", orderId = "order-borrada", idempotencyKey = "k-1", retryCount = 3)
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        coEvery { useCase(any(), any(), any(), any(), true) } returnsMany listOf(
+            Result.failure(BackendHttpException(404, "Order not found", errorCode = "ORDER_NOT_FOUND")),
+            Result.failure(java.net.SocketTimeoutException("timeout")),
+        )
+
+        buildWorker(repo, useCase).doWork()
+
+        coVerify(exactly = 2) { useCase(any(), any(), any(), any(), true) }
+        coVerify(exactly = 1) { repo.release(queueId = payment.queueId, token = any(), retryCount = 4, error = any()) }
+    }
+
+    @Test
     fun `P1 una venta con mas de 24 h sin respuesta vuelve a contar para llegar a revision`() = runTest {
         val repo = mockk<PaymentQueueRepository>(relaxed = true)
         val useCase = mockk<RecordPaymentUseCase>()

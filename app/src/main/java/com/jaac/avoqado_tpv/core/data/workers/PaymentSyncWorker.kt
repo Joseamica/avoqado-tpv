@@ -412,6 +412,8 @@ class PaymentSyncWorker @AssistedInject constructor(
         payment: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment,
         context: PaymentContext,
         permitirCaidaAVentaRapida: Boolean,
+        /** El intento anterior de ESTA pasada ya tuvo respuesta (el 404 de la orden): la pasada cuenta (Codex r2). */
+        huboRespuestaAntes: Boolean = false,
     ): Boolean {
         Timber.d("🔄 [Payment Sync] Syncing payment | ref=${payment.referenceNumber} | queueId=${payment.queueId}")
 
@@ -486,6 +488,7 @@ class PaymentSyncWorker @AssistedInject constructor(
                         payment,
                         payment.copy(orderId = null, orderNumber = null).toPaymentContext(),
                         permitirCaidaAVentaRapida = false,
+                        huboRespuestaAntes = true,
                     )
                 }
                 Timber.e(
@@ -515,7 +518,8 @@ class PaymentSyncWorker @AssistedInject constructor(
                 // de esta venta y no se cuenta (hasta VENTANA_SIN_CONTAR_MS). En un corte largo del SERVIDOR cada venta encolada despierta
                 // una pasada; contándolas, a las 10 una venta en efectivo quedaba FAILED y ya no subía sola. Sólo una
                 // respuesta real (500, 429, 401…) acerca la fila a revisión.
-                val intentos = if (noGastaIntento(payment, nadieContesto(result.exceptionOrNull()))) payment.retryCount else payment.retryCount + 1
+                val sinRespuesta = !huboRespuestaAntes && nadieContesto(result.exceptionOrNull())
+                val intentos = if (noGastaIntento(payment, sinRespuesta)) payment.retryCount else payment.retryCount + 1
                 releaseClaim(payment, retryCount = intentos, error = transientError)
                 false
             }

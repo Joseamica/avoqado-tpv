@@ -2880,6 +2880,51 @@ class PaymentViewModelTest {
     }
 
     @Test
+    fun `a1ff27 un segundo toque en Reintentar mientras el primero registra no repinta los metodos`() = runTest {
+        val detect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>(relaxed = true)
+        val viewModel = createViewModel(startDetectCardUseCase = detect)
+        try {
+            val compuerta = CompletableDeferred<Unit>()
+            var llamadas = 0
+            coEvery {
+                mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+            } coAnswers {
+                llamadas++
+                if (llamadas == 1) Result.failure(RuntimeException("timeout"))
+                else {
+                    compuerta.await()  // el reintento se queda registrando
+                    Result.success(
+                        PaymentReceipt(
+                            paymentId = "pay-efectivo", receiptUrl = "https://receipt.avoqado.io/pay-efectivo", accessKey = "k",
+                            amount = BigDecimal("100.00"), tipAmount = BigDecimal("10.00"),
+                        )
+                    )
+                }
+            }
+            coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.failure(RuntimeException("disco lleno"))
+            abrirMetodosConPropina(viewModel)
+
+            viewModel.processCashPayment("110.00")
+            esperarEstado(viewModel) { it is PaymentState.Error }
+            val contexto = (viewModel.state.value as PaymentState.Error).context
+
+            viewModel.retryPayment(contexto)
+            esperarEstado(viewModel) { llamadas == 2 }
+            viewModel.retryPayment(contexto)  // el segundo toque, con el botón todavía en pantalla
+
+            assertThat(viewModel.state.value).isInstanceOf(PaymentState.Processing::class.java)
+            assertThat(viewModel.state.value).isNotInstanceOf(PaymentState.SelectingMerchant::class.java)
+
+            compuerta.complete(Unit)
+            esperarEstado(viewModel) { it is PaymentState.Success }
+            assertThat(llamadas).isEqualTo(2)
+            coVerify(exactly = 0) { detect.run(any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
     fun `a1ff27 si la venta ya quedo guardada en la terminal Reintentar lo dice y no deja cobrar otra vez`() = runTest {
         val detect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>(relaxed = true)
         val viewModel = createViewModel(startDetectCardUseCase = detect)

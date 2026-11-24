@@ -92,8 +92,13 @@ class RecordPaymentUseCase @Inject constructor(
 ) {
     private suspend fun revisionDeDueno(context: PaymentContext, reference: String, cause: Throwable? = null): CashOwnerReviewRequiredException {
         val compatible = runCatching { shiftRepository.contratoDelPagoGuardadoCoincide(context, reference) }.getOrDefault(false)
-        return CashOwnerReviewRequiredException(if (compatible) "La venta ya está guardada; no vuelvas a cobrarla."
-            else "El registro previo no coincide con la referencia, el importe o el pedido. Revísalo antes de volver a cobrar.", cause)
+        // 🔴 a1ff27: si esa fila ya no se sube sola, decirlo; «ya está guardada» a secas hace creer que no falta nada.
+        val revisar = compatible && runCatching { shiftRepository.pagoGuardadoNecesitaRevision(context.venueId, reference) }.getOrDefault(false)
+        return CashOwnerReviewRequiredException(when {
+            revisar -> "La venta ya está guardada en la terminal, pero no se pudo subir: necesita revisión. Pide apoyo al gerente; no vuelvas a cobrarla."
+            compatible -> "La venta ya está guardada; no vuelvas a cobrarla."
+            else -> "El registro previo no coincide con la referencia, el importe o el pedido. Revísalo antes de volver a cobrar."
+        }, cause)
     }
 
     companion object {

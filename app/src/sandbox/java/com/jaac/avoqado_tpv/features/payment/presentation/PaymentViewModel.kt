@@ -8032,6 +8032,13 @@ class PaymentViewModel @Inject constructor(
         // referencia), nunca `startPayment`, que abre la TARJETA por el mismo importe: cobro doble.
         // Si la venta ya quedó guardada en la terminal (el registro guarda la fila ANTES de enviar), el registro lo dice
         // («La venta ya está guardada; no vuelvas a cobrarla») y no deja reintentar: la cola es la dueña de esa fila.
+        // Un segundo toque (o uno tardío) no puede repintar los métodos mientras el primero registra: sólo se reintenta desde
+        // el error y sin otro efectivo en camino (Codex r2). Sin esto, la tarjeta quedaba a un toque durante el registro.
+        if (context.reintentoDeEfectivo != null &&
+            (_state.value !is PaymentState.Error || cobroEnEfectivoEnVuelo.get())) {
+            Timber.w("🔄 [Smart Retry] Efectivo: toque ignorado, ya se está registrando | estado=${_state.value::class.simpleName}")
+            return
+        }
         when (context.reintentoDeEfectivo) {
             com.jaac.avoqado_tpv.features.payment.domain.ReintentoDeEfectivo.EFECTIVO -> {
                 Timber.i("🔄 [Smart Retry] Efectivo: se reintenta el REGISTRO, no se abre la tarjeta | attempt=${sessionSnapshot.paymentAttemptId}")

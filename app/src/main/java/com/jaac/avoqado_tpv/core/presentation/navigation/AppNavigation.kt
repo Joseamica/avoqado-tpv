@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.core.presentation.navigation
 
+import com.jaac.avoqado_tpv.core.remotepayment.CuentaCobradaSinSubir
 import com.jaac.avoqado_tpv.core.remotepayment.AvisoDeCobrosPendientes
 import com.jaac.avoqado_tpv.core.remotepayment.rejectRemotePaymentBeforeAuthorization
 import androidx.compose.foundation.background
@@ -151,6 +152,8 @@ interface AppNavigationEntryPoint {
     fun socketManager(): com.jaac.avoqado_tpv.core.data.realtime.SocketManager
     fun vigiaDeFolios(): com.jaac.avoqado_tpv.features.onlineorders.data.VigiaDeFolios
     fun cobroConSaldo(): com.jaac.avoqado_tpv.features.giftcards.data.CobroConSaldoRepository
+    // f3cba0: la cola de cobros de la terminal, para no abrir un cobro del POS sobre una cuenta ya cobrada que no ha subido.
+    fun pendingPaymentDao(): com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
     fun recordAngelPayRefundUseCase(): com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordAngelPayRefundUseCase
     fun paymentStateProvider(): com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
     // D661 (ronda 4): el bloqueo y el mantenimiento de la app; bajo sus velos no sale la banda de pagados en línea.
@@ -489,6 +492,7 @@ fun AppNavigation(
     val vigiaDeFolios = remember { kioskEntryPoint.vigiaDeFolios() }
     // 🎁 Tienda híbrida, parte 2: el cobro con saldo de un folio (lo mira el cobro remoto del POS antes de entrar).
     val cobroConSaldo = remember { kioskEntryPoint.cobroConSaldo() }
+    val colaDeCobros = remember { kioskEntryPoint.pendingPaymentDao() }
     // 🛒 D36: «atrás» antes de cobrar en «Cobrar» retira la venta que se creó en el SERVIDOR (si nunca se intentó cobrar).
     val retiroDeVentaSinCobro = remember { kioskEntryPoint.retiroDeVentaSinCobro() }
     LaunchedEffect(vigiaDeFolios) {
@@ -614,6 +618,14 @@ fun AppNavigation(
             )
                 // Parte 2 (Codex r2 #1): tampoco mientras cobra con saldo, ni sobre una cuenta con un saldo sin confirmar.
                 ?: cobroConSaldo.motivoParaNoCobrarRemoto(request.orderId)
+                // f3cba0: tampoco sobre una cuenta que ESTA terminal ya cobró y cuyo cobro no ha subido (efectivo en el cajón con
+                // su registro fallido, o rechazado sin revisar): el SERVIDOR la ve «por pagar». Sólo esa cuenta espera; un error
+                // en pantalla no aparta la terminal (founder, 25-sep).
+                ?: CuentaCobradaSinSubir.motivo(
+                    orderId = request.orderId,
+                    venueId = runCatching { secureStorage.getVenueId() }.getOrNull(),
+                    cola = colaDeCobros,
+                )
             if (motivoParaNoIniciar != null) {
                 Timber.w("⚠️ [Remote] No se inicia el cobro (%s) - amount: ${request.amountCents}", motivoParaNoIniciar)
                 // If this came via socket, send rejection back so iOS doesn't hang

@@ -351,6 +351,48 @@ class ControlDeGpsTest {
         assertTrue(db.pingDao().todos().isEmpty())
     }
 
+    @Test fun `D3 - sin posicion y con el limite cruzado mientras buscaba, se para sin esperar otra vuelta (Codex r2 1)`() = runBlocking<Unit> {
+        abrirTurno()
+        val limite = limiteEnElCelular(AHORA - 60_000L)
+        var reloj = limite - 1_000L
+        coEvery { ubicacion.leer(any()) } coAnswers { reloj = limite + 1_000L; null }
+        val s = SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), db.piezaDao(), quienSoy) { reloj }
+        assertFalse(s.tomarUno())
+        // Sin posición dentro del turno vigente sigue como antes: otra vuelta.
+        abrirTurno()
+        reloj = AHORA
+        coEvery { ubicacion.leer(any()) } returns null
+        assertTrue(s.tomarUno())
+    }
+
+    @Test fun `D3 - una entrada nueva marcada mientras se leia no para el servicio ni se lleva esa lectura (Codex r2 2)`() = runBlocking<Unit> {
+        abrirTurno()
+        val limite = limiteEnElCelular(AHORA - 60_000L)
+        var reloj = limite - 1_000L
+        coEvery { ubicacion.leer(any()) } coAnswers {
+            reloj = limite + 1_000L
+            // El promotor marcó su entrada de hoy mientras el GPS buscaba señal: la fila del turno ya es otra.
+            db.piezaDao().guardarTurno(TurnoLocal(staffId = "s1", llaveEntrada = "e2", timeEntryId = null, venueId = "v1", abiertoAt = limite + 500L))
+            Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
+        }
+        val s = SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), db.piezaDao(), quienSoy) { reloj }
+        assertTrue(s.tomarUno()) // el bucle sigue: ahora es de la entrada nueva
+        assertTrue(db.pingDao().todos().isEmpty())
+        coEvery { ubicacion.leer(any()) } returns Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
+        assertTrue(s.tomarUno())
+        assertEquals(limite + 1_000L, db.pingDao().todos().single().capturadoAt)
+    }
+
+    @Test fun `D3 - la misma entrada ya subida (con timeEntryId) sigue guardando su ping`() = runBlocking<Unit> {
+        abrirTurno()
+        coEvery { ubicacion.leer(any()) } coAnswers {
+            db.piezaDao().guardarTurno(TurnoLocal(staffId = "s1", llaveEntrada = "e1", timeEntryId = "te1", venueId = "v1", abiertoAt = AHORA - 60_000L))
+            Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
+        }
+        assertTrue(seguimiento().tomarUno())
+        assertEquals(1, db.pingDao().todos().size)
+    }
+
     @Test fun `D3 - al volver al frente con el turno olvidado no arranca el GPS y para el servicio vivo`() = runBlocking<Unit> {
         conPermiso()
         abrirTurno()

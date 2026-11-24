@@ -16,6 +16,7 @@ import com.jaac.avoqado_campo.checada.Ubicacion
 import com.jaac.avoqado_campo.checada.turnoOlvidado
 import com.jaac.avoqado_campo.checada.turnoVigente
 import com.jaac.avoqado_campo.cola.PiezaDao
+import com.jaac.avoqado_campo.cola.TurnoLocal
 import com.jaac.avoqado_campo.identidad.Arranque
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import dagger.hilt.android.AndroidEntryPoint
@@ -115,16 +116,23 @@ class SeguimientoDelTurno(
             return false
         }
         val venueId = t.venueId ?: yo.sesion?.venueId ?: return true
-        val l = ubicacion.leer() ?: return true
-        // Codex r1 #2: la lectura tarda; si mientras tanto el turno cruzó su límite, esa ubicación ya no es del turno.
+        val l = ubicacion.leer()
+        // La lectura tarda (hasta su tope, también sin posición). Al terminar se vuelve a mirar el turno con esa hora: si cruzó
+        // su límite, ni se guarda ni se espera otra vuelta (Codex r1 #2, r2 #1); si mientras tanto se marcó una entrada
+        // nueva, no se para el servicio que ahora es de ella, y esta lectura no se le cuelga (Codex r2 #2).
         val capturado = ahora()
-        if (!turnoVigente(t, capturado)) return false
+        val despues = piezas.turnoAhora()
+        if (despues == null || despues.staffId != yo.staffId || !turnoVigente(despues, capturado)) return false
+        if (l == null || !mismoTurno(t, despues)) return true
         pings.guardarSi(Ping(venueId = venueId, lat = l.lat, lon = l.lon, precision = l.precision, capturadoAt = capturado)) {
             quienSoy.instantanea().let { !it.limpiando && it.generacion == yo.generacion }
         }
         return true
     }
 }
+
+/** La misma entrada (no otra marcada después): `timeEntryId` y la llave cambian al subir, la hora del toque no. */
+private fun mismoTurno(a: TurnoLocal, b: TurnoLocal) = a.staffId == b.staffId && a.venueId == b.venueId && a.abiertoAt == b.abiertoAt
 
 /**
  * r13: parar el servicio cumpliendo antes `startForeground` (aunque falle por permiso o por Android, se intenta y se sigue):

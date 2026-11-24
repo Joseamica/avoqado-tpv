@@ -42,12 +42,30 @@ class CancelarDesdeElErrorTest {
         assertThat(vuelve(error(abrirCaja = true))).isFalse()
     }
 
-    /** El CABLEADO: la pantalla decide con esta función, no con su propia condición (se lee la fuente, como `NoSeCobroCableadoTest`). */
-    @Test fun `P1 PaymentScreen decide Cancelar con la misma funcion`() {
+    /**
+     * El CABLEADO: la pantalla decide con esta función, no con su propia condición (se lee la fuente, como `NoSeCobroCableadoTest`).
+     * Codex r1: no basta que las cadenas aparezcan; el `if` va sin negar, la rama verdadera regresa a métodos y la otra sale del cobro.
+     */
+    @Test fun `P1 PaymentScreen decide Cancelar con la misma funcion, en su orden`() {
         val pantalla = File("src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentScreen.kt").readText()
         val cancelar = pantalla.substring(pantalla.indexOf("onCancel = {", pantalla.indexOf("} else PaymentErrorContent(")))
             .substringBefore("onCashFallback")
-        assertThat(cancelar).contains("cancelarDesdeElErrorVuelveAMetodos(")
-        assertThat(cancelar).contains("viewModel.returnToSelectingMerchantFromError(currentState.context)")
+            .lines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("//") }.joinToString("\n")
+        val esperado = listOf(
+            "onCancel = {",
+            "if (cancelarDesdeElErrorVuelveAMetodos(",
+            "currentState,",
+            "esReembolso = isRefundMode,",
+            "esCobroDelPos = CobroRemotoDelPos.esCobroDelPos(paymentSource),",
+            ")",
+            ") {",
+            "viewModel.returnToSelectingMerchantFromError(currentState.context)",
+            "} else {",
+            "viewModel.resetPayment()",
+            "navigateBack()",
+            "}",
+            "},",
+        ).joinToString("\n")
+        assertThat(cancelar).isEqualTo(esperado)
     }
 }

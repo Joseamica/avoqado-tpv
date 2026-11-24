@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.payment.presentation.angelpay
 
+import androidx.activity.compose.BackHandler
 import com.jaac.avoqado_tpv.core.printer.QrDelRecibo
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -152,6 +153,14 @@ fun AngelPaySuccessContent(
     val numberDrafts = remember { com.jaac.avoqado_tpv.features.verification.presentation.components.LinkingNumberDrafts() }
     var lineaPhotoPath by remember { mutableStateOf<String?>(null) }
     var portabilidadPhotoPath by remember { mutableStateOf<String?>(null) }
+
+    // 🔙 Encargo f84e3a: con el cobro YA aprobado (o en cola), el «atrás» FÍSICO no tenía quién lo atendiera (esta pantalla se pinta
+    // antes del BackHandler de AngelPayPaymentScreen) y el sistema regresaba a la entrada anterior: desde Cobrar, el MISMO carrito
+    // lleno, y un segundo «Cobrar» creaba otra venta. Ahora hace lo mismo que el botón principal («Nuevo Pago», «Nueva Orden»,
+    // «Nueva Venta», «Pedidos por pagar»), que lleva a un lugar NUEVO; con la cámara de la prueba de venta abierta, sólo la cierra.
+    BackHandler {
+        if (showProofOfSaleCamera) showProofOfSaleCamera = false else onStartNewPayment()
+    }
 
     Column(
         modifier = modifier

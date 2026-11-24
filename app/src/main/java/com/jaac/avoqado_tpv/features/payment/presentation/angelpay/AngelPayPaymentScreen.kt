@@ -340,6 +340,11 @@ fun AngelPayPaymentScreen(
                 "$${String.format(java.util.Locale.US, "%.2f", subtotal.add(tip))}"
             }
 
+            // 🔙 Encargo f84e3a: con «Aprobado» en pantalla todavía no hay botones; el «atrás» del sistema se ignora (antes sacaba la
+            // pantalla de cobro y regresaba a Cobrar con el carrito lleno). Después lo atiende AngelPaySuccessContent.
+            BackHandler {
+                Timber.d("🔙 [AngelPay] «atrás» durante «Aprobado»: se ignora")
+            }
             PaymentApprovedScreen(
                 amount = formattedTotal,
                 onAnimationComplete = {

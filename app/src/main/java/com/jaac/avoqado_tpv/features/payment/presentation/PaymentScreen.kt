@@ -851,6 +851,11 @@ fun PaymentScreen(
                     when {
                         // 🎉 Phase 1: Show approved animation
                         showApprovedAnimation -> {
+                            // 🔙 Encargo f84e3a: con «Aprobado» en pantalla todavía no hay botones; el «atrás» del sistema se ignora (antes
+                            // sacaba la pantalla de cobro y regresaba a Cobrar con el carrito lleno). El botón «Inicio» tampoco sale antes (D13).
+                            BackHandler(enabled = !isKioskPayment) {
+                                Timber.d("🔙 [PaymentSuccess] «atrás» durante «Aprobado»: se ignora")
+                            }
                             PaymentApprovedScreen(
                                 amount = currentState.amount,
                                 onAnimationComplete = {
@@ -1728,6 +1733,25 @@ private fun PaymentSuccessContent(
     // ⭐ Check if there's remaining balance (split payment scenario)
     val hasRemainingBalance = remainingBalance != null && remainingBalance > java.math.BigDecimal.ZERO
 
+    // 🔙 Encargo f84e3a: la acción del botón principal se calcula UNA vez; el «atrás» del sistema hace lo mismo (abajo).
+    val successRouting = resolveSuccessRouting(
+        flowOrigin = flowOrigin,
+        wasPayLaterOrder = wasPayLaterOrder,
+        payLaterOrdersCount = payLaterOrdersCount,
+        tableId = tableId,
+        onNavigateToPayLaterOrders = onNavigateToPayLaterOrders,
+        onClearTableAndReturnToFloorPlan = onClearTableAndReturnToFloorPlan,
+        onNavigateToSerializedSale = onNavigateToSerializedSale,
+        onNewOrder = onNewOrder,
+        onNewFastPayment = onNewFastPayment,
+        newOrderLabel = newOrderLabel
+    )
+    val accionPrincipal: () -> Unit = when {
+        isRefund -> onRefundComplete
+        hasRemainingBalance -> onContinuePayment
+        else -> successRouting.onClick
+    }
+
     // State for order details modal
     var showOrderDetailsModal by remember { mutableStateOf(false) }
 
@@ -1744,6 +1768,14 @@ private fun PaymentSuccessContent(
     var currentPhotoLabel by remember { mutableStateOf(ProofSlot.VINCULACION) }  // which photo camera is capturing
     var viewingPhotoLabel by remember { mutableStateOf<ProofSlot?>(null) }  // photo being previewed for retake
     val numberDrafts = remember { LinkingNumberDrafts() }  // 📸 C7: lo escrito sobrevive «Retomar»
+
+    // 🔙 Encargo f84e3a: con el cobro YA aprobado, el «atrás» FÍSICO no tenía quién lo atendiera (el de la pantalla se apaga en
+    // Success) y el sistema regresaba a la entrada anterior: desde Cobrar, el MISMO carrito lleno, y un segundo «Cobrar» creaba otra
+    // venta con la misma mercancía. Ahora hace lo mismo que el botón principal («Nueva Orden», «Nuevo Pago», «Listo», «Continuar
+    // pagando»), que ya lleva a un lugar NUEVO; con la cámara de la prueba de venta abierta, sólo la cierra. El kiosco no cambia.
+    BackHandler(enabled = !isKioskPayment) {
+        if (showProofOfSaleCamera) showProofOfSaleCamera = false else accionPrincipal()
+    }
 
     // 🥝 KIOSK MODE: Auto-dismiss countdown
     var kioskSecondsRemaining by remember { mutableIntStateOf(kioskCountdownSeconds) }
@@ -1862,18 +1894,6 @@ private fun PaymentSuccessContent(
                             }
                             // Normal flow: "Pagar cuenta (X)", "Nueva Orden", or "Nuevo Pago"
                             else -> {
-                                val successRouting = resolveSuccessRouting(
-                                    flowOrigin = flowOrigin,
-                                    wasPayLaterOrder = wasPayLaterOrder,
-                                    payLaterOrdersCount = payLaterOrdersCount,
-                                    tableId = tableId,
-                                    onNavigateToPayLaterOrders = onNavigateToPayLaterOrders,
-                                    onClearTableAndReturnToFloorPlan = onClearTableAndReturnToFloorPlan,
-                                    onNavigateToSerializedSale = onNavigateToSerializedSale,
-                                    onNewOrder = onNewOrder,
-                                    onNewFastPayment = onNewFastPayment,
-                                    newOrderLabel = newOrderLabel
-                                )
                                 val buttonText = successRouting.text
 
                                 Timber.d("💳 [PaymentSuccess] Button: $buttonText | wasPayLater=$wasPayLaterOrder | count=$payLaterOrdersCount | orderId=$orderId")

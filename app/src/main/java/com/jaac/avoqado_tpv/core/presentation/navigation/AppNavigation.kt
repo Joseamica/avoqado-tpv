@@ -154,6 +154,8 @@ interface AppNavigationEntryPoint {
     fun cobroConSaldo(): com.jaac.avoqado_tpv.features.giftcards.data.CobroConSaldoRepository
     // f3cba0: la cola de cobros de la terminal, para no abrir un cobro del POS sobre una cuenta ya cobrada que no ha subido.
     fun pendingPaymentDao(): com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
+    // f3cba0 (Codex r1 #3): el efectivo de Mesas vive en otra cola (sync_intents).
+    fun saldoDeMesaSinRed(): com.jaac.avoqado_tpv.features.tables.data.SaldoDeMesaSinRed
     fun recordAngelPayRefundUseCase(): com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordAngelPayRefundUseCase
     fun paymentStateProvider(): com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
     // D661 (ronda 4): el bloqueo y el mantenimiento de la app; bajo sus velos no sale la banda de pagados en línea.
@@ -493,6 +495,7 @@ fun AppNavigation(
     // 🎁 Tienda híbrida, parte 2: el cobro con saldo de un folio (lo mira el cobro remoto del POS antes de entrar).
     val cobroConSaldo = remember { kioskEntryPoint.cobroConSaldo() }
     val colaDeCobros = remember { kioskEntryPoint.pendingPaymentDao() }
+    val colaDeMesas = remember { kioskEntryPoint.saldoDeMesaSinRed() }
     // 🛒 D36: «atrás» antes de cobrar en «Cobrar» retira la venta que se creó en el SERVIDOR (si nunca se intentó cobrar).
     val retiroDeVentaSinCobro = remember { kioskEntryPoint.retiroDeVentaSinCobro() }
     LaunchedEffect(vigiaDeFolios) {
@@ -625,6 +628,7 @@ fun AppNavigation(
                     orderId = request.orderId,
                     venueId = runCatching { secureStorage.getVenueId() }.getOrNull(),
                     cola = colaDeCobros,
+                    mesas = { venue, cuenta -> colaDeMesas.pendienteDeSubir(venue, cuenta) },
                 )
             if (motivoParaNoIniciar != null) {
                 Timber.w("⚠️ [Remote] No se inicia el cobro (%s) - amount: ${request.amountCents}", motivoParaNoIniciar)

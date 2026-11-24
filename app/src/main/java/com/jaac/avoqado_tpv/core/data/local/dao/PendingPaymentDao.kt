@@ -306,6 +306,15 @@ interface PendingPaymentDao {
         AND (sync_status = 'FAILED' OR requiere_revision = 1) AND acknowledged = 0 LIMIT 1)""")
     suspend fun hayCobroSinRegistrar(venueId: String, orderId: String): Boolean
 
+    /**
+     * f3cba0 (Codex r1 #1): [hayCobroSinRegistrar] o [hayCobroSubiendose] en UNA sola lectura. Leídas por separado, una fila que el
+     * trabajador pasa de SYNCING a FAILED entre las dos no la ve ninguna (la primera la vio subiendo, la segunda ya rechazada) y la
+     * cuenta pasaba como libre. Es el predicado de la cola que frena el cierre de caja, acotado a la cuenta.
+     */
+    @Query("""SELECT EXISTS(SELECT 1 FROM pending_payments WHERE venue_id = :venueId AND order_id = :orderId
+        AND (sync_status IN ('PENDING', 'SYNCING') OR ((sync_status = 'FAILED' OR requiere_revision = 1) AND acknowledged = 0)) LIMIT 1)""")
+    suspend fun hayCobroSinSubir(venueId: String, orderId: String): Boolean
+
     @Query("SELECT * FROM pending_payments WHERE id = :id AND venue_id = :venueId LIMIT 1")
     suspend fun leerParaReconocer(id: Long, venueId: String): PendingPaymentEntity?
 

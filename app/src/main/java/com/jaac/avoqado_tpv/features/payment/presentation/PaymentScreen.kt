@@ -1027,8 +1027,12 @@ fun PaymentScreen(
                         },
                         onCancel = {
                             // En un cobro del POS no hay otro método que elegir, y esa pantalla lo dejaba esperando sin reloj.
-                            if (!isRefundMode && currentState.canRetry && currentState.context != null && !currentState.showOpenShiftButton &&
-                                !CobroRemotoDelPos.esCobroDelPos(paymentSource)
+                            // 🔴 1164aa: tras un error de registro del EFECTIVO tampoco: la tarjeta quedaba a un toque (cobro doble).
+                            if (cancelarDesdeElErrorVuelveAMetodos(
+                                    currentState,
+                                    esReembolso = isRefundMode,
+                                    esCobroDelPos = CobroRemotoDelPos.esCobroDelPos(paymentSource),
+                                )
                             ) {
                                 viewModel.returnToSelectingMerchantFromError(currentState.context)
                             } else {

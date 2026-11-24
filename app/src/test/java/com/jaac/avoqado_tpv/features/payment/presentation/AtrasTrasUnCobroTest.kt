@@ -54,12 +54,24 @@ class AtrasTrasUnCobroTest {
             "El «atrás» del sistema en el éxito de la PAX debe cerrar la cámara si está abierta y, si no, hacer la acción principal " +
                 "(sin esto regresaba a Cobrar con el carrito lleno: encargo f84e3a).",
             Regex(
-                """BackHandler\(enabled = !isKioskPayment\) \{\s*if \(showProofOfSaleCamera\) showProofOfSaleCamera = false else accionPrincipal\(\)\s*}""",
+                """BackHandler\(enabled = !isKioskPayment\) \{\s*when \{\s*showProofOfSaleCamera -> showProofOfSaleCamera = false\s*atrasEsperaAlRecibo -> Timber\.d\([^\n]*\)\s*else -> accionPrincipal\(\)\s*}\s*}""",
             ).containsMatchIn(exito),
         )
         assertTrue(
             "El botón «Nueva Orden»/«Nuevo Pago» debe usar la MISMA ruta que el «atrás» (successRouting).",
             Regex("""onClick = successRouting\.onClick""").containsMatchIn(exito),
+        )
+    }
+
+    @Test
+    fun `PAX - en un cobro del POS, atras espera el recibo para no callar el aviso de exito (Codex r2 2)`() {
+        val llamada = cuerpoDe(pantallaPax, "PaymentSuccessContent(\n", "\n                            )")
+        assertTrue(
+            "La pantalla debe pedir que el «atrás» espere el recibo justo cuando observeSocketPaymentResult todavía no emite: cobro del " +
+                "POS y sin paymentId.",
+            Regex(
+                """atrasEsperaAlRecibo = CobroRemotoDelPos\.esCobroDelPos\(paymentSource\) &&\s*currentState\.receipt\?\.paymentId\.isNullOrBlank\(\)""",
+            ).containsMatchIn(llamada),
         )
     }
 
@@ -92,7 +104,13 @@ class AtrasTrasUnCobroTest {
         assertTrue(
             "AngelPayPaymentScreen debe ignorar el «atrás» del sistema en Success, Queued, la animación y la espera tras el botón.",
             Regex(
-                """BackHandler\(\s*enabled = state is AngelPayPaymentState\.Success \|\| state is AngelPayPaymentState\.Queued \|\|\s*showApprovedAnimation \|\| showSuccessContent,\s*\) \{""",
+                """BackHandler\(\s*enabled = state is AngelPayPaymentState\.Success \|\| state is AngelPayPaymentState\.Queued \|\|\s*showApprovedAnimation \|\| showSuccessContent \|\| huboExito,\s*\) \{""",
+            ).containsMatchIn(antesDeLosOverlays),
+        )
+        assertTrue(
+            "La bandera huboExito se enciende con Success o Queued (tras el botón de un cobro en cola el estado ya es Idle).",
+            Regex(
+                """LaunchedEffect\(state\) \{\s*if \(state is AngelPayPaymentState\.Success \|\| state is AngelPayPaymentState\.Queued\) huboExito = true\s*}""",
             ).containsMatchIn(antesDeLosOverlays),
         )
     }

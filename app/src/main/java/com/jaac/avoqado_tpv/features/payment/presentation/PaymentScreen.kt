@@ -988,7 +988,11 @@ fun PaymentScreen(
                                 proofVerificationId = viewModel.proofVerificationId(),
                                 isUploadingProofOfSale = isUploadingProofOfSale,
                                 onRetakeProofOfSalePhoto = viewModel::retakeProofOfSalePhoto,
-                                isPrinting = isPrinting  // 🖨️ Show "Imprimiendo..." on button
+                                isPrinting = isPrinting,  // 🖨️ Show "Imprimiendo..." on button
+                                // 🔙 f84e3a (Codex r2 #2): en un cobro del POS, el éxito se avisa al POS cuando llega el recibo
+                                // (observeSocketPaymentResult). Hasta entonces el «atrás» no sale (salir lo callaría); los botones sí.
+                                atrasEsperaAlRecibo = CobroRemotoDelPos.esCobroDelPos(paymentSource) &&
+                                    currentState.receipt?.paymentId.isNullOrBlank()
                             )
                         }
                     }
@@ -1719,7 +1723,9 @@ private fun PaymentSuccessContent(
     proofNumber: (ProofSlot) -> String? = { null },  // 📸 C7: el número ya confirmado de la ranura (al retomar)
     proofVerificationId: String? = null,  // 📸 C7: para que number-check no choque con esta misma venta
     // 🖨️ RECEIPT PRINTING
-    isPrinting: Boolean = false  // Show "Imprimiendo..." on print button
+    isPrinting: Boolean = false,  // Show "Imprimiendo..." on print button
+    /** 🔙 f84e3a: true = un cobro del POS que todavía espera su recibo; el «atrás» se ignora para no callar el aviso al POS. */
+    atrasEsperaAlRecibo: Boolean = false
 ) {
     val displayOrderNumber = OrderNumberFormatter.display(orderNumber)
 
@@ -1774,7 +1780,11 @@ private fun PaymentSuccessContent(
     // venta con la misma mercancía. Ahora hace lo mismo que el botón principal («Nueva Orden», «Nuevo Pago», «Listo», «Continuar
     // pagando»), que ya lleva a un lugar NUEVO; con la cámara de la prueba de venta abierta, sólo la cierra. El kiosco no cambia.
     BackHandler(enabled = !isKioskPayment) {
-        if (showProofOfSaleCamera) showProofOfSaleCamera = false else accionPrincipal()
+        when {
+            showProofOfSaleCamera -> showProofOfSaleCamera = false
+            atrasEsperaAlRecibo -> Timber.d("🔙 [PaymentSuccess] «atrás» con el cobro del POS esperando su recibo: se ignora")
+            else -> accionPrincipal()
+        }
     }
 
     // 🥝 KIOSK MODE: Auto-dismiss countdown

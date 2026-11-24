@@ -365,7 +365,7 @@ class ControlDeGpsTest {
         assertTrue(s.tomarUno())
     }
 
-    @Test fun `D3 - una entrada nueva marcada mientras se leia no para el servicio ni se lleva esa lectura (Codex r2 2)`() = runBlocking<Unit> {
+    @Test fun `D3 - una entrada nueva marcada mientras se leia se queda con la lectura que llego despues de su toque (Codex r2 2)`() = runBlocking<Unit> {
         abrirTurno()
         val limite = limiteEnElCelular(AHORA - 60_000L)
         var reloj = limite - 1_000L
@@ -376,11 +376,64 @@ class ControlDeGpsTest {
             Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
         }
         val s = SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), db.piezaDao(), quienSoy) { reloj }
-        assertTrue(s.tomarUno()) // el bucle sigue: ahora es de la entrada nueva
-        assertTrue(db.pingDao().todos().isEmpty())
-        coEvery { ubicacion.leer(any()) } returns Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
-        assertTrue(s.tomarUno())
+        assertTrue(s.tomarUno()) // el servicio sigue: ahora es de la entrada nueva
         assertEquals(limite + 1_000L, db.pingDao().todos().single().capturadoAt)
+    }
+
+    @Test fun `D3 - una lectura que llego antes del toque de la entrada nueva no se le cuelga`() = runBlocking<Unit> {
+        abrirTurno()
+        coEvery { ubicacion.leer(any()) } coAnswers {
+            // La hora del toque quedó adelante de la de la lectura (el toque fue en el mismo instante en que contestó el GPS).
+            db.piezaDao().guardarTurno(TurnoLocal(staffId = "s1", llaveEntrada = "e2", timeEntryId = null, venueId = "v1", abiertoAt = AHORA + 1L))
+            Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
+        }
+        assertTrue(seguimiento().tomarUno())
+        assertTrue(db.pingDao().todos().isEmpty())
+    }
+
+    @Test fun `D3 - un error del GPS al cruzar el limite no deja el aviso otra vuelta (Codex r3 1)`() = runBlocking<Unit> {
+        abrirTurno()
+        val limite = limiteEnElCelular(AHORA - 60_000L)
+        var reloj = limite - 1_000L
+        coEvery { ubicacion.leer(any()) } coAnswers { reloj = limite + 1_000L; throw SecurityException("permiso quitado") }
+        val s = SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), db.piezaDao(), quienSoy) { reloj }
+        assertFalse(s.tomarUno())
+        // Dentro del turno, un error sigue como antes: otra vuelta, sin ping.
+        reloj = AHORA
+        coEvery { ubicacion.leer(any()) } throws IllegalStateException("proveedor")
+        assertTrue(s.tomarUno())
+        assertTrue(db.pingDao().todos().isEmpty())
+    }
+
+    @Test fun `bucle - un arranque nuevo mientras la lectura decidia parar no para el servicio (Codex r3 2)`() = runBlocking<Unit> {
+        var arranques = 0
+        val respuestas = ArrayDeque(listOf(false, true, false)) // la vieja dice «para», la de la entrada nueva «sigue», luego «para»
+        var esperas = 0
+        correrBucle(
+            tomarUno = { respuestas.removeFirst().also { if (respuestas.size == 2) arranques++ } }, // el arranque llega en la 1ª
+            arranques = { arranques },
+        ) { esperas++ }
+        assertTrue(respuestas.isEmpty()) // decidió otra vez con la fila nueva en vez de parar
+        assertEquals(1, esperas)
+    }
+
+    @Test fun `bucle - con un arranque nuevo durante la lectura, la siguiente es ya, no en 30 min (Codex r3 3)`() = runBlocking<Unit> {
+        var arranques = 0
+        val respuestas = ArrayDeque(listOf(true, true, false))
+        var esperas = 0
+        correrBucle(
+            tomarUno = { respuestas.removeFirst().also { if (respuestas.size == 2) arranques++ } },
+            arranques = { arranques },
+        ) { esperas++ }
+        assertEquals(1, esperas) // sólo después de la 2ª (la del arranque nuevo no esperó)
+    }
+
+    @Test fun `bucle - sin arranques nuevos para cuando ya no hay turno y un error cuenta como seguir`() = runBlocking<Unit> {
+        val respuestas = ArrayDeque<() -> Boolean>(listOf({ throw IllegalStateException("x") }, { true }, { false }))
+        var esperas = 0
+        correrBucle(tomarUno = { respuestas.removeFirst()() }, arranques = { 0 }) { esperas++ }
+        assertTrue(respuestas.isEmpty())
+        assertEquals(2, esperas)
     }
 
     @Test fun `D3 - la misma entrada ya subida (con timeEntryId) sigue guardando su ping`() = runBlocking<Unit> {

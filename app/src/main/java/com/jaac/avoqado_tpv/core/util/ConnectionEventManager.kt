@@ -64,7 +64,8 @@ class ConnectionEventManager @Inject constructor(
     suspend fun emitConnectionRestored(
         attemptsBeforeReconnection: Int
     ) {
-        runCatching { PaymentSyncScheduler.runNow(appContext) }
+        // Encargo 29ef3d: la pasada de reconexión revive primero las ventas FAILED y después reclama la tanda.
+        runCatching { PaymentSyncScheduler.alVolverElServidor(appContext) }
             .onFailure { timber.log.Timber.w(it, "Caja y registros conservan el respaldo periódico de sincronización.") }
         _connectionRestoredEvents.emit(
             ConnectionRestoredEvent(

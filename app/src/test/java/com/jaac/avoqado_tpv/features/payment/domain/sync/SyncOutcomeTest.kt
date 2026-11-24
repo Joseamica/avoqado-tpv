@@ -137,4 +137,38 @@ class SyncOutcomeTest {
         assertThat(classifySyncFailure(BackendHttpException(401, "")))
             .isInstanceOf(SyncOutcome.Retryable::class.java)
     }
+
+    // ── Encargo 29ef3d: una pasada en la que NADIE contestó no gasta un intento de la cola ──
+
+    @Test
+    fun `sin respuesta del servidor (plazo, sin conexion, DNS) cuenta como nadie contesto`() {
+        assertThat(nadieContesto(SocketTimeoutException("timeout"))).isTrue()
+        assertThat(nadieContesto(java.net.ConnectException("Failed to connect"))).isTrue()
+        assertThat(nadieContesto(java.net.UnknownHostException("api"))).isTrue()
+        assertThat(nadieContesto(IOException("unexpected end of stream"))).isTrue()
+    }
+
+    @Test
+    fun `un 502, 503 o 504 sin codigo es el intermediario hablando por un servidor que no contesta`() {
+        assertThat(nadieContesto(BackendHttpException(502, "Bad Gateway"))).isTrue()
+        assertThat(nadieContesto(BackendHttpException(503, "Service Unavailable"))).isTrue()
+        assertThat(nadieContesto(BackendHttpException(504, "Gateway Timeout"))).isTrue()
+    }
+
+    @Test
+    fun `una respuesta de NUESTRO servidor si cuenta como respuesta`() {
+        // 503 con código: lo mandó la app del SERVIDOR (p. ej. ORDER_TABLE_TOPOLOGY_CHANGED), no el intermediario.
+        assertThat(nadieContesto(BackendHttpException(503, "La cuenta cambió", errorCode = "ORDER_TABLE_TOPOLOGY_CHANGED"))).isFalse()
+        assertThat(nadieContesto(BackendHttpException(500, "Internal Server Error"))).isFalse()
+        assertThat(nadieContesto(BackendHttpException(429, "Too Many Requests"))).isFalse()
+        assertThat(nadieContesto(BackendHttpException(401, "Unauthorized"))).isFalse()
+        assertThat(nadieContesto(IllegalStateException("boom"))).isFalse()
+        assertThat(nadieContesto(null)).isFalse()
+    }
+
+    @Test
+    fun `nadie contesto no cambia la clasificacion - sigue siendo reintentable`() {
+        assertThat(classifySyncFailure(SocketTimeoutException("timeout"))).isInstanceOf(SyncOutcome.Retryable::class.java)
+        assertThat(classifySyncFailure(BackendHttpException(502, "Bad Gateway"))).isInstanceOf(SyncOutcome.Retryable::class.java)
+    }
 }

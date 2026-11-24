@@ -89,3 +89,26 @@ fun classifySyncFailure(error: Throwable?): SyncOutcome = when {
 
     else -> SyncOutcome.Retryable                          // desconocido y null
 }
+
+/**
+ * Códigos con los que un intermediario (el balanceador de la nube, un proxy) habla por un SERVIDOR que no contestó.
+ * Sólo cuentan así cuando no traen `code`: un 503 con código lo mandó la propia app del servidor
+ * (p. ej. `ORDER_TABLE_TOPOLOGY_CHANGED`) y es una respuesta de verdad.
+ */
+private val CODIGOS_DEL_INTERMEDIARIO = setOf(502, 503, 504)
+
+/**
+ * ¿En este intento NADIE del servidor contestó? Plazo vencido, sin conexión, DNS, flujo cortado, o un 502/503/504 sin
+ * código del intermediario.
+ *
+ * Encargo 29ef3d: en un corte largo del SERVIDOR (internet bien, servidor mudo) cada venta encolada despierta una pasada
+ * de la cola; si cada pasada contaba como intento, a las 10 una venta en efectivo quedaba FAILED y fuera de la fila. Un
+ * intento sin respuesta no dice nada de la venta, así que la cola NO lo cuenta ([PaymentSyncWorker]); sólo una respuesta
+ * real (500, 429, 401…) acerca la fila a revisión. No cambia la clasificación: lo que es [SyncOutcome.Retryable] lo sigue
+ * siendo, con la MISMA llave de idempotencia.
+ */
+fun nadieContesto(error: Throwable?): Boolean = when (error) {
+    is BackendHttpException -> error.statusCode in CODIGOS_DEL_INTERMEDIARIO && error.errorCode.isNullOrBlank()
+    is IOException -> true
+    else -> false
+}

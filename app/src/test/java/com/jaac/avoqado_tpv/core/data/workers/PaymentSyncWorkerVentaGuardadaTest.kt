@@ -291,7 +291,8 @@ class PaymentSyncWorkerVentaGuardadaTest {
         assertThat(worker().doWork()).isEqualTo(ListenableWorker.Result.success())
 
         assertThat(fila().syncStatus).isEqualTo("PENDING")
-        assertThat(fila().retryCount).isEqualTo(1)
+        // Encargo 29ef3d: nadie contestó (red caída), así que no se gasta intento.
+        assertThat(fila().retryCount).isEqualTo(0)
         assertThat(fila().claimToken).isNull()
         assertThat(db.pendingPaymentDao().findByReference("CASH-legacy", "venue-1")!!.syncStatus).isEqualTo("SUCCESS")
         coVerify(exactly = 1) { api.crearOrden(any(), any()) }
@@ -301,7 +302,8 @@ class PaymentSyncWorkerVentaGuardadaTest {
 
     @Test fun `diez intentos separados agotan la fila y la conservan contada como fallida`() = runTest {
         guardar()
-        coEvery { api.crearOrden("venue-1", any()) } returns error(503)
+        // 500 = el SERVIDOR contestó con error: cuenta. (Un 502/503/504 del intermediario ya no cuenta, encargo 29ef3d.)
+        coEvery { api.crearOrden("venue-1", any()) } returns error(500)
 
         repeat(10) { indice ->
             worker().doWork()
@@ -323,6 +325,40 @@ class PaymentSyncWorkerVentaGuardadaTest {
         coVerify(exactly = 10) { api.crearOrden(any(), any()) }
         coVerify(exactly = 0) { api.pagar(any(), any(), any()) }
         coVerify(exactly = 0) { legacy(any(), any(), any(), any(), true) }
+    }
+
+    @Test fun `P1 un corte largo del servidor no manda la venta en efectivo a FAILED y sube sola al volver`() = runTest {
+        guardar()
+        // Servidor mudo: el pedido sale, nadie contesta (plazo), y en una de cada tres pasadas el portero de la nube
+        // contesta 504. Más de MAX_RETRY_ATTEMPTS pasadas: antes la fila quedaba FAILED en la décima.
+        coEvery { api.crearOrden("venue-1", any()) } throws java.net.SocketTimeoutException("timeout")
+        repeat(PendingPaymentEntity.MAX_RETRY_ATTEMPTS + 2) { indice ->
+            if (indice % 3 == 2) coEvery { api.crearOrden("venue-1", any()) } returns error(504)
+            else coEvery { api.crearOrden("venue-1", any()) } throws java.net.SocketTimeoutException("timeout")
+            worker().doWork()
+            assertThat(fila().syncStatus).isEqualTo("PENDING")
+            assertThat(fila().retryCount).isEqualTo(0)
+            assertThat(fila().claimToken).isNull()
+        }
+
+        // Vuelve el servidor: la siguiente pasada la sube, con su misma llave.
+        coEvery { api.crearOrden("venue-1", any()) } returns orden()
+        worker().doWork()
+
+        assertThat(fila().syncStatus).isEqualTo("SUCCESS")
+        assertThat(queue.getFailedCount()).isEqualTo(0)
+        coVerify(exactly = 1) { api.pagar("venue-1", orderId, match { it.idempotencyKey == llave }) }
+    }
+
+    @Test fun `P1 la orden ya creada y el pago sin respuesta tampoco gasta intento`() = runTest {
+        guardar()
+        coEvery { api.pagar("venue-1", orderId, any()) } throws java.net.SocketTimeoutException("timeout")
+
+        worker().doWork()
+
+        assertThat(fila().syncStatus).isEqualTo("PENDING")
+        assertThat(fila().retryCount).isEqualTo(0)
+        assertThat(fila().orderId).isEqualTo(orderId)
     }
 
     @Test fun `dos workers con reclamo Room real hacen una sola llamada a crear orden`() = runTest {

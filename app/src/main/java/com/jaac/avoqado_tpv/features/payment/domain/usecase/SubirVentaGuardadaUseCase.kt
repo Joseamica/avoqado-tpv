@@ -15,6 +15,7 @@ import com.jaac.avoqado_tpv.features.payment.data.repository.toQueuedPayment
 import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment
 import com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome
 import com.jaac.avoqado_tpv.features.payment.domain.sync.classifySyncFailure
+import com.jaac.avoqado_tpv.features.payment.domain.sync.nadieContesto
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import okhttp3.MediaType.Companion.toMediaType
@@ -32,8 +33,23 @@ class SubirVentaGuardadaUseCase @Inject constructor(
 ) {
     private val gson = Gson()
 
+    /**
+     * Desenlace de una subida y si el SERVIDOR contestó (encargo 29ef3d). [sinRespuesta] sólo es `true` con
+     * [SyncOutcome.Retryable] y cuando el último intento no tuvo respuesta ([nadieContesto]): la cola no cuenta ese intento.
+     */
+    data class Subida(val desenlace: SyncOutcome, val sinRespuesta: Boolean)
+
     /** No cierra/suelta el claim: la pantalla y el worker conservan esa responsabilidad. Nunca registra por /fast. */
-    suspend operator fun invoke(fila: QueuedPayment): SyncOutcome {
+    suspend operator fun invoke(fila: QueuedPayment): SyncOutcome = subirConPista(fila) {}
+
+    /** Igual que [invoke], y además dice si el servidor no contestó (lo usa la cola para no gastar el intento). */
+    suspend fun subir(fila: QueuedPayment): Subida {
+        var sinRespuesta = false
+        val desenlace = subirConPista(fila) { sinRespuesta = true }
+        return Subida(desenlace, sinRespuesta && desenlace is SyncOutcome.Retryable)
+    }
+
+    private suspend fun subirConPista(fila: QueuedPayment, alNoContestar: () -> Unit): SyncOutcome {
         val token = fila.claimToken?.takeIf { it.isNotBlank() } ?: return SyncOutcome.Retryable
         try {
             val guardada = dao.findByReference(fila.referenceNumber, fila.venueId)
@@ -66,7 +82,7 @@ class SubirVentaGuardadaUseCase @Inject constructor(
             // Una cortesía puede haber quedado PAID sin Payment. Recuperar con la misma llave sobrevive a morir tras el CAS.
             if (orderId.isNullOrBlank() || (amount == 0 && tip == 0)) {
                 val respuesta = api.crearOrden(actual.venueId, pedido.toRequestBody("application/json; charset=utf-8".toMediaType()))
-                falloHttp(respuesta)?.let { return it }
+                falloHttp(respuesta, alNoContestar)?.let { return it }
                 val cuerpo = respuesta.body()
                 val orden = cuerpo?.get("order")?.takeIf { it.isJsonObject }?.asJsonObject
                     ?: return SyncOutcome.Permanent("El servidor no devolvió la orden creada")
@@ -99,7 +115,7 @@ class SubirVentaGuardadaUseCase @Inject constructor(
                     venueId = actual.venueId, amount = amount, tip = tip, staffId = actual.staffId, idempotencyKey = llave,
                     shiftIdDeLaVenta = resolvedShift, createdAtLocal = actual.createdAt, edadDeLaVentaMs = edadDeLaVenta(actual),
                 ))
-                falloHttp(respuesta)?.let { return it }
+                falloHttp(respuesta, alNoContestar)?.let { return it }
                 val cuerpo = respuesta.body()
                 val pago = cuerpo?.get("payment")?.takeIf { it.isJsonObject }?.asJsonObject
                     ?: return SyncOutcome.Permanent("El servidor no devolvió el pago")
@@ -120,6 +136,7 @@ class SubirVentaGuardadaUseCase @Inject constructor(
         } catch (e: ArithmeticException) {
             return SyncOutcome.Permanent("El importe guardado no se puede expresar en centavos")
         } catch (e: Exception) {
+            if (nadieContesto(e)) alNoContestar()
             return classifySyncFailure(e)
         }
     }
@@ -152,9 +169,12 @@ class SubirVentaGuardadaUseCase @Inject constructor(
     private fun JsonObject.centavosDesdePesos(nombre: String): BigDecimal? =
         runCatching { get(nombre)?.asBigDecimal?.movePointRight(2)?.setScale(0, RoundingMode.HALF_UP) }.getOrNull()
 
-    private fun falloHttp(respuesta: Response<JsonObject>): SyncOutcome? {
+    /** El cuerpo no se lee: un 502/503/504 aquí cuenta como del intermediario aunque lo haya mandado el servidor (sigue reintentándose). */
+    private fun falloHttp(respuesta: Response<JsonObject>, alNoContestar: () -> Unit): SyncOutcome? {
         if (respuesta.isSuccessful) return null
         respuesta.errorBody()?.close()
-        return classifySyncFailure(BackendHttpException(respuesta.code(), respuesta.message()))
+        val error = BackendHttpException(respuesta.code(), respuesta.message())
+        if (nadieContesto(error)) alNoContestar()
+        return classifySyncFailure(error)
     }
 }

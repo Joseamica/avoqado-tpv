@@ -90,7 +90,7 @@ class AtrasTrasUnCobroTest {
         )
         assertTrue(
             "La flecha lee el estado AL TOCAR: si el cobro se aprobó en ese instante, no regresa a antes de cobrar (Codex r4 #1).",
-            Regex("""val flechaAtras: \(\) -> Unit = \{[^}]*if \(viewModel\.state\.value is PaymentState\.Success\) \{""")
+            Regex("""val flechaAtras: \(\) -> Unit = \{[^}]*if \(!isKioskPayment && viewModel\.state\.value is PaymentState\.Success\) \{""")
                 .containsMatchIn(pantalla),
         )
         assertTrue(

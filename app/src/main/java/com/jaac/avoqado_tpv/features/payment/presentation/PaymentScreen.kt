@@ -345,8 +345,8 @@ fun PaymentScreen(
 
     val flechaAtras: () -> Unit = {
         // 🔙 f84e3a (Codex r4 #1): el cobro se pudo aprobar en este mismo instante, antes de que la pantalla apague este manejador:
-        // se lee el estado AL TOCAR. Con el cobro hecho no se regresa a antes de cobrar.
-        if (viewModel.state.value is PaymentState.Success) {
+        // se lee el estado AL TOCAR. Con el cobro hecho no se regresa a antes de cobrar. El kiosco no cambia (Codex r5 #1).
+        if (!isKioskPayment && viewModel.state.value is PaymentState.Success) {
             Timber.d("🔙 [Payment] «atrás» justo al aprobarse el cobro: se ignora")
         } else if (!viewModel.goBackOneStep()) {
             // 🔧 FIX: Reset ViewModel to Idle so next payment uses new initialAmount

@@ -146,8 +146,6 @@ interface AppNavigationEntryPoint {
     fun initializationManager(): com.jaac.avoqado_tpv.features.payment.data.InitializationManager
     fun updateRequestManager(): UpdateRequestManager
     fun remotePaymentCoordinator(): com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator
-    fun lockScreenManager(): com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
-    fun maintenanceManager(): com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
     fun paymentAttemptLedger(): com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
     fun declaracionDesdeElAviso(): com.jaac.avoqado_tpv.features.payment.data.ledger.DeclaracionDesdeElAviso
     fun socketManager(): com.jaac.avoqado_tpv.core.data.realtime.SocketManager
@@ -485,10 +483,6 @@ fun AppNavigation(
     }
     val remotePaymentCoordinator = remember { kioskEntryPoint.remotePaymentCoordinator() }
     val socketManager = remember { kioskEntryPoint.socketManager() }
-    // D669: el candado que el dueño pone desde Avoqado (bloqueo o mantenimiento), guardado en la terminal.
-    val lockScreenManager = remember { kioskEntryPoint.lockScreenManager() }
-    val maintenanceManager = remember { kioskEntryPoint.maintenanceManager() }
-
     // 🧾 PEDIDOS POR PAGAR (tienda híbrida): el vigía vive con la actividad y, con sesión guardada, sondea solo
     // (también cuando SplashScreen restaura la sesión sin pasar por el login). Idempotente.
     val vigiaDeFolios = remember { kioskEntryPoint.vigiaDeFolios() }

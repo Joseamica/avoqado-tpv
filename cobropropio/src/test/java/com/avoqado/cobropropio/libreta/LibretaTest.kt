@@ -93,14 +93,15 @@ class LibretaTest {
 
     private fun IntentoEntity.id() = AttemptId(attemptId)
 
-    private fun enviada(l: Libreta, v: IntentoEntity = venta()): IntentoEntity {
+    /** Bloque 1b · fila 11: cada venta enviada con su propia lectura (el folio, único); `lectura` la fija a propósito. */
+    private fun enviada(l: Libreta, v: IntentoEntity = venta(), lectura: String = v.attemptId): IntentoEntity {
         assertTrue(l.anotar(v))
-        assertTrue(l.marcarEnviado(v.id(), reloj, datos()))
+        assertTrue(l.marcarEnviado(v.id(), reloj, datos(huellaLectura = lectura)))
         return v
     }
 
-    private fun aprobada(l: Libreta, v: IntentoEntity = venta()): IntentoEntity {
-        enviada(l, v)
+    private fun aprobada(l: Libreta, v: IntentoEntity = venta(), lectura: String = v.attemptId): IntentoEntity {
+        enviada(l, v, lectura)
         assertEquals(Arbitraje.Vigente, l.guardarAprobacion(v.id(), 1_234_567, "A1B2C3"))
         return v
     }
@@ -420,6 +421,44 @@ class LibretaTest {
         assertEquals(ResultadoParaReportar.PUDO_ENTRAR, f.resultadoParaReportar)
         assertEquals("TX_007", f.ultimoCodigoReverso)
         assertEquals(EstadoDelIntento.NO_SE, f.estado)
+    }
+
+    /** Bloque 1b · fila 14: lo que promete el KDoc (`IntentoEntity.pudoEntrar`, «sólo sube») vale para TODO escritor. */
+    @Test fun `transicionar no baja pudoEntrar`() {
+        val l = libreta()
+        val v = reclamada(l)
+        assertTrue(l.cerrarVuelta(v.id(), ClaseDelReverso.Reintentar("68", false, pared), null, null))
+        val antes = l.buscar(v.id())!!
+        assertTrue(antes.pudoEntrar)
+        val e = runCatching { l.transicionar(v.id(), EstadoDelIntento.ENVIADO) { it.copy(pudoEntrar = false) } }.exceptionOrNull()
+        assertTrue("$e", e is IllegalStateException)
+        assertEquals("la fila no cambia", antes, l.buscar(v.id()))
+        // Copiarlo (o subirlo) sí se puede.
+        assertNotNull(l.transicionar(v.id(), EstadoDelIntento.ENVIADO) { it.copy(estado = EstadoDelIntento.NO_SE) })
+        assertTrue(l.buscar(v.id())!!.pudoEntrar)
+    }
+
+    /** Bloque 1b · fila 14: la base DUKPT, el contador usado y la huella de la lectura se escriben UNA vez (al salir). */
+    @Test fun `ksnBase contadorUsado y huellaLectura se fijan una vez`() {
+        val l = libreta()
+        val v = enviada(l)
+        val antes = l.buscar(v.id())!!
+        val cambios = listOf<(IntentoEntity) -> IntentoEntity>(
+            { it.copy(ksnBase = null) },
+            { it.copy(ksnBase = "FFFF9876543210A00000") },
+            { it.copy(contadorUsado = null) },
+            { it.copy(contadorUsado = 1) },
+            { it.copy(huellaLectura = null) },
+            { it.copy(huellaLectura = "c".repeat(64)) },
+        )
+        for ((i, cambio) in cambios.withIndex()) {
+            val e = runCatching { l.transicionar(v.id(), EstadoDelIntento.ENVIADO, cambio) }.exceptionOrNull()
+            assertTrue("cambio $i: $e", e is IllegalStateException)
+            assertEquals("cambio $i: la fila no cambia", antes, l.buscar(v.id()))
+        }
+        // Volver a escribir el MISMO valor sí se puede (todo escritor copia la fila).
+        assertNotNull(l.transicionar(v.id(), EstadoDelIntento.ENVIADO) { it.copy(estado = EstadoDelIntento.NO_SE) })
+        assertEquals(antes.contadorUsado, l.buscar(v.id())!!.contadorUsado)
     }
 
     @Test fun `cerrar vuelta desde NO_CONCLUYENTE al techo`() {
@@ -779,15 +818,44 @@ class LibretaTest {
 
     @Test fun `marcar cancelacion enviada rechaza lectura igual a la de la venta`() {
         val l = libreta()
-        val original = aprobada(l)
+        val original = aprobada(l, lectura = lecturaDeLaVenta)
         val c = cancelacionDe(original)
         assertEquals(ResultadoDeAnotarCancelacion.Anotada, l.anotarCancelacion(c, original.ambito()))
         assertEquals(ResultadoDeEnviarCancelacion.LecturaRepetida, l.marcarCancelacionEnviada(c.id(), reloj, datos(huellaLectura = lecturaDeLaVenta)))
         assertEquals(ResultadoDeEnviarCancelacion.OtraTarjeta, l.marcarCancelacionEnviada(c.id(), reloj, datos(huellaTarjeta = "e".repeat(64), huellaLectura = "c".repeat(64))))
-        assertFalse(l.marcarEnviado(c.id(), reloj, datos(huellaLectura = "c".repeat(64)))) // una cancelación no se salta las revisiones
+        assertFalse(l.marcarEnviado(c.id(), reloj, datos(huellaLectura = lecturaDeLaVenta))) // una cancelación no se salta las revisiones, ni con una lectura repetida
         assertEquals(EstadoDelIntento.ANOTADO, l.buscar(c.id())!!.estado)
         assertTrue(l.vetarPorCorte(c))
         assertEquals(ResultadoDeEnviarCancelacion.YaNoAplica, l.marcarCancelacionEnviada(c.id(), reloj, datos(huellaLectura = "c".repeat(64))))
+    }
+
+    /** Bloque 1b · fila 11 (R15-2): una lectura que ya salió en OTRA fila (venta o cancelación), o sin huella, no sale en una VENTA. */
+    @Test fun `marcarEnviado de una venta con la lectura de otra fila no sale`() {
+        val l = libreta()
+        val primera = aprobada(l, lectura = lecturaDeLaVenta)
+        val c = cancelacionDe(primera)
+        assertEquals(ResultadoDeAnotarCancelacion.Anotada, l.anotarCancelacion(c, primera.ambito()))
+        assertEquals(ResultadoDeEnviarCancelacion.Enviada, l.marcarCancelacionEnviada(c.id(), reloj, datos(huellaLectura = "c".repeat(64))))
+        val laPrimera = l.buscar(primera.id())
+        val laCancelacion = l.buscar(c.id())
+        for (repetida in listOf<String?>(lecturaDeLaVenta, "c".repeat(64), null)) {
+            val v = venta()
+            assertTrue(l.anotar(v))
+            assertFalse("$repetida", l.marcarEnviado(v.id(), reloj, datos().copy(huellaLectura = repetida)))
+            val f = l.buscar(v.id())!!
+            assertEquals("$repetida", EstadoDelIntento.NO_SALIO, f.estado)
+            assertEquals("$repetida", MotivoNoSalio.LECTURA_REPETIDA, f.motivoNoSalio)
+            assertNull("$repetida", f.huellaLectura)
+            assertNull("$repetida", f.enviadoEnMs)
+            assertFalse("$repetida: el folio es de un solo uso", l.marcarEnviado(v.id(), reloj, datos(huellaLectura = "e".repeat(64))))
+        }
+        assertEquals("la otra venta no cambia", laPrimera, l.buscar(primera.id()))
+        assertEquals("la cancelación no cambia", laCancelacion, l.buscar(c.id()))
+        // La misma tarjeta con una lectura NUEVA sí sale.
+        val nueva = venta()
+        assertTrue(l.anotar(nueva))
+        assertTrue(l.marcarEnviado(nueva.id(), reloj, datos(huellaLectura = "d".repeat(64))))
+        assertEquals(EstadoDelIntento.ENVIADO, l.buscar(nueva.id())!!.estado)
     }
 
     /** Mete la fila directo en la tabla, sin las revisiones de la libreta: el CAS de envío tiene que volver a revisar. */

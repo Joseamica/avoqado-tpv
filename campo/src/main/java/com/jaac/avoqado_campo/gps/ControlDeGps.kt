@@ -9,6 +9,7 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.location.LocationManagerCompat
 import com.jaac.avoqado_campo.checada.Ubicacion
+import com.jaac.avoqado_campo.checada.turnoVigente
 import com.jaac.avoqado_campo.cola.BaseDeCampo
 import com.jaac.avoqado_campo.cola.MutexDeSubida
 import com.jaac.avoqado_campo.cola.PiezaDao
@@ -51,9 +52,10 @@ interface ControlDeGps {
  * Familia G (r3 #3 y #4): los pings son de la sucursal del TURNO abierto de esta persona, así que su ajuste decide (sin
  * turno, la de la sesión). `seguimientoDeUbicacion`: false = no; true o null (SERVIDOR viejo) = sí. La usan `iniciar()`, el
  * arranque del servicio (también el reinicio que hace Android solo), cada lectura del servicio y `revisar()`.
+ * D3 (hz:nube0000:na1c5a48): un turno de un día ya terminado ([turnoVigente] falso a [ahoraMs]) ya no es «su turno».
  */
-fun debeSeguir(yo: Instantanea, turno: TurnoLocal?): Boolean {
-    val venueId = turno?.takeIf { it.abierto && it.staffId == yo.staffId }?.venueId ?: yo.sesion?.venueId
+fun debeSeguir(yo: Instantanea, turno: TurnoLocal?, ahoraMs: Long): Boolean {
+    val venueId = turno?.takeIf { it.staffId == yo.staffId && turnoVigente(it, ahoraMs) }?.venueId ?: yo.sesion?.venueId
     // r4 · B13: una sucursal que ya no está en sus sucursales ya no es suya: no se sigue.
     val sucursal = yo.sucursales.firstOrNull { it.venueId == venueId } ?: return false
     return sucursal.seguimientoDeUbicacion != false
@@ -79,6 +81,8 @@ class ControlDeGpsReal(
     private val puerta: PuertaDelServicio,
     private val quienSoy: QuienSoy,
     private val dao: PiezaDao,
+    /** La hora del reloj anclado, la misma con la que se guardó la entrada (D3). */
+    private val ahora: () -> Long,
     private val arrancar: (Intent) -> Unit = { ContextCompat.startForegroundService(context, it) },
 ) : ControlDeGps {
     private fun intent() = Intent(context, ServicioDeUbicacion::class.java)
@@ -115,7 +119,7 @@ class ControlDeGpsReal(
 
     /** true = la sucursal del turno no sigue: se paró el servicio (si corría) y quedó `NoLoUsaLaTienda`. */
     private suspend fun pararSiNoDebe(): Boolean {
-        if (debeSeguir(quienSoy.instantanea(), dao.turnoAhora())) return false
+        if (debeSeguir(quienSoy.instantanea(), dao.turnoAhora(), ahora())) return false
         detener()
         estado.publicar(ResultadoGps.NoLoUsaLaTienda)
         return true
@@ -142,11 +146,17 @@ fun CoroutineScope.vigilarElSeguimiento(quienSoy: QuienSoy, gps: ControlDeGps): 
 /**
  * Al abrir la app (la Tarea 13 lo llama desde MainActivity): si hay un turno abierto de esta persona, se vuelve a intentar
  * seguirla; el Inicio muestra el motivo si no sigue. null = no hay turno (no se intenta).
+ * D3 (hz:nube0000:na1c5a48): un turno suyo de un día ya terminado («salida olvidada», [turnoVigente] falso a [ahoraMs]) no
+ * se reanuda, y si el servicio seguía vivo se para aquí: el SERVIDOR ya cerró ese turno, no se manda su ubicación.
  */
-suspend fun reanudarSiHayTurno(gps: ControlDeGps, dao: PiezaDao, quienSoy: QuienSoy): ResultadoGps? {
+suspend fun reanudarSiHayTurno(gps: ControlDeGps, dao: PiezaDao, quienSoy: QuienSoy, ahoraMs: Long): ResultadoGps? {
     val t = dao.turnoAhora()
     val yo = quienSoy.instantanea()
     if (yo.limpiando || t == null || !t.abierto || t.staffId != yo.staffId) return null
+    if (!turnoVigente(t, ahoraMs)) {
+        gps.detener()
+        return null
+    }
     return gps.iniciar()
 }
 
@@ -162,7 +172,8 @@ object GpsModule {
     @Provides @Singleton
     fun proveerControlDeGps(
         @ApplicationContext context: Context, estado: EstadoDelGps, puerta: PuertaDelServicio, quienSoy: QuienSoy, dao: PiezaDao,
-    ): ControlDeGps = ControlDeGpsReal(context, estado, puerta, quienSoy, dao)
+        reloj: RelojAnclado,
+    ): ControlDeGps = ControlDeGpsReal(context, estado, puerta, quienSoy, dao, ahora = { reloj.ahora().epochMs })
 
     @Provides
     fun proveerPingDao(base: BaseDeCampo): PingDao = base.pingDao()

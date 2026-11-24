@@ -68,7 +68,9 @@ object TextosPorPagar {
     const val SIN_RESULTADOS_AYUDA = "Si ya venció o ya se pagó, revisa «Por entregar». Si venció, cóbralo en «Cobrar» como venta normal."
     const val PUEDE_HABER_MAS = "Puede haber más: toca «Cargar más» para seguir buscando."
     const val SIN_CONEXION_TITULO = "Pedidos por pagar · Sin conexión:"
-    const val SIN_CONEXION_CUERPO = "los pedidos nuevos no se ven. Cobra en \"Cobrar\" como venta normal"
+    /** D661 · W1: sin red no se ven los pagados en línea; cobrarlos en caja haría un segundo cobro cuando otra caja los abra. */
+    const val SIN_CONEXION_CUERPO = "los pedidos nuevos no se ven. Cobra en \"Cobrar\" como venta normal. " +
+        "Si ya pagó en línea, no lo cobres: ábrelo cuando vuelva la conexión."
     const val ENTREGA_SIN_RED = "«Listo» y «Entregado» vuelven con la conexión"
     const val FOLIO_SIN_RED = "Sin conexión: cóbralo como venta normal en «Cobrar»."
     const val SIN_ACTUALIZAR = "Sin actualizar: la lista puede no estar al día."

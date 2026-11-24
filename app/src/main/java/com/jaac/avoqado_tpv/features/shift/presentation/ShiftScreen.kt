@@ -474,9 +474,9 @@ private fun NoActiveShiftContent(
 
                 Spacer(modifier = Modifier.height(24.dp))
 
+                // D24: sin permiso no queda en gris: pide el PIN de un cajero o gerente.
                 Button(
                     onClick = onOpenShift,
-                    enabled = canOpenShift,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.tertiary  // ✅ Verde Avoqado
                     )
@@ -487,9 +487,9 @@ private fun NoActiveShiftContent(
                 if (!canOpenShift) {
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "No tienes permiso para abrir la caja",
+                        text = TEXTO_PIN_PARA_ABRIR,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
                     )
                 }

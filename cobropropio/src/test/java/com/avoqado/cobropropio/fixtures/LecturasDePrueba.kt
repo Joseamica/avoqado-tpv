@@ -120,4 +120,12 @@ object LecturasDePrueba {
         tags: Map<Int, String> = emptyMap(),
         sin: Set<Int> = emptySet(),
     ) = Lectura(kernel, entrada, resultado, codigoKernel, cvm, this.tags + tags - sin)
+
+    /**
+     * Bloque 1b · fila 11: la lectura `n` de un lector de prueba sano. La 1 es la del fixture tal cual; desde la 2, otro
+     * criptograma (9F26) y otro contador (9F36), como cada toque de una tarjeta de verdad. Sin esto, la segunda venta de una
+     * prueba saldría «lectura repetida».
+     */
+    fun Lectura.toque(n: Int): Lectura =
+        if (n <= 1) this else con(tags = mapOf(0x9F26 to "C0FFEE00" + "%08X".format(n), 0x9F36 to "%04X".format(n)))
 }

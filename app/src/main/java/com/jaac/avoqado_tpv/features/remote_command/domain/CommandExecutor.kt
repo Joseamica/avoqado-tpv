@@ -39,7 +39,9 @@ import kotlin.coroutines.resume
  * Handles the command execution logic only - ACKs are handled by ConnectionViewModel.
  *
  * **Delivery**: Foreground, safe-screen and reconnect events trigger bounded recovery.
- * No command polling timer is added.
+ * No command polling timer, with ONE declared exception (D665): while the terminal is LOCKED, each successful heartbeat
+ * (~30 s) also triggers recovery (`POST /commands/ready`), because with the lock veil nobody changes screens and off Home
+ * there is no socket — it is the only way to rescue a locked terminal stuck on Login.
  *
  * **ACK Flow (HTTP via ConnectionViewModel)**:
  * ```
@@ -83,7 +85,11 @@ class CommandExecutor @Inject constructor(
     private val recoveryMutex = Mutex()
 
     suspend fun recoverPending() {
-        if (!CommandExecutionWindow.isSafe() || !recoveryMutex.tryLock()) return
+        // D665: con el candado puesto el velo ya no deja volver a Inicio tocando, así que la recuperación también corre fuera
+        // de Inicio. Ahí `execute` sólo aplica UNLOCK (y LOCK sobre el candado ya puesto); lo demás queda DEFERRED, guardado y
+        // sin acuse final, hasta volver a Inicio. Los recibos ya guardados (un LOCK cuyo acuse se perdió) se reenvían igual.
+        if (!CommandExecutionWindow.isSafe() && !lockScreenManager.isCurrentlyLocked()) return
+        if (!recoveryMutex.tryLock()) return
         try {
             val repository = heartbeatRepositoryProvider.get()
             val serial = secureStorage.getSerialNumber() ?: return
@@ -96,7 +102,7 @@ class CommandExecutor @Inject constructor(
                         if (command == null) {
                             if (repository.sendCommandAck(dto.commandId, serial, CommandResult.rejected("Comando no soportado por esta app"))
                                 !is com.jaac.avoqado_tpv.core.domain.models.Result.Success) acknowledged = false
-                        } else if (!commandInbox.remember(command)) acknowledged = false
+                        } else if (!recordar(command)) acknowledged = false
                     }
                 }
                 // Restore receipts, including an ACK lost before the previous process died.
@@ -111,8 +117,21 @@ class CommandExecutor @Inject constructor(
             } while (ready is com.jaac.avoqado_tpv.core.domain.models.Result.Success && ready.data.size == 10 &&
                 acknowledged && CommandExecutionWindow.isSafe())
 
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // D665 r2: la llaman `launch` sin captura (latido, eventos de pantalla, reconexión): un comando raro o una bandeja
+            // ilegible no puede cerrar la app; se reintenta en el siguiente despertar.
+            Timber.e(e, "❌ [$TAG] La recuperación de comandos falló; se reintenta en el siguiente evento")
         } finally { recoveryMutex.unlock() }
     }
+
+    /**
+     * D665: con el candado puesto nadie cambia de pantalla (el velo detiene el dedo) y fuera de Inicio no hay socket, así que
+     * los eventos que despiertan [recoverPending] no llegan. El latido la despierta mientras dure el candado; sin candado no
+     * hace nada (no agrega consultas al servidor).
+     */
+    suspend fun recoverPendingWhileLocked() { if (lockScreenManager.isCurrentlyLocked()) recoverPending() }
 
     /** El `versionCode` de INSTALL_VERSION o REQUEST_UPDATE, con el mismo parseo flexible que [executeInstallVersion]. */
     private fun versionCodeDelComando(command: TpvCommand): Int? = when (val raw = command.payload?.get("versionCode")) {
@@ -121,7 +140,15 @@ class CommandExecutor @Inject constructor(
         else -> null
     }
 
-    fun rememberCommands(commands: List<TpvCommand>) { commands.forEach { commandInbox.remember(it) } }
+    fun rememberCommands(commands: List<TpvCommand>) { commands.forEach { recordar(it) } }
+
+    /** D665 r2: un comando cuyo contenido cambió con el mismo id se salta (y se registra) sin cerrar la app ni frenar a los demás. */
+    private fun recordar(command: TpvCommand): Boolean = try {
+        commandInbox.remember(command)
+    } catch (e: IllegalStateException) {
+        Timber.e(e, "⚠️ [$TAG] Comando ${command.commandId} (${command.type}) llegó con otro contenido; se ignora")
+        false
+    }
 
     companion object {
         private const val TAG = "CommandExecutor"
@@ -145,8 +172,16 @@ class CommandExecutor @Inject constructor(
         if (!commandInbox.remember(command)) return@withLock CommandResult(
             com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED, "Hay confirmaciones pendientes")
         commandInbox.previousResult(command.commandId)?.let { return@withLock it }
-        if (!CommandExecutionWindow.isSafe() || paymentStateProvider.isCharging() ||
-            paymentStateProvider.isChargeAttemptActive() || paymentStateProvider.isRefundInFlight()) {
+        // D665: UNLOCK sólo baja el candado (no navega, no cobra, no borra) y corre en cualquier pantalla. El velo del bloqueo
+        // ya detiene el dedo: una terminal bloqueada que quedó fuera de Inicio (sesión vencida ⇒ Login, un cobro del POS) no
+        // puede volver tocando, y si UNLOCK esperara a Inicio el candado no se podría quitar nunca desde Avoqado.
+        // LOCK sobre un candado ya puesto tampoco cambia nada en pantalla y es la salida de «Activación incompleta»: ese
+        // candado sólo existe en la terminal (el SERVIDOR cree que no está bloqueada y rechaza UNLOCK), así que el panel
+        // primero manda LOCK y después UNLOCK.
+        val enCualquierPantalla = command.type == TpvCommandType.UNLOCK ||
+            (command.type == TpvCommandType.LOCK && lockScreenManager.isCurrentlyLocked())
+        if (!enCualquierPantalla && (!CommandExecutionWindow.isSafe() || paymentStateProvider.isCharging() ||
+            paymentStateProvider.isChargeAttemptActive() || paymentStateProvider.isRefundInFlight())) {
             return@withLock CommandResult(com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED,
                 "Pendiente hasta volver a Inicio sin pagos ni devoluciones")
         }
@@ -189,7 +224,7 @@ class CommandExecutor @Inject constructor(
                 com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED,
                 "Hay pagos o devoluciones pendientes de resolver")
         }
-        if (!CommandExecutionWindow.tryBeginCommand()) return@withLock CommandResult(
+        if (!CommandExecutionWindow.tryBeginCommand(requireSafe = !enCualquierPantalla)) return@withLock CommandResult(
             com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED, "La terminal está ocupada")
         try {
         run {
@@ -207,7 +242,7 @@ class CommandExecutor @Inject constructor(
             }
         }
         // Recheck after the network suspension, before starting any device effect.
-        if (!CommandExecutionWindow.isSafe() || paymentStateProvider.isCharging() || paymentStateProvider.isChargeAttemptActive() || paymentStateProvider.isRefundInFlight())
+        if (!enCualquierPantalla && (!CommandExecutionWindow.isSafe() || paymentStateProvider.isCharging() || paymentStateProvider.isChargeAttemptActive() || paymentStateProvider.isRefundInFlight()))
             return@withLock CommandResult(com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus.DEFERRED, "La terminal está ocupada")
         commandInbox.begin(command.commandId)
         val result = try {

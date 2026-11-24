@@ -63,7 +63,7 @@ class Task7LegacyCacheUiRoomTest {
         every { connectivity.getCurrentNetworkStatus() } returns com.jaac.avoqado_tpv.core.util.NetworkStatus.Available
         val permissions = mockk<PermissionsRepository>(relaxed = true)
         coEvery { permissions.hasPermission(any()) } returns true
-        return ShiftViewModel(repo, storage, events, db.cachedShiftDao(), connectivity, permissions, refunds, com.jaac.avoqado_tpv.core.util.ConnectionStateManager()).also(vms::add)
+        return ShiftViewModel(repo, storage, events, db.cachedShiftDao(), connectivity, permissions, refunds, com.jaac.avoqado_tpv.core.util.ConnectionStateManager(), io.mockk.mockk(relaxed = true)).also(vms::add)
     }
     @After fun cleanup() { vms.forEach { it.viewModelScope.cancel() }; db.close(); context.deleteDatabase("task7-legacy-ui"); unmockkAll() }
     private suspend fun cash(key: String) {

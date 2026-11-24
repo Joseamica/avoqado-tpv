@@ -174,7 +174,8 @@ class ConnectionViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow.events.collect {
-                if (com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutionWindow.isSafe()) commandExecutor.recoverPending()
+                // D665: `recoverPending` decide sola cuándo corre (en Inicio, o en cualquier pantalla con el candado puesto).
+                commandExecutor.recoverPending()
             }
         }
         // Send immediate heartbeat when app starts/restarts
@@ -482,6 +483,10 @@ class ConnectionViewModel @Inject constructor(
                     if (!pendingCommands.isNullOrEmpty()) {
                         Timber.i("📥 [Connection] Received ${pendingCommands.size} pending command(s)")
                         processPendingCommands(pendingCommands)
+                    } else {
+                        // D665: con el candado puesto nada más despierta la recuperación (ni toques ni, fuera de Inicio,
+                        // socket). Si el latido ya trajo comandos, `processPendingCommands` ya la corrió: no se repite.
+                        viewModelScope.launch { commandExecutor.recoverPendingWhileLocked() }
                     }
                 }
                 is Result.Error -> {

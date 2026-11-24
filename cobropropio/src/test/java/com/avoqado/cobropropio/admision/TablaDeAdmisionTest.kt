@@ -114,6 +114,27 @@ class TablaDeAdmisionTest {
         niega(MotivoNoAdmitida.IMPORTE_NO_COINCIDE, LecturasDePrueba.mastercardPlasticoVenta().con(tags = mapOf(0x9F03 to "000000000001")))
     }
 
+    /**
+     * Bloque 4-L · L-b: el laboratorio cobra montos distintos de $1 (en la PAX, hasta $100 con la tarjeta de laboratorio).
+     * `TablaDeAdmision` es `internal` y la app de laboratorio no la puede preguntar: se afirma aquí. Las seis ventas medidas,
+     * Amex incluida, se admiten con el importe REAL de la venta; con el 9F02 de otro importe, no.
+     */
+    @Test fun `las seis ventas medidas se admiten con importes distintos de un peso`() {
+        val ventas: List<Triple<Marca, Medio, (Long) -> Lectura>> = listOf(
+            Triple(Marca.VISA, Medio.PLASTICO, LecturasDePrueba::visaPlasticoVenta),
+            Triple(Marca.VISA, Medio.CELULAR, LecturasDePrueba::visaCelularVenta),
+            Triple(Marca.MASTERCARD, Medio.PLASTICO, LecturasDePrueba::mastercardPlasticoVenta),
+            Triple(Marca.MASTERCARD, Medio.CELULAR, LecturasDePrueba::mastercardCelularVenta),
+            Triple(Marca.AMEX, Medio.PLASTICO, LecturasDePrueba::amexPlasticoVenta),
+            Triple(Marca.AMEX, Medio.CELULAR, LecturasDePrueba::amexCelularVenta),
+        )
+        for ((marca, medio, lectura) in ventas) for (importe in listOf(1L, 99L, 101L, 2_550L, 10_000L, 999_999_999_999L)) {
+            admite(lectura(importe), marca, medio, venta, importe)
+            niega(MotivoNoAdmitida.IMPORTE_NO_COINCIDE, lectura(importe), importe = importe + 1)
+            if (importe > 1) niega(MotivoNoAdmitida.IMPORTE_NO_COINCIDE, lectura(importe), importe = importe - 1)
+        }
+    }
+
     @Test fun `moneda distinta no se admite`() {
         niega(MotivoNoAdmitida.MONEDA_O_PAIS, LecturasDePrueba.visaPlasticoVenta().con(tags = mapOf(0x5F2A to "0840")))
         niega(MotivoNoAdmitida.MONEDA_O_PAIS, LecturasDePrueba.visaPlasticoVenta().con(tags = mapOf(0x9F1A to "0840")))

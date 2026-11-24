@@ -34,6 +34,21 @@ data class CurrentShiftResponse(
 data class KnownShiftState(val id: String? = null, val venueId: String? = null, val status: String? = null)
 
 /**
+ * D24: una caja abierta del servidor SIN cifras (GET /tpv/venues/:id/shift/identity): lo que este aparato guarda de ella.
+ * Todo nulable: lo valida quien la guarda, nunca se convierte en totales.
+ */
+data class ShiftIdentityDto(
+    val id: String? = null, val venueId: String? = null, val status: String? = null, val startTime: String? = null,
+    val staffId: String? = null, val startingCash: String? = null, val cashDrawerSessionId: String? = null,
+)
+
+/** D24: `{ shift, known }` de GET /tpv/venues/:id/shift/identity. */
+data class ShiftIdentityResponse(val shift: ShiftIdentityDto? = null, val known: KnownShiftState? = null)
+
+/** D24: lo mismo de una caja que vino CON cifras (GET /shift), para guardarla por el mismo camino. */
+fun ShiftDto.comoIdentidad() = ShiftIdentityDto(id, venueId, status, startTime, staffId, startingCash, cashDrawerSessionId)
+
+/**
  * Wrapper for POST /shifts/open and POST /shifts/:id/close endpoint responses
  *
  * Backend returns: {"success": true, "data": ShiftDto}

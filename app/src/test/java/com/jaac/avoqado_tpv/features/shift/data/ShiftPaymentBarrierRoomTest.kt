@@ -414,7 +414,7 @@ class ShiftPaymentBarrierRoomTest {
         every { connectivity.getCurrentNetworkStatus() } returns com.jaac.avoqado_tpv.core.util.NetworkStatus.Available
         val permissions = mockk<PermissionsRepository>()
         coEvery { permissions.hasPermission(any()) } returns true
-        return ShiftViewModel(repo, storage, connections, cache, connectivity, permissions, refunds, com.jaac.avoqado_tpv.core.util.ConnectionStateManager()).also { viewModels += it }
+        return ShiftViewModel(repo, storage, connections, cache, connectivity, permissions, refunds, com.jaac.avoqado_tpv.core.util.ConnectionStateManager(), io.mockk.mockk(relaxed = true)).also { viewModels += it }
     }
 
     private fun shift(id: String) = Shift(id = id, venueId = "v1", staffId = "seller", staffName = "Vendedora",

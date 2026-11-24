@@ -28,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -83,6 +84,10 @@ fun LockScreenOverlay(
             modifier = Modifier
                 .fillMaxSize()
                 .background(scrimColor)
+                // D665: el velo detiene el dedo. Sin esto, un toque fuera del aviso llegaba a la app de abajo y se seguía
+                // usando la terminal bloqueada («Cobrar»). Vacío a propósito, como la Surface de Material: lo vuelve blanco
+                // de toques, así la app de abajo no los recibe, y no consume nada (lo de la tarjeta sigue igual).
+                .pointerInput(Unit) {}
                 .zIndex(100f),  // Above everything
             contentAlignment = Alignment.Center
         ) {

@@ -2130,8 +2130,11 @@ fun AppNavigation(
                     }
                 },
                 onNavigateToShifts = {
-                    // 🆕 Navigate to Shifts screen (for "No shift open" errors)
-                    navController.navigate(NavRoute.Shifts.route)
+                    // 🆕 «Abrir caja» del error «No hay turno abierto». D666: este cobro SALE de la pila (su ViewModel muere y deja de
+                    // escribir las banderas del cobro) y, si es de esta terminal, al volver de Turnos se retoma la MISMA venta en una
+                    // pantalla nueva (ver irATurnosDesdeElCobro). No se retira nada (D36): la venta no se abandona. Siempre se retoma:
+                    // PaymentScreen llama resetPayment() antes, que ya soltó las llaves del intento; la pantalla vieja no guardaba nada más.
+                    navController.irATurnosDesdeElCobro(NavRoute.Payment.route, argumentosDelCobro, retomar = true)
                 },
                 onNavigateToNewOrder = {
                     if (folio != null) {
@@ -3170,7 +3173,12 @@ fun AppNavigation(
                     }
                 },
                 onNavigateToShifts = {
-                    navController.navigate(NavRoute.Shifts.route)
+                    paymentArgsHandle?.let(::clearPaymentArgs)
+                    // D666: igual que el riel Blumon. Este cobro SALE de la pila y, si es de esta terminal, al volver de Turnos se retoma la
+                    // MISMA venta en una pantalla nueva (ver irATurnosDesdeElCobro). No se retira nada (D36). Sólo se retoma si esta
+                    // pantalla nunca intentó cobrar (el aviso salió al entrar): tras un intento guarda la llave del QR de cripto, que una
+                    // pantalla nueva no tendría (Codex r2 #1); entonces se regresa a donde se lanzó, como «Regresar».
+                    navController.irATurnosDesdeElCobro(NavRoute.AngelPayPayment.route, argumentosDelCobro, retomar = !angelVm.yaSeIntentoCobrar())
                 },
                 onStartNewPaymentOverride = if (folio != null) {
                     {
@@ -3711,7 +3719,7 @@ internal val CLAVES_DE_COBRO: List<String> = listOf(
     "soloEfectivo", "ventaLocalJson", "folio",
 )
 
-private const val CLAVE_ARGUMENTOS_CONGELADOS = "paymentArgsFrozen"
+internal const val CLAVE_ARGUMENTOS_CONGELADOS = "paymentArgsFrozen"
 
 /** Marca en la entrada de «Pedidos por pagar»: el cobro del folio terminó (se vuelve a la lista, no al folio). */
 private const val FOLIO_COBRADO = "folioCobrado"

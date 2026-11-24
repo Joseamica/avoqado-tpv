@@ -10,6 +10,7 @@ import android.provider.Settings
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.jaac.avoqado_campo.checada.Ubicacion
+import com.jaac.avoqado_campo.checada.limiteEnElCelular
 import com.jaac.avoqado_campo.cola.BaseDeCampo
 import com.jaac.avoqado_campo.cola.TurnoLocal
 import com.jaac.avoqado_campo.identidad.AlmacenEnMemoria
@@ -335,6 +336,19 @@ class ControlDeGpsTest {
         assertTrue(seguimiento().tomarUno()) // hoy: sigue
         assertFalse(seguimiento(ahora = AHORA + DOS_DIAS).tomarUno()) // dos días después, sin salida ni entrada nueva
         assertEquals(1, db.pingDao().todos().size)
+    }
+
+    @Test fun `D3 - una lectura que cruza el limite del turno no guarda el ping (Codex r1 2)`() = runBlocking<Unit> {
+        abrirTurno()
+        val limite = limiteEnElCelular(AHORA - 60_000L)
+        var reloj = limite - 1_000L // la lectura empieza un segundo antes del límite…
+        coEvery { ubicacion.leer(any()) } coAnswers {
+            reloj = limite + 1_000L // …y el GPS contesta un segundo después
+            Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
+        }
+        val s = SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), db.piezaDao(), quienSoy) { reloj }
+        assertFalse(s.tomarUno())
+        assertTrue(db.pingDao().todos().isEmpty())
     }
 
     @Test fun `D3 - al volver al frente con el turno olvidado no arranca el GPS y para el servicio vivo`() = runBlocking<Unit> {

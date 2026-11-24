@@ -116,7 +116,10 @@ class SeguimientoDelTurno(
         }
         val venueId = t.venueId ?: yo.sesion?.venueId ?: return true
         val l = ubicacion.leer() ?: return true
-        pings.guardarSi(Ping(venueId = venueId, lat = l.lat, lon = l.lon, precision = l.precision, capturadoAt = ahora())) {
+        // Codex r1 #2: la lectura tarda; si mientras tanto el turno cruzó su límite, esa ubicación ya no es del turno.
+        val capturado = ahora()
+        if (!turnoVigente(t, capturado)) return false
+        pings.guardarSi(Ping(venueId = venueId, lat = l.lat, lon = l.lon, precision = l.precision, capturadoAt = capturado)) {
             quienSoy.instantanea().let { !it.limpiando && it.generacion == yo.generacion }
         }
         return true

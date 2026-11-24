@@ -53,8 +53,8 @@ import timber.log.Timber
  *    PENDING, clears the claim, so the NEXT trigger picks it up)
  * 7. After MAX_RETRY_ATTEMPTS (10) transient attempts SPENT ACROSS SEPARATE RUNS → Status
  *    becomes FAILED (manual review needed). Sólo cuentan los intentos que el SERVIDOR contestó
- *    (encargo 29ef3d, [nadieContesto]): un plazo vencido o un 502/503/504 del intermediario no gasta
- *    intento, así que un corte largo del servidor nunca manda una venta a FAILED. Al volver el
+ *    (encargo 29ef3d, [nadieContesto]): un plazo vencido o no poder conectar no gasta intento durante
+ *    [VENTANA_SIN_CONTAR_MS] (24 h) desde la venta, así que un corte del servidor no manda una venta a FAILED. Al volver el
  *    servidor, la pasada de reconexión ([PaymentSyncScheduler.alVolverElServidor]) revive las FAILED
  *    transitorias antes de reclamar la tanda.
  * 8. On a PERMANENT business failure (4xx) → markPermanentlyFailed() straight to FAILED
@@ -149,7 +149,21 @@ class PaymentSyncWorker @AssistedInject constructor(
          * y no suelto en la comparación.
          */
         private const val CODIGO_ORDEN_INEXISTENTE = "ORDER_NOT_FOUND"
+
+        /**
+         * Encargo 29ef3d: mientras una venta tenga menos de esto, un intento sin respuesta ([nadieContesto]) no se cuenta.
+         * Un corte del SERVIDOR dura minutos u horas; si una venta lleva un día entero sin que nadie le conteste, se vuelve
+         * a contar para que llegue a revisión y el gerente recupere su salida («Efectivo: ya lo revisé») en vez de girar
+         * para siempre (Codex r1).
+         */
+        internal const val VENTANA_SIN_CONTAR_MS = 24L * 60 * 60 * 1000
     }
+
+    /** ¿Este intento fallido se deja sin contar? Sólo sin respuesta y dentro de [VENTANA_SIN_CONTAR_MS] desde la venta. */
+    private fun noGastaIntento(
+        payment: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment,
+        sinRespuesta: Boolean,
+    ): Boolean = sinRespuesta && System.currentTimeMillis() - payment.createdAt < VENTANA_SIN_CONTAR_MS
 
     /**
      * Execute payment sync task
@@ -379,7 +393,7 @@ class PaymentSyncWorker @AssistedInject constructor(
             }
             is SyncOutcome.Retryable -> {
                 // Encargo 29ef3d: sin respuesta del servidor no se gasta intento (un corte largo no la manda a FAILED).
-                if (subida.sinRespuesta) {
+                if (noGastaIntento(payment, subida.sinRespuesta)) {
                     releaseClaim(payment, payment.retryCount, "El servidor no contestó; se reintenta sin contar el intento")
                 } else {
                     releaseClaim(payment, payment.retryCount + 1, "No se pudo subir la venta guardada; se reintenta")
@@ -497,11 +511,11 @@ class PaymentSyncWorker @AssistedInject constructor(
                     payment.referenceNumber,
                     transientError,
                 )
-                // Encargo 29ef3d: un intento en el que NADIE contestó (plazo, sin conexión, 502/503/504 del intermediario)
-                // no dice nada de esta venta y no se cuenta. En un corte largo del SERVIDOR cada venta encolada despierta
+                // Encargo 29ef3d: un intento en el que NADIE contestó (plazo vencido, no se pudo conectar) no dice nada
+                // de esta venta y no se cuenta (hasta VENTANA_SIN_CONTAR_MS). En un corte largo del SERVIDOR cada venta encolada despierta
                 // una pasada; contándolas, a las 10 una venta en efectivo quedaba FAILED y ya no subía sola. Sólo una
                 // respuesta real (500, 429, 401…) acerca la fila a revisión.
-                val intentos = if (nadieContesto(result.exceptionOrNull())) payment.retryCount else payment.retryCount + 1
+                val intentos = if (noGastaIntento(payment, nadieContesto(result.exceptionOrNull()))) payment.retryCount else payment.retryCount + 1
                 releaseClaim(payment, retryCount = intentos, error = transientError)
                 false
             }
@@ -618,15 +632,19 @@ class PaymentSyncWorker @AssistedInject constructor(
             retryCount = retryCount,
             error = error,
         )
-        // Encargo 29ef3d: cuántos intentos lleva la venta al volver a la fila (con el tope, pasa a revisión).
-        Timber.i(
-            "🔁 [Payment Sync] Vuelve a la fila | ref=%s | intentos=%d/%d (antes %d) | %s",
-            payment.referenceNumber,
-            retryCount,
-            com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity.MAX_RETRY_ATTEMPTS,
-            payment.retryCount,
-            error,
-        )
+        // Encargo 29ef3d: cuántos intentos lleva la venta al soltarla; sólo si el CAS sí la escribió (Codex r1).
+        if (affected == 1) {
+            val tope = com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity.MAX_RETRY_ATTEMPTS
+            Timber.i(
+                "🔁 [Payment Sync] %s | ref=%s | intentos=%d/%d (antes %d) | %s",
+                if (retryCount >= tope) "Pasa a revisión (FAILED)" else "Vuelve a la fila (PENDING)",
+                payment.referenceNumber,
+                retryCount,
+                tope,
+                payment.retryCount,
+                error,
+            )
+        }
         if (affected == 0) {
             Timber.w(
                 "⚠️ [Payment Sync] release() no afectó filas | ref=%s | queueId=%d | " +

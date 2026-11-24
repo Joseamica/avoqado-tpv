@@ -91,24 +91,25 @@ fun classifySyncFailure(error: Throwable?): SyncOutcome = when {
 }
 
 /**
- * Códigos con los que un intermediario (el balanceador de la nube, un proxy) habla por un SERVIDOR que no contestó.
- * Sólo cuentan así cuando no traen `code`: un 503 con código lo mandó la propia app del servidor
- * (p. ej. `ORDER_TABLE_TOPOLOGY_CHANGED`) y es una respuesta de verdad.
- */
-private val CODIGOS_DEL_INTERMEDIARIO = setOf(502, 503, 504)
-
-/**
- * ¿En este intento NADIE del servidor contestó? Plazo vencido, sin conexión, DNS, flujo cortado, o un 502/503/504 sin
- * código del intermediario.
+ * ¿En este intento NADIE del servidor contestó? Sólo lo que lo demuestra por sí mismo: el plazo venció
+ * ([java.io.InterruptedIOException], que incluye [java.net.SocketTimeoutException] y el `callTimeout` de OkHttp) o no se
+ * pudo ni conectar ([java.net.ConnectException], [java.net.UnknownHostException], [java.net.NoRouteToHostException]).
  *
  * Encargo 29ef3d: en un corte largo del SERVIDOR (internet bien, servidor mudo) cada venta encolada despierta una pasada
  * de la cola; si cada pasada contaba como intento, a las 10 una venta en efectivo quedaba FAILED y fuera de la fila. Un
- * intento sin respuesta no dice nada de la venta, así que la cola NO lo cuenta ([PaymentSyncWorker]); sólo una respuesta
- * real (500, 429, 401…) acerca la fila a revisión. No cambia la clasificación: lo que es [SyncOutcome.Retryable] lo sigue
- * siendo, con la MISMA llave de idempotencia.
+ * intento sin respuesta no dice nada de la venta, así que la cola NO lo cuenta ([com.jaac.avoqado_tpv.core.data.workers.PaymentSyncWorker]).
+ *
+ * Queda FUERA a propósito (Codex r1): cualquier respuesta HTTP, también 502/503/504 (los registradores descartan el
+ * `code` en los 5xx y el SERVIDOR contesta 503 propios, p. ej. `PAYMENT_REGISTRATION_UNRESOLVED_*`), y cualquier otra
+ * [IOException] (un JSON cortado, `unexpected end of stream`, `Connection reset`): pueden llegar DESPUÉS de una respuesta.
+ * Si un intento anterior del mismo registro sí tuvo respuesta, viaja como `suppressed` del error final y cuenta.
+ * No cambia la clasificación: lo que es [SyncOutcome.Retryable] lo sigue siendo, con la MISMA llave de idempotencia.
  */
-fun nadieContesto(error: Throwable?): Boolean = when (error) {
-    is BackendHttpException -> error.statusCode in CODIGOS_DEL_INTERMEDIARIO && error.errorCode.isNullOrBlank()
-    is IOException -> true
-    else -> false
+fun nadieContesto(error: Throwable?): Boolean {
+    if (error == null) return false
+    if (error.suppressed.any { !nadieContesto(it) }) return false
+    return error is java.io.InterruptedIOException ||
+        error is java.net.ConnectException ||
+        error is java.net.UnknownHostException ||
+        error is java.net.NoRouteToHostException
 }

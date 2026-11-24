@@ -141,17 +141,48 @@ class PaymentSyncWorkerTest {
     }
 
     @Test
-    fun `P1 un 502 sin codigo (el intermediario, no el servidor) no gasta intento`() = runTest {
+    fun `P1 un 503 del servidor si gasta intento (los registradores tiran su code, Codex r1)`() = runTest {
         val repo = mockk<PaymentQueueRepository>(relaxed = true)
         val useCase = mockk<RecordPaymentUseCase>()
-        val payment = queuedPayment(reference = "ref-502", retryCount = 4)
+        val payment = queuedPayment(reference = "ref-503", retryCount = 4)
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
         coEvery { useCase(any(), any(), any(), any(), true) } returns
-            Result.failure(BackendHttpException(502, "Bad Gateway"))
+            Result.failure(BackendHttpException(503, "Service Unavailable"))
 
         buildWorker(repo, useCase).doWork()
 
-        coVerify(exactly = 1) { repo.release(queueId = payment.queueId, token = any(), retryCount = 4, error = any()) }
+        coVerify(exactly = 1) { repo.release(queueId = payment.queueId, token = any(), retryCount = 5, error = any()) }
+    }
+
+    @Test
+    fun `P1 un plazo final con un 500 anterior pegado si gasta intento`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-mixto", retryCount = 2)
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        val plazo = java.net.SocketTimeoutException("timeout").apply { addSuppressed(BackendHttpException(500, "boom")) }
+        coEvery { useCase(any(), any(), any(), any(), true) } returns Result.failure(plazo)
+
+        buildWorker(repo, useCase).doWork()
+
+        coVerify(exactly = 1) { repo.release(queueId = payment.queueId, token = any(), retryCount = 3, error = any()) }
+    }
+
+    @Test
+    fun `P1 una venta con mas de 24 h sin respuesta vuelve a contar para llegar a revision`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val vieja = queuedPayment(reference = "ref-vieja", retryCount = 9).copy(
+            createdAt = System.currentTimeMillis() - PaymentSyncWorker.VENTANA_SIN_CONTAR_MS - 60_000,
+        )
+        coEvery { repo.claimBatch(any()) } returns listOf(vieja)
+        coEvery { useCase(any(), any(), any(), any(), true) } returns
+            Result.failure(java.net.SocketTimeoutException("timeout"))
+
+        buildWorker(repo, useCase).doWork()
+
+        // Sin esto una venta sin respuesta giraría para siempre y el gerente perdería «Efectivo: ya lo revisé».
+        coVerify(exactly = 1) { repo.release(queueId = vieja.queueId, token = any(), retryCount = 10, error = any()) }
     }
 
     @Test

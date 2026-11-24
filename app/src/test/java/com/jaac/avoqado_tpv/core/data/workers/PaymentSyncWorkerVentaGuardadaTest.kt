@@ -89,6 +89,11 @@ class PaymentSyncWorkerVentaGuardadaTest {
     private suspend fun guardar() = VentaLocalRepository(db.pendingPaymentDao(), shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
         .guardar(venta, PendingPaymentEntity.PROCESSOR_BLUMON, "", "AVQD-1").getOrThrow()
 
+    /** La venta de la semilla es de 2025: fuera de la ventana de 24 h en que un intento sin respuesta no se cuenta. */
+    private fun recienVendida() = db.openHelper.writableDatabase.execSQL(
+        "UPDATE pending_payments SET created_at = ${System.currentTimeMillis()}",
+    )
+
     private suspend fun fila() = db.pendingPaymentDao().findByReference(referenciaDeEfectivo(llave), "venue-1")!!
 
     private fun orden() = json("""{"success":true,"order":{"id":"$orderId","orderNumber":"V-101","status":"PENDING",
@@ -291,8 +296,7 @@ class PaymentSyncWorkerVentaGuardadaTest {
         assertThat(worker().doWork()).isEqualTo(ListenableWorker.Result.success())
 
         assertThat(fila().syncStatus).isEqualTo("PENDING")
-        // Encargo 29ef3d: nadie contestó (red caída), así que no se gasta intento.
-        assertThat(fila().retryCount).isEqualTo(0)
+        assertThat(fila().retryCount).isEqualTo(1) // una IOException genérica sí cuenta (encargo 29ef3d, Codex r1)
         assertThat(fila().claimToken).isNull()
         assertThat(db.pendingPaymentDao().findByReference("CASH-legacy", "venue-1")!!.syncStatus).isEqualTo("SUCCESS")
         coVerify(exactly = 1) { api.crearOrden(any(), any()) }
@@ -302,8 +306,7 @@ class PaymentSyncWorkerVentaGuardadaTest {
 
     @Test fun `diez intentos separados agotan la fila y la conservan contada como fallida`() = runTest {
         guardar()
-        // 500 = el SERVIDOR contestó con error: cuenta. (Un 502/503/504 del intermediario ya no cuenta, encargo 29ef3d.)
-        coEvery { api.crearOrden("venue-1", any()) } returns error(500)
+        coEvery { api.crearOrden("venue-1", any()) } returns error(503)
 
         repeat(10) { indice ->
             worker().doWork()
@@ -329,11 +332,11 @@ class PaymentSyncWorkerVentaGuardadaTest {
 
     @Test fun `P1 un corte largo del servidor no manda la venta en efectivo a FAILED y sube sola al volver`() = runTest {
         guardar()
-        // Servidor mudo: el pedido sale, nadie contesta (plazo), y en una de cada tres pasadas el portero de la nube
-        // contesta 504. Más de MAX_RETRY_ATTEMPTS pasadas: antes la fila quedaba FAILED en la décima.
-        coEvery { api.crearOrden("venue-1", any()) } throws java.net.SocketTimeoutException("timeout")
+        recienVendida()
+        // Servidor mudo: el pedido sale y nadie contesta (plazo); en una de cada tres pasadas ni siquiera conecta.
+        // Más de MAX_RETRY_ATTEMPTS pasadas: antes la fila quedaba FAILED en la décima.
         repeat(PendingPaymentEntity.MAX_RETRY_ATTEMPTS + 2) { indice ->
-            if (indice % 3 == 2) coEvery { api.crearOrden("venue-1", any()) } returns error(504)
+            if (indice % 3 == 2) coEvery { api.crearOrden("venue-1", any()) } throws java.net.ConnectException("Failed to connect")
             else coEvery { api.crearOrden("venue-1", any()) } throws java.net.SocketTimeoutException("timeout")
             worker().doWork()
             assertThat(fila().syncStatus).isEqualTo("PENDING")
@@ -352,6 +355,7 @@ class PaymentSyncWorkerVentaGuardadaTest {
 
     @Test fun `P1 la orden ya creada y el pago sin respuesta tampoco gasta intento`() = runTest {
         guardar()
+        recienVendida()
         coEvery { api.pagar("venue-1", orderId, any()) } throws java.net.SocketTimeoutException("timeout")
 
         worker().doWork()
@@ -359,6 +363,16 @@ class PaymentSyncWorkerVentaGuardadaTest {
         assertThat(fila().syncStatus).isEqualTo("PENDING")
         assertThat(fila().retryCount).isEqualTo(0)
         assertThat(fila().orderId).isEqualTo(orderId)
+    }
+
+    @Test fun `P1 un 504 al crear la orden si gasta intento (puede ser el SERVIDOR, Codex r1)`() = runTest {
+        guardar()
+        coEvery { api.crearOrden("venue-1", any()) } returns error(504)
+
+        worker().doWork()
+
+        assertThat(fila().syncStatus).isEqualTo("PENDING")
+        assertThat(fila().retryCount).isEqualTo(1)
     }
 
     @Test fun `dos workers con reclamo Room real hacen una sola llamada a crear orden`() = runTest {

@@ -82,7 +82,7 @@ class SubirVentaGuardadaUseCase @Inject constructor(
             // Una cortesía puede haber quedado PAID sin Payment. Recuperar con la misma llave sobrevive a morir tras el CAS.
             if (orderId.isNullOrBlank() || (amount == 0 && tip == 0)) {
                 val respuesta = api.crearOrden(actual.venueId, pedido.toRequestBody("application/json; charset=utf-8".toMediaType()))
-                falloHttp(respuesta, alNoContestar)?.let { return it }
+                falloHttp(respuesta)?.let { return it }
                 val cuerpo = respuesta.body()
                 val orden = cuerpo?.get("order")?.takeIf { it.isJsonObject }?.asJsonObject
                     ?: return SyncOutcome.Permanent("El servidor no devolvió la orden creada")
@@ -115,7 +115,7 @@ class SubirVentaGuardadaUseCase @Inject constructor(
                     venueId = actual.venueId, amount = amount, tip = tip, staffId = actual.staffId, idempotencyKey = llave,
                     shiftIdDeLaVenta = resolvedShift, createdAtLocal = actual.createdAt, edadDeLaVentaMs = edadDeLaVenta(actual),
                 ))
-                falloHttp(respuesta, alNoContestar)?.let { return it }
+                falloHttp(respuesta)?.let { return it }
                 val cuerpo = respuesta.body()
                 val pago = cuerpo?.get("payment")?.takeIf { it.isJsonObject }?.asJsonObject
                     ?: return SyncOutcome.Permanent("El servidor no devolvió el pago")
@@ -169,12 +169,9 @@ class SubirVentaGuardadaUseCase @Inject constructor(
     private fun JsonObject.centavosDesdePesos(nombre: String): BigDecimal? =
         runCatching { get(nombre)?.asBigDecimal?.movePointRight(2)?.setScale(0, RoundingMode.HALF_UP) }.getOrNull()
 
-    /** El cuerpo no se lee: un 502/503/504 aquí cuenta como del intermediario aunque lo haya mandado el servidor (sigue reintentándose). */
-    private fun falloHttp(respuesta: Response<JsonObject>, alNoContestar: () -> Unit): SyncOutcome? {
+    private fun falloHttp(respuesta: Response<JsonObject>): SyncOutcome? {
         if (respuesta.isSuccessful) return null
         respuesta.errorBody()?.close()
-        val error = BackendHttpException(respuesta.code(), respuesta.message())
-        if (nadieContesto(error)) alNoContestar()
-        return classifySyncFailure(error)
+        return classifySyncFailure(BackendHttpException(respuesta.code(), respuesta.message()))
     }
 }

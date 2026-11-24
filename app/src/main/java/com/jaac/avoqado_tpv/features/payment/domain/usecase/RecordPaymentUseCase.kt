@@ -333,6 +333,9 @@ class RecordPaymentUseCase @Inject constructor(
         referenceNumber: String,
     ): Result<PaymentReceipt> {
         var lastError: Exception? = null
+        // Encargo 29ef3d (Codex r1): el último error puede ser un plazo vencido aunque un intento anterior SÍ tuviera
+        // respuesta (500, 429…). Ése viaja como `suppressed` del final para que la cola cuente la pasada.
+        var ultimoConRespuesta: Throwable? = null
 
         repeat(MAX_RETRIES) { attemptIndex ->
             val attemptNumber = attemptIndex + 1
@@ -365,6 +368,9 @@ class RecordPaymentUseCase @Inject constructor(
             // ❌ Analizar el error
             val exception = result.exceptionOrNull()
             lastError = exception as? Exception
+            if (exception != null && !com.jaac.avoqado_tpv.features.payment.domain.sync.nadieContesto(exception)) {
+                ultimoConRespuesta = exception
+            }
 
             if (exception is com.jaac.avoqado_tpv.features.shift.data.repository.ShiftMappingPendingException) return result
 
@@ -381,6 +387,12 @@ class RecordPaymentUseCase @Inject constructor(
 
         // Si llegamos aquí, agotamos todos los intentos
         Timber.e("❌ Payment recording failed after $MAX_RETRIES attempts")
+        // Copias locales: `lastError` y `ultimoConRespuesta` los cambia el lambda de `repeat` (sin smart cast).
+        val errorFinal = lastError
+        val conRespuesta = ultimoConRespuesta
+        if (errorFinal != null && conRespuesta != null && conRespuesta !== errorFinal) {
+            runCatching { errorFinal.addSuppressed(conRespuesta) }
+        }
         return Result.failure(
             lastError ?: Exception("Error registrando el pago después de $MAX_RETRIES intentos")
         )

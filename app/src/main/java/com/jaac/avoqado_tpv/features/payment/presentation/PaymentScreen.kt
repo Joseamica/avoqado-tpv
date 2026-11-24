@@ -353,9 +353,21 @@ fun PaymentScreen(
             navigateBack()
         }
     }
+    // 🔙 Encargo f84e3a: desde que hubo un cobro aprobado, el «atrás» del sistema ya no es el de antes de cobrar. Con el recibo a la
+    // vista lo atiende PaymentSuccessContent (hace su botón principal UNA vez; se registra después y por eso gana); en cualquier otro
+    // momento —la animación de «Aprobado», la espera tras ese botón (Mesas libera la mesa por red y mientras tanto esta pantalla
+    // vuelve a Idle), «No se pudo imprimir»— se ignora. Antes salía a la entrada anterior: desde Cobrar, el MISMO carrito lleno, y
+    // un segundo «Cobrar» creaba otra venta. El kiosco no cambia. Las flechas visibles siguen igual.
+    var huboExito by remember { mutableStateOf(false) }
+    LaunchedEffect(state) {
+        if (state is PaymentState.Success && !isKioskPayment) huboExito = true
+    }
+    BackHandler(enabled = !isKioskPayment && (state is PaymentState.Success || huboExito)) {
+        Timber.d("🔙 [Payment] «atrás» después del cobro sin recibo a la vista: se ignora")
+    }
     // El botón físico de atrás hace lo mismo que la flecha: salir sin `resetPayment()` dejaba al POS sin desenlace y, a los
-    // 5 min, la terminal «ocupada» sin nada en su pantalla (PAX, 3-nov).
-    BackHandler(enabled = showTopBar, onBack = flechaAtras)
+    // 5 min, la terminal «ocupada» sin nada en su pantalla (PAX, 3-nov). Después de un cobro, no (arriba).
+    BackHandler(enabled = showTopBar && !huboExito, onBack = flechaAtras)
 
     Scaffold(
         topBar = {
@@ -851,11 +863,6 @@ fun PaymentScreen(
                     when {
                         // 🎉 Phase 1: Show approved animation
                         showApprovedAnimation -> {
-                            // 🔙 Encargo f84e3a: con «Aprobado» en pantalla todavía no hay botones; el «atrás» del sistema se ignora (antes
-                            // sacaba la pantalla de cobro y regresaba a Cobrar con el carrito lleno). El botón «Inicio» tampoco sale antes (D13).
-                            BackHandler(enabled = !isKioskPayment) {
-                                Timber.d("🔙 [PaymentSuccess] «atrás» durante «Aprobado»: se ignora")
-                            }
                             PaymentApprovedScreen(
                                 amount = currentState.amount,
                                 onAnimationComplete = {
@@ -1779,11 +1786,18 @@ private fun PaymentSuccessContent(
     // Success) y el sistema regresaba a la entrada anterior: desde Cobrar, el MISMO carrito lleno, y un segundo «Cobrar» creaba otra
     // venta con la misma mercancía. Ahora hace lo mismo que el botón principal («Nueva Orden», «Nuevo Pago», «Listo», «Continuar
     // pagando»), que ya lleva a un lugar NUEVO; con la cámara de la prueba de venta abierta, sólo la cierra. El kiosco no cambia.
+    // `yaSalioPorAtras` (Codex r3): dos «atrás» seguidos llegan aquí antes de que el recibo se retire; la acción sale UNA vez (en
+    // Mesas cada una pediría liberar la mesa).
+    var yaSalioPorAtras by remember { mutableStateOf(false) }
     BackHandler(enabled = !isKioskPayment) {
         when {
             showProofOfSaleCamera -> showProofOfSaleCamera = false
             atrasEsperaAlRecibo -> Timber.d("🔙 [PaymentSuccess] «atrás» con el cobro del POS esperando su recibo: se ignora")
-            else -> accionPrincipal()
+            yaSalioPorAtras -> Timber.d("🔙 [PaymentSuccess] «atrás» repetido: ya va de salida")
+            else -> {
+                yaSalioPorAtras = true
+                accionPrincipal()
+            }
         }
     }
 

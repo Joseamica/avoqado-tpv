@@ -12,10 +12,11 @@ import org.junit.Test
  * cobro), y un segundo «Cobrar» creaba otra venta con la misma mercancía. Lo mismo desde Mesas (el cobro viejo con el saldo de
  * antes) y desde el reembolso (la confirmación del reembolso ya hecho).
  *
- * La regla: tras un cobro, «atrás» hace lo mismo que el botón principal de la pantalla («Nueva Orden», «Nuevo Pago», «Listo»,
- * «Continuar pagando»…), que ya lleva a un lugar NUEVO. Mientras corre la animación de «Aprobado» (sin botones todavía) el
- * «atrás» se ignora, como el botón «Inicio», que tampoco sale antes (D13). La cámara de la prueba de venta se cierra con
- * «atrás» en vez de salir de la pantalla.
+ * La regla (rediseñada tras Codex r3): desde que hubo un cobro aprobado, el «atrás» de antes de cobrar se apaga. Con el recibo a
+ * la vista, «atrás» hace UNA vez lo mismo que el botón principal («Nueva Orden», «Nuevo Pago», «Listo», «Continuar pagando»…),
+ * que ya lleva a un lugar NUEVO; en cualquier otro momento (la animación de «Aprobado», la espera tras ese botón, «No se pudo
+ * imprimir») se ignora. En un cobro del POS sin recibo todavía también se ignora: salir callaría el aviso de éxito al POS. La
+ * cámara de la prueba de venta se cierra con «atrás» en vez de salir de la pantalla.
  *
  * Prueba ESTÁTICA, como [com.jaac.avoqado_tpv.features.payment.presentation.angelpay.AngelPayPaymentScreenSalidaTest]: el repo no
  * monta pantallas de Compose en las pruebas de JVM. El comportamiento se acredita en el aparato (PAX y N86).
@@ -54,7 +55,7 @@ class AtrasTrasUnCobroTest {
             "El «atrás» del sistema en el éxito de la PAX debe cerrar la cámara si está abierta y, si no, hacer la acción principal " +
                 "(sin esto regresaba a Cobrar con el carrito lleno: encargo f84e3a).",
             Regex(
-                """BackHandler\(enabled = !isKioskPayment\) \{\s*when \{\s*showProofOfSaleCamera -> showProofOfSaleCamera = false\s*atrasEsperaAlRecibo -> Timber\.d\([^\n]*\)\s*else -> accionPrincipal\(\)\s*}\s*}""",
+                """BackHandler\(enabled = !isKioskPayment\) \{\s*when \{\s*showProofOfSaleCamera -> showProofOfSaleCamera = false\s*atrasEsperaAlRecibo -> Timber\.d\([^\n]*\)\s*yaSalioPorAtras -> Timber\.d\([^\n]*\)\s*else -> \{\s*yaSalioPorAtras = true\s*accionPrincipal\(\)\s*}\s*}\s*}""",
             ).containsMatchIn(exito),
         )
         assertTrue(
@@ -76,11 +77,26 @@ class AtrasTrasUnCobroTest {
     }
 
     @Test
-    fun `PAX - durante la animacion de Aprobado, atras se ignora`() {
-        val rama = cuerpoDe(pantallaPax, "showApprovedAnimation -> {", "PaymentApprovedScreen(")
+    fun `PAX - despues de un cobro aprobado, el atras de antes de cobrar se apaga y fuera del recibo se ignora (Codex r3)`() {
+        val pantalla = cuerpoDe(pantallaPax, "fun PaymentScreen(", "Scaffold(")
         assertTrue(
-            "Mientras se ve «Aprobado» (sin botones), el «atrás» del sistema no debe sacar la pantalla de cobro.",
-            Regex("""BackHandler\(enabled = !isKioskPayment\) \{""").containsMatchIn(rama),
+            "huboExito se enciende con Success (fuera del kiosco).",
+            Regex("""LaunchedEffect\(state\) \{\s*if \(state is PaymentState\.Success && !isKioskPayment\) huboExito = true\s*}""")
+                .containsMatchIn(pantalla),
+        )
+        assertTrue(
+            "En Success y después (animación, espera de Mesas, «No se pudo imprimir») el «atrás» del sistema se ignora.",
+            Regex("""BackHandler\(enabled = !isKioskPayment && \(state is PaymentState\.Success \|\| huboExito\)\) \{""")
+                .containsMatchIn(pantalla),
+        )
+        assertTrue(
+            "El «atrás» de antes de cobrar (la flecha) ya no corre después de un cobro: desde Mesas abría otra cuenta de la mesa.",
+            Regex("""BackHandler\(enabled = showTopBar && !huboExito, onBack = flechaAtras\)""").containsMatchIn(pantalla),
+        )
+        assertTrue(
+            "El manejador que ignora debe registrarse ANTES que el de la flecha y que el del recibo (el último registrado gana).",
+            pantalla.indexOf("BackHandler(enabled = !isKioskPayment && (state is PaymentState.Success || huboExito))") <
+                pantalla.indexOf("BackHandler(enabled = showTopBar && !huboExito, onBack = flechaAtras)"),
         )
     }
 
@@ -91,7 +107,7 @@ class AtrasTrasUnCobroTest {
             "AngelPaySuccessContent (éxito y cola) debe atender el «atrás»: cerrar la cámara si está abierta y, si no, lo mismo " +
                 "que su botón principal (onStartNewPayment).",
             Regex(
-                """BackHandler \{\s*if \(showProofOfSaleCamera\) showProofOfSaleCamera = false else onStartNewPayment\(\)\s*}""",
+                """BackHandler \{\s*when \{\s*showProofOfSaleCamera -> showProofOfSaleCamera = false\s*yaSalioPorAtras -> Unit\s*else -> \{\s*yaSalioPorAtras = true\s*onStartNewPayment\(\)\s*}\s*}\s*}""",
             ).containsMatchIn(exito),
         )
     }
@@ -112,6 +128,10 @@ class AtrasTrasUnCobroTest {
             Regex(
                 """LaunchedEffect\(state\) \{\s*if \(state is AngelPayPaymentState\.Success \|\| state is AngelPayPaymentState\.Queued\) huboExito = true\s*}""",
             ).containsMatchIn(antesDeLosOverlays),
+        )
+        assertTrue(
+            "El «atrás» de D36 (antes de cobrar, en Cobrar) se apaga después de un cobro.",
+            pantallaNexgo.contains("enabled = atrasDelSistemaComoLaFlecha && !huboExito && ("),
         )
     }
 }

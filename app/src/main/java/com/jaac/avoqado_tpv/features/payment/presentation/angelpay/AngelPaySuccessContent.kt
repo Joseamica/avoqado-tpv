@@ -158,8 +158,18 @@ fun AngelPaySuccessContent(
     // antes del BackHandler de AngelPayPaymentScreen) y el sistema regresaba a la entrada anterior: desde Cobrar, el MISMO carrito
     // lleno, y un segundo «Cobrar» creaba otra venta. Ahora hace lo mismo que el botón principal («Nuevo Pago», «Nueva Orden»,
     // «Nueva Venta», «Pedidos por pagar»), que lleva a un lugar NUEVO; con la cámara de la prueba de venta abierta, sólo la cierra.
+    // Una sola vez (Codex r3 #2): dos «atrás» seguidos llegan aquí antes de que el recibo se retire; en Mesas cada uno pediría
+    // liberar la mesa.
+    var yaSalioPorAtras by remember { mutableStateOf(false) }
     BackHandler {
-        if (showProofOfSaleCamera) showProofOfSaleCamera = false else onStartNewPayment()
+        when {
+            showProofOfSaleCamera -> showProofOfSaleCamera = false
+            yaSalioPorAtras -> Unit
+            else -> {
+                yaSalioPorAtras = true
+                onStartNewPayment()
+            }
+        }
     }
 
     Column(

@@ -518,7 +518,8 @@ fun AngelPayPaymentScreen(
     // estados (antes salía directo a Cobrar sin pasar por `onNavigateBack` y la venta ya creada quedaba abierta para siempre). En los
     // demás estados y en los demás flujos no se toca: el atrás del sistema sigue como hoy.
     BackHandler(
-        enabled = atrasDelSistemaComoLaFlecha && (
+        // f84e3a: después de un cobro, nunca (lo atiende el manejador del tramo del éxito, arriba).
+        enabled = atrasDelSistemaComoLaFlecha && !huboExito && (
             state is AngelPayPaymentState.CollectingRating ||
                 state is AngelPayPaymentState.CollectingTip ||
                 state is AngelPayPaymentState.SelectingMerchant ||

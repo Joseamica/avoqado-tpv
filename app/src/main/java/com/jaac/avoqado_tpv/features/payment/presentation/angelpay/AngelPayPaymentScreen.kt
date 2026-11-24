@@ -336,12 +336,15 @@ fun AngelPayPaymentScreen(
     // `huboExito` (Codex r2 #1): tras el botón principal de un cobro EN COLA el estado ya es Idle y no hay banderas de animación ni
     // de recibo; sin esto un segundo «atrás» regresaba al «Cobrar mesa» viejo mientras se libera la mesa. Después de un cobro esta
     // pantalla sólo sale por sus botones.
-    var huboExito by remember { mutableStateOf(false) }
+    var huboExito by rememberSaveable { mutableStateOf(false) } // sobrevive a recrear la pantalla (Codex r4 #3)
     LaunchedEffect(state) {
         if (state is AngelPayPaymentState.Success || state is AngelPayPaymentState.Queued) huboExito = true
     }
+    // Registrando (RecordingPayment, ProcessingCash) también (Codex r4 #1): el éxito se publica desde ahí y, hasta que la pantalla
+    // se vuelve a pintar, ningún otro manejador lo atendería; el NavHost sacaba la pantalla y regresaba al carrito lleno.
     BackHandler(
         enabled = state is AngelPayPaymentState.Success || state is AngelPayPaymentState.Queued ||
+            state is AngelPayPaymentState.RecordingPayment || state is AngelPayPaymentState.ProcessingCash ||
             showApprovedAnimation || showSuccessContent || huboExito,
     ) {
         Timber.d("🔙 [AngelPay] «atrás» en el tramo del éxito sin recibo a la vista: se ignora")

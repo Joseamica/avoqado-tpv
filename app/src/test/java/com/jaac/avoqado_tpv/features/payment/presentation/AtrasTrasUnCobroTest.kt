@@ -60,7 +60,7 @@ class AtrasTrasUnCobroTest {
         )
         assertTrue(
             "El botón «Nueva Orden»/«Nuevo Pago» debe usar la MISMA ruta que el «atrás» (successRouting).",
-            Regex("""onClick = successRouting\.onClick""").containsMatchIn(exito),
+            Regex("""onClick = \{ yaSalioPorAtras = true; successRouting\.onClick\(\) }""").containsMatchIn(exito),
         )
     }
 
@@ -82,6 +82,15 @@ class AtrasTrasUnCobroTest {
         assertTrue(
             "huboExito se enciende con Success (fuera del kiosco).",
             Regex("""LaunchedEffect\(state\) \{\s*if \(state is PaymentState\.Success && !isKioskPayment\) huboExito = true\s*}""")
+                .containsMatchIn(pantalla),
+        )
+        assertTrue(
+            "huboExito sobrevive a recrear la pantalla (rememberSaveable, Codex r4 #3).",
+            pantalla.contains("var huboExito by rememberSaveable { mutableStateOf(false) }"),
+        )
+        assertTrue(
+            "La flecha lee el estado AL TOCAR: si el cobro se aprobó en ese instante, no regresa a antes de cobrar (Codex r4 #1).",
+            Regex("""val flechaAtras: \(\) -> Unit = \{[^}]*if \(viewModel\.state\.value is PaymentState\.Success\) \{""")
                 .containsMatchIn(pantalla),
         )
         assertTrue(
@@ -110,6 +119,10 @@ class AtrasTrasUnCobroTest {
                 """BackHandler \{\s*when \{\s*showProofOfSaleCamera -> showProofOfSaleCamera = false\s*yaSalioPorAtras -> Unit\s*else -> \{\s*yaSalioPorAtras = true\s*onStartNewPayment\(\)\s*}\s*}\s*}""",
             ).containsMatchIn(exito),
         )
+        assertTrue(
+            "El botón principal de la Nexgo también enciende la marca: el «atrás» que llegue después no repite la salida (Codex r4 #5).",
+            exito.contains("onClick = { yaSalioPorAtras = true; onStartNewPayment() },"),
+        )
     }
 
     @Test
@@ -120,7 +133,7 @@ class AtrasTrasUnCobroTest {
         assertTrue(
             "AngelPayPaymentScreen debe ignorar el «atrás» del sistema en Success, Queued, la animación y la espera tras el botón.",
             Regex(
-                """BackHandler\(\s*enabled = state is AngelPayPaymentState\.Success \|\| state is AngelPayPaymentState\.Queued \|\|\s*showApprovedAnimation \|\| showSuccessContent \|\| huboExito,\s*\) \{""",
+                """BackHandler\(\s*enabled = state is AngelPayPaymentState\.Success \|\| state is AngelPayPaymentState\.Queued \|\|\s*state is AngelPayPaymentState\.RecordingPayment \|\| state is AngelPayPaymentState\.ProcessingCash \|\|\s*showApprovedAnimation \|\| showSuccessContent \|\| huboExito,\s*\) \{""",
             ).containsMatchIn(antesDeLosOverlays),
         )
         assertTrue(
@@ -128,6 +141,10 @@ class AtrasTrasUnCobroTest {
             Regex(
                 """LaunchedEffect\(state\) \{\s*if \(state is AngelPayPaymentState\.Success \|\| state is AngelPayPaymentState\.Queued\) huboExito = true\s*}""",
             ).containsMatchIn(antesDeLosOverlays),
+        )
+        assertTrue(
+            "huboExito de la Nexgo sobrevive a recrear la pantalla (Codex r4 #3).",
+            antesDeLosOverlays.contains("var huboExito by rememberSaveable { mutableStateOf(false) }"),
         )
         assertTrue(
             "El «atrás» de D36 (antes de cobrar, en Cobrar) se apaga después de un cobro.",

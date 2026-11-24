@@ -158,8 +158,8 @@ fun AngelPaySuccessContent(
     // antes del BackHandler de AngelPayPaymentScreen) y el sistema regresaba a la entrada anterior: desde Cobrar, el MISMO carrito
     // lleno, y un segundo «Cobrar» creaba otra venta. Ahora hace lo mismo que el botón principal («Nuevo Pago», «Nueva Orden»,
     // «Nueva Venta», «Pedidos por pagar»), que lleva a un lugar NUEVO; con la cámara de la prueba de venta abierta, sólo la cierra.
-    // Una sola vez (Codex r3 #2): dos «atrás» seguidos llegan aquí antes de que el recibo se retire; en Mesas cada uno pediría
-    // liberar la mesa.
+    // Una sola vez (Codex r3 #2 y r4 #5): dos «atrás» seguidos, o el botón y luego «atrás», llegan aquí antes de que el recibo se
+    // retire; en Mesas cada uno pediría liberar la mesa. Los botones de salida también lo encienden.
     var yaSalioPorAtras by remember { mutableStateOf(false) }
     BackHandler {
         when {
@@ -189,7 +189,7 @@ fun AngelPaySuccessContent(
         ) {
             // Home button (left)
             IconButton(
-                onClick = onNavigateHome,
+                onClick = { yaSalioPorAtras = true; onNavigateHome() },
                 modifier = Modifier
                     .size(48.dp)
                     .border(
@@ -212,7 +212,7 @@ fun AngelPaySuccessContent(
             // Los dos rieles deben verse igual: el cajero no deberia notar en cual terminal
             // esta parado.
             Button(
-                onClick = onStartNewPayment,
+                onClick = { yaSalioPorAtras = true; onStartNewPayment() },
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = receiptChromeFill(),

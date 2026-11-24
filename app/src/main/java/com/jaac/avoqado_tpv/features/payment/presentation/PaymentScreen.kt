@@ -344,9 +344,11 @@ fun PaymentScreen(
     )
 
     val flechaAtras: () -> Unit = {
-        // Try to go back one step in payment flow first
-        // If at first step (returns false), navigate back to home
-        if (!viewModel.goBackOneStep()) {
+        // 🔙 f84e3a (Codex r4 #1): el cobro se pudo aprobar en este mismo instante, antes de que la pantalla apague este manejador:
+        // se lee el estado AL TOCAR. Con el cobro hecho no se regresa a antes de cobrar.
+        if (viewModel.state.value is PaymentState.Success) {
+            Timber.d("🔙 [Payment] «atrás» justo al aprobarse el cobro: se ignora")
+        } else if (!viewModel.goBackOneStep()) {
             // 🔧 FIX: Reset ViewModel to Idle so next payment uses new initialAmount
             // Without this, the LaunchedEffect in Idle block won't re-run
             viewModel.resetPayment()
@@ -358,7 +360,8 @@ fun PaymentScreen(
     // momento —la animación de «Aprobado», la espera tras ese botón (Mesas libera la mesa por red y mientras tanto esta pantalla
     // vuelve a Idle), «No se pudo imprimir»— se ignora. Antes salía a la entrada anterior: desde Cobrar, el MISMO carrito lleno, y
     // un segundo «Cobrar» creaba otra venta. El kiosco no cambia. Las flechas visibles siguen igual.
-    var huboExito by remember { mutableStateOf(false) }
+    // rememberSaveable (Codex r4 #3): sobrevive a recrear la pantalla o a que otra pantalla se abra encima.
+    var huboExito by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(state) {
         if (state is PaymentState.Success && !isKioskPayment) huboExito = true
     }
@@ -1786,8 +1789,8 @@ private fun PaymentSuccessContent(
     // Success) y el sistema regresaba a la entrada anterior: desde Cobrar, el MISMO carrito lleno, y un segundo «Cobrar» creaba otra
     // venta con la misma mercancía. Ahora hace lo mismo que el botón principal («Nueva Orden», «Nuevo Pago», «Listo», «Continuar
     // pagando»), que ya lleva a un lugar NUEVO; con la cámara de la prueba de venta abierta, sólo la cierra. El kiosco no cambia.
-    // `yaSalioPorAtras` (Codex r3): dos «atrás» seguidos llegan aquí antes de que el recibo se retire; la acción sale UNA vez (en
-    // Mesas cada una pediría liberar la mesa).
+    // `yaSalioPorAtras` (Codex r3 y r4 #5): dos «atrás» seguidos, o el botón y luego «atrás», llegan aquí antes de que el recibo se
+    // retire; la acción sale UNA vez (en Mesas cada una pediría liberar la mesa). Los botones de salida también lo encienden.
     var yaSalioPorAtras by remember { mutableStateOf(false) }
     BackHandler(enabled = !isKioskPayment) {
         when {
@@ -1860,7 +1863,7 @@ private fun PaymentSuccessContent(
                     // Hidden in SERIALIZED_INVENTORY mode (staff must use "Nueva Venta" flow)
                     if (flowOrigin != PaymentFlowOrigin.SERIALIZED) {
                         IconButton(
-                            onClick = onNavigateHome,
+                            onClick = { yaSalioPorAtras = true; onNavigateHome() },
                             modifier = Modifier
                                 .size(48.dp)
                                 .border(
@@ -1889,7 +1892,7 @@ private fun PaymentSuccessContent(
                             // 💸 Refund: Show "Listo" button that navigates back to payments list
                             isRefund -> {
                                 Button(
-                                    onClick = onRefundComplete,
+                                    onClick = { yaSalioPorAtras = true; onRefundComplete() },
                                     shape = RoundedCornerShape(12.dp),
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = MaterialTheme.colorScheme.primary,
@@ -1903,7 +1906,7 @@ private fun PaymentSuccessContent(
                             // ⭐ Split payment: Show "Continuar pagando" button with remaining amount
                             hasRemainingBalance -> {
                                 Button(
-                                    onClick = onContinuePayment,
+                                    onClick = { yaSalioPorAtras = true; onContinuePayment() },
                                     shape = RoundedCornerShape(12.dp),
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = MaterialTheme.colorScheme.primary,  // Highlighted color
@@ -1923,7 +1926,7 @@ private fun PaymentSuccessContent(
                                 Timber.d("💳 [PaymentSuccess] Button: $buttonText | wasPayLater=$wasPayLaterOrder | count=$payLaterOrdersCount | orderId=$orderId")
 
                                 Button(
-                                    onClick = successRouting.onClick,
+                                    onClick = { yaSalioPorAtras = true; successRouting.onClick() },
                                     enabled = true, // Non-blocking: staff can start new sale immediately, upload photos later
                                     shape = RoundedCornerShape(12.dp),
                                     colors = ButtonDefaults.buttonColors(

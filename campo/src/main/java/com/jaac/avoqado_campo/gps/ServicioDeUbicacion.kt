@@ -13,6 +13,8 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import com.jaac.avoqado_campo.MainActivity
 import com.jaac.avoqado_campo.checada.Ubicacion
+import com.jaac.avoqado_campo.checada.turnoOlvidado
+import com.jaac.avoqado_campo.checada.turnoVigente
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.identidad.Arranque
 import com.jaac.avoqado_campo.identidad.QuienSoy
@@ -67,9 +69,14 @@ class SeguimientoDelTurno(
             return noSigue(ANDROID_NO_LO_PERMITIO)
         }
         puerta.enPrimerPlano = true // después de esto, `detener()` ya puede hacer stopService
+        val yo = quienSoy.instantanea()
+        val t = piezas.turnoAhora()
+        val ms = ahora()
         val fin: ResultadoGps? = when {
             puerta.detenerPedido -> null // la salida o el borrado llegaron antes que el servicio
-            !debeSeguir(quienSoy.instantanea(), piezas.turnoAhora()) -> ResultadoGps.NoLoUsaLaTienda
+            // D3: el reinicio de Android con el turno de un día ya terminado no sigue (sin aviso: no es un problema).
+            turnoOlvidado(t, yo.staffId, ms) != null -> null
+            !debeSeguir(yo, t, ms) -> ResultadoGps.NoLoUsaLaTienda
             !tienePermiso -> ResultadoGps.NoSigue(SIN_PERMISO)
             else -> {
                 estado.publicar(ResultadoGps.Siguiendo)
@@ -95,12 +102,15 @@ class SeguimientoDelTurno(
     /**
      * Una lectura → un ping de la sucursal del turno. false = ya no hay turno de esta persona, o su sucursal ya no sigue la
      * ubicación (G, r3 #4: la misma sucursal que lleva el ping): el servicio se detiene.
+     * D3 (hz:nube0000:na1c5a48): un turno de un día ya terminado («salida olvidada») cuenta como sin turno: el SERVIDOR ya
+     * lo cerró, así que no se guarda su ubicación y el servicio se para (privacidad y batería).
      */
     suspend fun tomarUno(): Boolean {
         val yo = quienSoy.instantanea() // r3: la persona del turno y su generación, juntas
         val t = piezas.turnoAhora()
-        if (t == null || !t.abierto || t.staffId != yo.staffId) return false
-        if (!debeSeguir(yo, t)) {
+        val ms = ahora()
+        if (t == null || t.staffId != yo.staffId || !turnoVigente(t, ms)) return false
+        if (!debeSeguir(yo, t, ms)) {
             estado.publicar(ResultadoGps.NoLoUsaLaTienda)
             return false
         }

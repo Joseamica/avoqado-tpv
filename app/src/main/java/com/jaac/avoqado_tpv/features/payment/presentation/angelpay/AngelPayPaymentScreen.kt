@@ -329,6 +329,17 @@ fun AngelPayPaymentScreen(
     // Scaffold. See AngelPayPaymentState.Queued kdoc for why this must never be Error.
     val queuedState = state as? AngelPayPaymentState.Queued
 
+    // 🔙 Encargo f84e3a (Codex r1 #1 y #2): con el cobro ya hecho el «atrás» del sistema NUNCA sale a la entrada anterior (desde
+    // Cobrar, el carrito lleno). Cubre todo el tramo del éxito: el primer cuadro de Success (la animación se enciende en un efecto),
+    // la animación, y la espera tras el botón principal (Mesas libera la mesa por red; mientras, la pantalla queda vacía en Idle).
+    // Con el recibo a la vista lo atiende AngelPaySuccessContent, que se registra después y por eso gana: hace lo del botón.
+    BackHandler(
+        enabled = state is AngelPayPaymentState.Success || state is AngelPayPaymentState.Queued ||
+            showApprovedAnimation || showSuccessContent,
+    ) {
+        Timber.d("🔙 [AngelPay] «atrás» en el tramo del éxito sin recibo a la vista: se ignora")
+    }
+
     // ── Full-screen overlays (no scaffold) ───────────────────────────
     when {
         // Approved animation overlay
@@ -340,11 +351,6 @@ fun AngelPayPaymentScreen(
                 "$${String.format(java.util.Locale.US, "%.2f", subtotal.add(tip))}"
             }
 
-            // 🔙 Encargo f84e3a: con «Aprobado» en pantalla todavía no hay botones; el «atrás» del sistema se ignora (antes sacaba la
-            // pantalla de cobro y regresaba a Cobrar con el carrito lleno). Después lo atiende AngelPaySuccessContent.
-            BackHandler {
-                Timber.d("🔙 [AngelPay] «atrás» durante «Aprobado»: se ignora")
-            }
             PaymentApprovedScreen(
                 amount = formattedTotal,
                 onAnimationComplete = {

@@ -85,11 +85,15 @@ class AtrasTrasUnCobroTest {
     }
 
     @Test
-    fun `Nexgo - durante la animacion de Aprobado, atras se ignora`() {
-        val rama = cuerpoDe(pantallaNexgo, "showApprovedAnimation && !showSuccessContent -> {", "PaymentApprovedScreen(")
+    fun `Nexgo - en todo el tramo del exito sin recibo a la vista, atras se ignora (Codex r1 1 y 2)`() {
+        // Antes de los overlays (que hacen `return`): se compone en TODO estado, también en el primer cuadro de Success (la
+        // animación se enciende en un efecto) y en la espera tras el botón principal (Idle con la bandera de éxito puesta).
+        val antesDeLosOverlays = cuerpoDe(pantallaNexgo, "fun AngelPayPaymentScreen(", "// ── Full-screen overlays (no scaffold)")
         assertTrue(
-            "Mientras se ve «Aprobado» en la Nexgo, el «atrás» del sistema no debe sacar la pantalla de cobro.",
-            Regex("""BackHandler \{""").containsMatchIn(rama),
+            "AngelPayPaymentScreen debe ignorar el «atrás» del sistema en Success, Queued, la animación y la espera tras el botón.",
+            Regex(
+                """BackHandler\(\s*enabled = state is AngelPayPaymentState\.Success \|\| state is AngelPayPaymentState\.Queued \|\|\s*showApprovedAnimation \|\| showSuccessContent,\s*\) \{""",
+            ).containsMatchIn(antesDeLosOverlays),
         )
     }
 }

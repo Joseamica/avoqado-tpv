@@ -87,7 +87,8 @@ class RegresoDeCobrarTest {
             "src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/angelpay/AngelPayPaymentScreen.kt",
         ).readText()
         assertThat(pantalla).contains("atrasDelSistemaComoLaFlecha: Boolean = false,")
-        val manejador = pantalla.substringAfter("BackHandler(").substringBefore("Scaffold(")
+        // El manejador de D36 (desde su comentario): antes de él, la pantalla ignora el «atrás» en el tramo del éxito (f84e3a).
+        val manejador = pantalla.substringAfter("// D36 (Codex r1 #5 y r2 #5/#7)").substringAfter("BackHandler(").substringBefore("Scaffold(")
         assertThat(manejador).contains("enabled = atrasDelSistemaComoLaFlecha && (")
         assertThat(manejador).contains("state is AngelPayPaymentState.SelectingMerchant")
         assertThat(manejador).contains("state is AngelPayPaymentState.Error")

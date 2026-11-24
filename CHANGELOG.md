@@ -39,6 +39,10 @@
   - Prueba: las seis ventas medidas, Amex incluida, se admiten con importes distintos de $1 (lo que cobra la app de laboratorio).
 
 ### **Fixed**
+- **Cobro · PAX: «Reintentar» tras un error de registro del EFECTIVO ya no abre el cobro con tarjeta (encargo a1ff27, `hz:nube0000:na278abe`)**: si el registro de un efectivo fallaba y la cola de la terminal tampoco lo aceptaba, la pantalla «Error registrando pago en efectivo» ofrecía «Reintentar»; ese botón tomaba el efectivo por una tarjeta sin comercio, elegía el primer comercio y pedía tarjeta por el mismo importe. El cliente ya había pagado en efectivo: si pasaba la tarjeta, cobro doble. Ahora:
+  - «Reintentar» vuelve a REGISTRAR el efectivo por el camino de «Cobrar en efectivo», con la misma llave del intento y la misma referencia; nunca abre la tarjeta. También en el efectivo confirmado del kiosco (legacy).
+  - «Cancelar» desde ese error regresa a los métodos con la propina una sola vez (antes el importe ya traía la propina y se sumaba otra vez).
+  - Sandbox y production iguales. Pruebas: `PaymentViewModelTest` › `a1ff27 …`.
 - **Caja · la terminal ya no se traba en la caja de ayer cuando entra alguien sin permiso de caja (D24, Testarudo, N86, 22-nov)**: la caja del 21 la cerró el dueño en otro aparato, la del 22 ya estaba abierta, y entró alguien de Cocina: la terminal se quedó en «Caja cerrada o cerrándose en otro aparato · Cierre observado en el servidor (CLOSED)» con «Abrir nueva caja» y «Usar la caja vinculada» en gris, sin salida. Dos causas: el paso solo a la caja del negocio (D65) pedía `shifts:read`, y se saltaba las cajas vinculadas (`ADOPTED`), que era la de la N86. Ahora:
   - Basta el permiso de cobrar (`payments:create`) para pasarse sola a la caja abierta del negocio: si GET /shift contesta 403, pregunta a la ruta nueva sin cifras del SERVIDOR (`GET /tpv/venues/:id/shift/identity`). Con un SERVIDOR sin la ruta (404), igual que antes. La protección de antes (otra sucursal, sesión vieja, token renovado, Caja apagada) sigue, con «`shifts:read` o `payments:create`».
   - Una caja vinculada cerrada en otro aparato también pasa a la abierta del negocio.

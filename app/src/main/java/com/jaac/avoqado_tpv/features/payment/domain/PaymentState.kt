@@ -56,7 +56,12 @@ data class RetryContext(
     val equalPartsPartySize: Int? = null,
     val equalPartsPayedFor: Int? = null,
     val paidProductIds: List<String>? = null,
-    val selectedMsiMonths: Int? = null
+    val selectedMsiMonths: Int? = null,
+    /**
+     * 🔴 a1ff27: el error vino de REGISTRAR un cobro en efectivo (el dinero ya está en el cajón). «Reintentar»
+     * vuelve a registrar ese efectivo con la misma llave; nunca abre el cobro con tarjeta.
+     */
+    val esRegistroDeEfectivo: Boolean = false,
 ) {
     /**
      * Calculate total amount (amount + tip).

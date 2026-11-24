@@ -7117,12 +7117,15 @@ class PaymentViewModel @Inject constructor(
                         )
                         _state.value = PaymentState.Error(
                             message = "Error registrando pago en efectivo:\n\n${error.message ?: "Error desconocido"}",
+                            // 🔴 a1ff27: «Reintentar» vuelve a REGISTRAR este efectivo (misma llave), nunca abre la
+                            // tarjeta. `amount` es el SUBTOTAL: la propina va aparte, como en cualquier RetryContext.
                             context = RetryContext(
-                                amount = currentState.totalAmount,  // ✅ FIX: Use totalAmount for consistency
+                                amount = currentState.subtotal,
                                 tipAmount = currentState.tipAmount,
                                 rating = currentState.rating,
-                                merchantAccountId = "",  // No merchant for cash
-                                flowOrigin = sessionSnapshot.flowOrigin
+                                merchantAccountId = null,  // null = efectivo (no hay comercio)
+                                flowOrigin = sessionSnapshot.flowOrigin,
+                                esRegistroDeEfectivo = true,
                             ),
                             canRetry = true
                         )
@@ -7634,12 +7637,14 @@ class PaymentViewModel @Inject constructor(
                         )
                         _state.value = PaymentState.Error(
                             message = "Error registrando pago confirmado:\n\n${error.message ?: "Error desconocido"}",
+                            // 🔴 a1ff27: igual que el efectivo de arriba: reintentar es registrar, nunca la tarjeta.
                             context = RetryContext(
-                                amount = currentState.totalAmount,
+                                amount = currentState.subtotal,
                                 tipAmount = currentState.tipAmount,
                                 rating = currentState.rating,
-                                merchantAccountId = "",
-                                flowOrigin = sessionSnapshot.flowOrigin
+                                merchantAccountId = null,
+                                flowOrigin = sessionSnapshot.flowOrigin,
+                                esRegistroDeEfectivo = true,
                             ),
                             canRetry = true
                         )
@@ -8017,6 +8022,15 @@ class PaymentViewModel @Inject constructor(
         if (context == null) {
             Timber.w("⚠️ [Retry] Context is NULL, resetting to idle")
             resetPayment()
+            return
+        }
+
+        // 🔴 a1ff27: el cliente YA pagó en efectivo y lo que falló fue el REGISTRO. Reintentar es volver a
+        // registrar ese efectivo por el mismo camino de «Cobrar en efectivo» (misma llave del intento, misma
+        // referencia), nunca `startPayment`, que abre la TARJETA por el mismo importe: cobro doble.
+        if (context.esRegistroDeEfectivo) {
+            Timber.i("🔄 [Smart Retry] Efectivo: se reintenta el REGISTRO, no se abre la tarjeta | attempt=${sessionSnapshot.paymentAttemptId}")
+            processCashPaymentFromError(context)
             return
         }
 

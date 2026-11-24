@@ -16,6 +16,7 @@ import com.jaac.avoqado_campo.checada.Ubicacion
 import com.jaac.avoqado_campo.checada.turnoOlvidado
 import com.jaac.avoqado_campo.checada.turnoVigente
 import com.jaac.avoqado_campo.cola.PiezaDao
+import com.jaac.avoqado_campo.cola.TurnoLocal
 import com.jaac.avoqado_campo.identidad.Arranque
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import dagger.hilt.android.AndroidEntryPoint
@@ -56,9 +57,16 @@ class SeguimientoDelTurno(
      * SIEMPRE intenta [primerPlano] primero (cumple el contrato de `startForegroundService` aunque lance) y decide después:
      * con un `detener()` pedido antes de arrancar, con la sucursal del turno sin seguimiento ([debeSeguir], r3 #3: también
      * cuando Android reinicia el servicio solo, sin pasar por `iniciar()`) o sin permiso, [quitarPrimerPlano] y false.
-     * false = quien llama hace `stopSelf()`; lo que pasó ya está en [EstadoDelGps].
+     * false = quien llama hace `stopSelf(startId)`; lo que pasó ya está en [EstadoDelGps].
+     * Codex r4 #1: [esElUltimo] = este arranque sigue siendo el más reciente. Si mientras leía el turno llegó otro, éste no
+     * quita el aviso ni para nada: devuelve true y deja que decida el bucle (con la fila de ahora).
      */
-    suspend fun arrancar(tienePermiso: Boolean, primerPlano: () -> Unit, quitarPrimerPlano: () -> Unit): Boolean {
+    suspend fun arrancar(
+        tienePermiso: Boolean,
+        primerPlano: () -> Unit,
+        esElUltimo: () -> Boolean = { true },
+        quitarPrimerPlano: () -> Unit,
+    ): Boolean {
         try {
             primerPlano()
         } catch (e: SecurityException) {
@@ -83,6 +91,7 @@ class SeguimientoDelTurno(
                 return true
             }
         }
+        if (!esElUltimo()) return true
         quitarPrimerPlano()
         alTerminar()
         fin?.let(estado::publicar)
@@ -117,7 +126,8 @@ class SeguimientoDelTurno(
         val l = leerSinTronar()
         // La lectura tarda hasta 10 s (y puede terminar sin posición o con un error). Al terminar se decide OTRA VEZ con la fila
         // del turno de ese momento y esa hora: si cruzó su límite no se guarda ni se espera otra vuelta (Codex r1 #2, r2 #1,
-        // r3 #1); si mientras tanto se marcó una entrada nueva, la lectura es de ella sólo si llegó después de su toque (r2 #2).
+        // r3 #1). Si mientras tanto se marcó una entrada nueva, esta lectura no se le cuelga (puede ser una posición de antes
+        // del toque, Codex r4 #3) y el servicio sigue: su arranque hace que el bucle lea otra vez de inmediato (correrBucle).
         val capturado = ahora()
         val ahoraT = piezas.turnoAhora()
         if (ahoraT == null || ahoraT.staffId != yo.staffId || !turnoVigente(ahoraT, capturado)) return false
@@ -125,7 +135,7 @@ class SeguimientoDelTurno(
             estado.publicar(ResultadoGps.NoLoUsaLaTienda)
             return false
         }
-        if (l == null || (ahoraT.abiertoAt != null && capturado < ahoraT.abiertoAt)) return true
+        if (l == null || !mismoTurno(t, ahoraT)) return true
         val venueId = ahoraT.venueId ?: yo.sesion?.venueId ?: return true
         pings.guardarSi(Ping(venueId = venueId, lat = l.lat, lon = l.lon, precision = l.precision, capturadoAt = capturado)) {
             quienSoy.instantanea().let { !it.limpiando && it.generacion == yo.generacion }
@@ -143,6 +153,9 @@ class SeguimientoDelTurno(
         null
     }
 }
+
+/** La misma entrada (no otra marcada después): `timeEntryId` y la llave cambian al subir; la hora del toque y la sucursal no. */
+private fun mismoTurno(a: TurnoLocal, b: TurnoLocal) = a.staffId == b.staffId && a.venueId == b.venueId && a.abiertoAt == b.abiertoAt
 
 /**
  * El bucle del servicio: una lectura y luego [esperar] (30 min), hasta que [tomarUno] diga que ya no hay turno que seguir.
@@ -194,6 +207,8 @@ class ServicioDeUbicacion : Service() {
     private var bucle: Job? = null
     /** Cuántos `onStartCommand` van (sólo el hilo principal lo toca). */
     private var arranques = 0
+    /** El `startId` del `onStartCommand` más reciente que ya llegó (sólo el hilo principal lo toca). */
+    private var ultimoStartId = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -205,24 +220,29 @@ class ServicioDeUbicacion : Service() {
         // r12: con el arranque DETENIDO (no pudo guardar) no se sigue nada. r13: aun así hay que cumplir `startForeground`
         // antes de pararse: Android puede reentregar un `startForegroundService` que quedó pendiente al morir el proceso, y
         // si el servicio se para sin cumplirlo, cierra la app (ForegroundServiceDidNotStartInTimeException).
-        arranques++ // antes de todo y en el hilo principal: el bucle vivo lo mira antes de pararse (Codex r3 #2)
+        // Antes de todo y en el hilo principal: el bucle vivo los mira antes de pararse (Codex r3 #2). Además se para con
+        // `stopSelf(startId)`: si Android ya aceptó un arranque más nuevo que todavía no llega aquí, no detiene el servicio
+        // (Codex r4 #1; contrato de `stopSelfResult`).
+        arranques++
+        ultimoStartId = startId
         if (arranque.detenido) {
-            pararCumpliendoPrimerPlano(::ponerEnPrimerPlano, ::quitarPrimerPlano) { stopSelf() }
+            pararCumpliendoPrimerPlano(::ponerEnPrimerPlano, ::quitarPrimerPlano) { stopSelf(startId) }
             return START_NOT_STICKY
         }
         alcance.launch {
             val enPrimerPlano = seguimiento.arrancar(
                 tienePermisoDeUbicacion(this@ServicioDeUbicacion),
                 primerPlano = ::ponerEnPrimerPlano,
+                esElUltimo = { startId == ultimoStartId },
                 quitarPrimerPlano = ::quitarPrimerPlano,
             )
             if (!enPrimerPlano) {
-                stopSelf()
+                stopSelf(startId)
                 return@launch
             }
             if (bucle?.isActive != true) bucle = alcance.launch {
                 correrBucle(seguimiento::tomarUno, arranques = { arranques }) { delay(CADA_MS) }
-                stopSelf()
+                stopSelf(ultimoStartId)
             }
         }
         return START_STICKY

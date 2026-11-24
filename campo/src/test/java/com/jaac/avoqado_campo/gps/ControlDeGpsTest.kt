@@ -365,30 +365,37 @@ class ControlDeGpsTest {
         assertTrue(s.tomarUno())
     }
 
-    @Test fun `D3 - una entrada nueva marcada mientras se leia se queda con la lectura que llego despues de su toque (Codex r2 2)`() = runBlocking<Unit> {
+    @Test fun `D3 - una entrada nueva marcada mientras se leia no para el servicio ni se lleva esa lectura (Codex r2 2, r4 3)`() = runBlocking<Unit> {
         abrirTurno()
         val limite = limiteEnElCelular(AHORA - 60_000L)
         var reloj = limite - 1_000L
         coEvery { ubicacion.leer(any()) } coAnswers {
             reloj = limite + 1_000L
-            // El promotor marcó su entrada de hoy mientras el GPS buscaba señal: la fila del turno ya es otra.
+            // El promotor marcó su entrada de hoy mientras el GPS buscaba señal: la fila del turno ya es otra, y la posición
+            // que contestó el GPS puede ser de antes del toque (de otra sucursal).
             db.piezaDao().guardarTurno(TurnoLocal(staffId = "s1", llaveEntrada = "e2", timeEntryId = null, venueId = "v1", abiertoAt = limite + 500L))
             Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
         }
         val s = SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), db.piezaDao(), quienSoy) { reloj }
         assertTrue(s.tomarUno()) // el servicio sigue: ahora es de la entrada nueva
+        assertTrue(db.pingDao().todos().isEmpty())
+        coEvery { ubicacion.leer(any()) } returns Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
+        assertTrue(s.tomarUno()) // la siguiente (que el arranque de la entrada pide de inmediato) sí es suya
         assertEquals(limite + 1_000L, db.pingDao().todos().single().capturadoAt)
     }
 
-    @Test fun `D3 - una lectura que llego antes del toque de la entrada nueva no se le cuelga`() = runBlocking<Unit> {
-        abrirTurno()
-        coEvery { ubicacion.leer(any()) } coAnswers {
-            // La hora del toque quedó adelante de la de la lectura (el toque fue en el mismo instante en que contestó el GPS).
-            db.piezaDao().guardarTurno(TurnoLocal(staffId = "s1", llaveEntrada = "e2", timeEntryId = null, venueId = "v1", abiertoAt = AHORA + 1L))
-            Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
-        }
+    @Test fun `D3 - con la hora del celular corregida hacia atras, la misma entrada sigue guardando sus pings (Codex r4 2)`() = runBlocking<Unit> {
+        abrirTurno(haceMs = -3_600_000L) // la entrada quedó guardada una hora «en el futuro» (el reloj iba adelantado)
         assertTrue(seguimiento().tomarUno())
-        assertTrue(db.pingDao().todos().isEmpty())
+        assertEquals(1, db.pingDao().todos().size)
+    }
+
+    @Test fun `D3 - un arranque viejo que termina despues de uno nuevo no quita el aviso (Codex r4 1)`() = runBlocking<Unit> {
+        abrirTurno(haceMs = DOS_DIAS) // la fila que leyó el arranque viejo
+        val r = seguimiento().arrancar(true, primerPlano = { pasos += "primerPlano" }, esElUltimo = { false }) { pasos += "quitar" }
+        assertTrue(r) // decide el bucle, con la fila de ahora
+        assertEquals(listOf("primerPlano"), pasos)
+        assertTrue(puerta.enPrimerPlano)
     }
 
     @Test fun `D3 - un error del GPS al cruzar el limite no deja el aviso otra vuelta (Codex r3 1)`() = runBlocking<Unit> {

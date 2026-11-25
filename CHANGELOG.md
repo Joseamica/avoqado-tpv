@@ -20,6 +20,7 @@
   - La app: un Application dueño de todo (el carril en el hilo de la pantalla, el respondedor local, el lector y el motor armado con el par Basic de sandbox y una llave de huellas privada) y una pantalla que sólo manda órdenes: la lectura seca de L-c, la identidad en tres campos ocultos que se vacían al guardar, el importe, Cobrar y Cancelar.
 
 ### **Changed**
+- **[Caja] [PAX/Nexgo] «Efectivo: ya lo revisé» ya no se borra en cada parpadeo del WiFi (C7 opción B, founder 25-nov)**: cuando el gerente revisa una venta en efectivo que no subió y la terminal la reintenta sola al volver la red, la revisión se conserva. Mientras la venta sube, la Caja la sigue esperando como hoy; si vuelve a fallar igual, la Caja ya no pide revisarla otra vez. Sólo un desenlace distinto la vuelve a pedir: el servidor la rechaza para siempre o sube con una diferencia de importe nueva. Sin pantallas ni botones nuevos.
 - **Interno, sin efecto en la app · `cobropropio`, bloque 1 de la fase 3 del SDK propio**: el módulo sigue sin conectarse (`:app` no depende de él).
   - Prueba instrumentada del transporte sobre el TLS de Android (SNI, un POST completo por HTTP/1.1, una escritura después del plazo no llega); se corre en la PAX aparte.
   - El observador de pruebas de DUKPT ya no vive en producción: la prueba inyecta su borrador.

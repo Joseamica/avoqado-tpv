@@ -460,10 +460,13 @@ class RemotePaymentInbox(
     }
 
     /** A full navigation queue may reject ONLY a command that has never been claimed. */
-    suspend fun rejectUnclaimed(requestId: String): String? {
+    suspend fun rejectUnclaimed(
+        requestId: String,
+        errorMessage: String = "La terminal no pudo abrir otra solicitud de cobro",
+    ): String? {
         val result = JSONObject().put("requestId", requestId).put("status", "failed")
             .put("outcomeEvidence", "PRE_AUTHORIZATION")
-            .put("errorMessage", "La terminal no pudo abrir otra solicitud de cobro").toString()
+            .put("errorMessage", errorMessage).toString()
         return result.takeIf { dao.resolveReceived(requestId, it, System.currentTimeMillis()) == 1 }
     }
 

@@ -18,6 +18,9 @@ sealed interface VerificacionDelCobro {
         val authCode: String,
         val referencia: String,
         val cardBin: String?,
+        /** D27: lo que el historial dice de la tarjeta, para que el registro no se quede sin últimos 4 ni modo de lectura. */
+        val cardLast4: String? = null,
+        val cardEntryMode: String? = null,
     ) : VerificacionDelCobro
 
     /** El procesador contestó y el cobro NO existe. Ahora sí es seguro reintentar. */
@@ -107,6 +110,8 @@ class AngelPayChargeVerifier @Inject constructor(
                             authCode = mia.authorizationCode,
                             referencia = mia.reference,
                             cardBin = mia.cardBin.takeIf { bin -> bin.isNotBlank() },
+                            cardLast4 = mia.last4?.takeIf { it.isNotBlank() },
+                            cardEntryMode = mia.entryMode.takeIf { it.isNotBlank() },
                         )
                     }
                     // Todavía no está. Puede que el historial vaya con retraso frente a un

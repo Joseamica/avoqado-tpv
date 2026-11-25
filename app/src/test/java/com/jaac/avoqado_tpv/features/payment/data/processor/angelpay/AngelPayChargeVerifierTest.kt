@@ -58,6 +58,30 @@ class AngelPayChargeVerifierTest {
     }
 
     @Test
+    fun `D27 el cobro confirmado por el historial trae los ultimos 4 y el modo de lectura`() = runTest {
+        coEvery { adapter.getTransactionHistory(any()) } returns Result.success(
+            listOf(transaccion(integratorReference = "intento-1", authorization = "251259", last4 = "4242", entryMode = "CHIP"))
+        )
+
+        val cobrado = verificar() as VerificacionDelCobro.Cobrado
+
+        assertThat(cobrado.cardLast4).isEqualTo("4242")
+        assertThat(cobrado.cardEntryMode).isEqualTo("CHIP")
+    }
+
+    @Test
+    fun `D27 sin ultimos 4 ni modo en el historial quedan vacios como antes`() = runTest {
+        coEvery { adapter.getTransactionHistory(any()) } returns Result.success(
+            listOf(transaccion(integratorReference = "intento-1", authorization = "251259", last4 = " ", entryMode = ""))
+        )
+
+        val cobrado = verificar() as VerificacionDelCobro.Cobrado
+
+        assertThat(cobrado.cardLast4).isNull()
+        assertThat(cobrado.cardEntryMode).isNull()
+    }
+
+    @Test
     fun `no confunde el cobro de OTRO intento del mismo monto`() = runTest {
         // Mismo importe, misma terminal, mismo minuto: sólo la referencia del integrador
         // distingue. Sin este filtro se registraría el cobro de la venta anterior.
@@ -251,6 +275,8 @@ class AngelPayChargeVerifierTest {
         integratorReference: String?,
         authorization: String,
         reference: String = "ref-x",
+        last4: String? = null,
+        entryMode: String = "CHIP",
     ) = UnifiedTransaction(
         processorType = ProcessorType.ANGELPAY,
         reference = reference,
@@ -258,9 +284,9 @@ class AngelPayChargeVerifierTest {
         authorizationCode = authorization,
         status = "APROBADA",
         cardType = null,
-        last4 = null,
+        last4 = last4,
         cardBin = "411111",
-        entryMode = "CHIP",
+        entryMode = entryMode,
         date = "2026-09-08",
         time = "15:58",
         operationType = "VENTA",

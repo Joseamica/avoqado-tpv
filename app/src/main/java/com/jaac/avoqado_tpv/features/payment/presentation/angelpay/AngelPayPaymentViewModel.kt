@@ -53,6 +53,7 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayErr
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayOutcomeClassifier
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.DecisionDelSdk
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.DesenlaceDelCobro
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.TarjetaDeAngelPay
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.paraLaReglaDelSdk
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.VerificacionDelCobro
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayIntentBuilder
@@ -918,7 +919,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         var decision: ResultadoDelVeredicto? = null
         if (attemptId != null) {
             // 📒 [Libreta] HOST_RESPONDIO → AUTORIZADO (card facts); el paso a REGISTRADO lo decide el veredicto.
-            paymentAttemptLedger.markAuthorized(attemptId, null, cardDetails.cardBrand.name, cardDetails.entryMode.name)
+            paymentAttemptLedger.markAuthorized(attemptId, cardDetails.maskedPan.ifBlank { null }, cardDetails.cardBrand.name, cardDetails.entryMode.name)
             decision = paymentAttemptLedger.aplicarVeredictoDelServidor(
                 VeredictoDeIntento.desdeRecibo(
                     venueId = paymentContext.venueId, attemptId = attemptId,
@@ -4080,6 +4081,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                     authCode = verificacion.authCode,
                     reference = verificacion.referencia,
                     cardBin = verificacion.cardBin,
+                    cardLast4 = verificacion.cardLast4,
+                    cardEntryMode = verificacion.cardEntryMode,
                 )
             }
 
@@ -5185,6 +5188,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         issuerCountryCode = result.cardCountryCode,
         // D5: el tipo del BIN que contesta AngelPay («CREDITO»/«DEBITO»). Sin él toda venta salía CREDIT_CARD.
         cardType = result.cardType,
+        // D27: los últimos 4 y el modo de lectura que el SDK sí trae (antes se registraba "" / OTHER).
+        cardLast4 = result.cardLast4,
+        cardEntryMode = result.cardEntryMode,
     )
 
     /**
@@ -5202,6 +5208,8 @@ class AngelPayPaymentViewModel @Inject constructor(
         cardBin: String?,
         issuerCountryCode: String? = null,
         cardType: String? = null,
+        cardLast4: String? = null,
+        cardEntryMode: String? = null,
     ) {
         _state.value = AngelPayPaymentState.RecordingPayment()
 
@@ -5220,9 +5228,10 @@ class AngelPayPaymentViewModel @Inject constructor(
         val detectedBrand = cardBin?.let { CardBrand.fromBin(it) } ?: CardBrand.UNKNOWN
         val paisDelEmisor = issuerCountryCode?.trim()?.takeIf { it.isNotEmpty() }
         val cardDetails = CardDetails(
-            maskedPan = "",
+            // D27: lo que AngelPay dice de la tarjeta; sin dato válido queda "" / OTHER como antes.
+            maskedPan = TarjetaDeAngelPay.numeroEnmascarado(cardLast4),
             cardBrand = detectedBrand,
-            entryMode = CardEntryMode.OTHER,
+            entryMode = TarjetaDeAngelPay.modoDeLectura(cardEntryMode),
             // Sólo evidencia para el clasificador sombra del servidor; `isInternational` no cambia (mismo trato que la PAX).
             issuerCountryCode = paisDelEmisor,
             issuerCountrySource = paisDelEmisor?.let { com.jaac.avoqado_tpv.features.payment.domain.model.IssuerCountrySource.EMV_5F28 },

@@ -237,18 +237,11 @@ public class Libreta internal constructor(
             }
         }
 
-    /**
-     * Antes del compromiso, la aprobación cuenta (`Vigente`); después sólo se guarda como evidencia (`Tardia`). Si el
-     * SERVIDOR ya la había aprobado («ya cobrado», sin folio del banco), el folio del banco se guarda como evidencia y sigue
-     * `YaResuelta` sin cambiar el estado (r1 R1-6).
-     */
+    /** Antes del compromiso, la aprobación cuenta (`Vigente`); después sólo se guarda como evidencia (`Tardia`). */
     internal fun guardarAprobacion(id: AttemptId, operationNumber: Long, autorizacion: String?): Arbitraje = escribir("guardarAprobacion") {
         val f = filaQueExiste(id)
         require(f.operacion == Operacion.VENTA) { "sólo una venta se aprueba" }
         when {
-            f.estado == EstadoDelIntento.APROBADO && f.origenDeLaAprobacion == OrigenDeLaAprobacion.SERVIDOR &&
-                f.evidenciaTardiaOperacion == null && f.evidenciaTardiaAutorizacion == null ->
-                Arbitraje.YaResuelta(guardar(f, f.copy(evidenciaTardiaOperacion = operationNumber, evidenciaTardiaAutorizacion = autorizacion)))
             f.estado in RESUELTOS -> Arbitraje.YaResuelta(f)
             f.estado == EstadoDelIntento.ENVIADO && f.reverso == EstadoDelReverso.NINGUNO -> {
                 guardar(
@@ -369,20 +362,20 @@ public class Libreta internal constructor(
     }
 
     /**
-     * El acuse del SERVIDOR y el estado nuevo, en UNA transacción por id (r3 R3-09). Es un CAS: sólo escribe si la fila sigue
-     * `PENDIENTE` con el MISMO resultado que se acusa (`acusado`). Un acuse tardío de un reporte viejo nunca marca una
-     * obligación más nueva como entregada: regresa null y la fila queda igual. Los valores los decide [ColaDeResultados].
+     * El acuse del SERVIDOR, en UNA transacción por id (r3 R3-09): cierra el reporte y guarda lo que dijo el SERVIDOR; nunca
+     * cambia el estado del intento (bloque S, D-4). Es un CAS: sólo escribe si la fila sigue `PENDIENTE` con el MISMO resultado
+     * que se acusa (`acusado`). Un acuse tardío de un reporte viejo nunca marca una obligación más nueva como entregada:
+     * regresa null y la fila queda igual. Los valores los decide [ColaDeResultados].
      */
     internal fun aplicarAcuse(
         id: AttemptId,
         acusado: ResultadoParaReportar,
         estadoEnServidor: EstadoDelReversoEnServidor?,
         reporte: EstadoDelReporte,
-        estado: EstadoDelIntento?,
     ): IntentoEntity? = escribir("aplicarAcuse") {
         require(reporte != EstadoDelReporte.PENDIENTE && reporte != EstadoDelReporte.NO_APLICA) { "un acuse cierra el reporte" }
         fila(id)?.takeIf { it.reporte == EstadoDelReporte.PENDIENTE && it.resultadoParaReportar == acusado }?.let { f ->
-            guardar(f, f.copy(estadoEnServidor = estadoEnServidor ?: f.estadoEnServidor, reporte = reporte, estado = estado ?: f.estado))
+            guardar(f, f.copy(estadoEnServidor = estadoEnServidor ?: f.estadoEnServidor, reporte = reporte))
         }
     }
 

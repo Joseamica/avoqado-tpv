@@ -52,7 +52,6 @@ class GuardasTest {
             Triple("motor/MotorDeCobro.kt", "withTimeoutOrNull(espera) { intentar { llamada(", "conBuzon (T9): el preflight y la cancelación; lo que el transporte leyó ya está en el buzón y se clasifica aunque venza (R3-2), con el mismo plazo que la llamada"),
             Triple("motor/MotorDeCobro.kt", "withTimeoutOrNull(relojes.esperaLibreta) { listo.await() }", "conTope (S1–S3): no envuelve red ni Room, sólo la espera de un Deferred; al vencer da lo más conservador (PorConfirmar o SIN_CONFIRMAR) y lo que llega tarde no admite ni contesta nada"),
             Triple("motor/CaminoDelReverso.kt", "withTimeoutOrNull(relojes.esperaReverso)", "una vuelta del reverso: lo que el transporte leyó ya está clasificado en el buzón (R3-2)"),
-            Triple("motor/CaminoDelReverso.kt", "withTimeoutOrNull(t0 + relojes.peorCasoCajera - ahora()) { entrega.await() }", "el acuse sigue en su async: se aplica a la libreta y se publica tarde"),
             Triple("servidor/ReversoDelServidorHttp.kt", "withTimeoutOrNull(espera) { credencial.renovar", "renovar el JWT tras un 401 de /resultado: la app guarda el nuevo; perderlo no pierde evidencia (v5 §2.5)"),
             Triple("servidor/ReversoDelServidorHttp.kt", "llamada.timeout().timeout(", "red de seguridad de OkHttp, del mismo largo que el reloj de quien pide"),
             Triple("servidor/ReversoDelServidorHttp.kt", "withTimeoutOrNull(espera) { enCurso() } ?: llegada.get()", "/resultado (R4-4): al vencer sale el código que llegó (r2 familia B)"),
@@ -104,6 +103,13 @@ class GuardasTest {
         assertTrue("lo del permiso sigue en src/main: $quedan", quedan.isEmpty())
         val llamadas = apariciones(Regex("""(?<![.\w])servidor\.""")).filter { it.first.startsWith("motor/") }
         assertTrue("el motor le habla al SERVIDOR: $llamadas", llamadas.isEmpty())
+    }
+
+    /** Bloque S (D-3): un reverso confirmado es «No se cobró» en el acto; nadie espera el acuse del SERVIDOR (ni en un comentario). */
+    @Test fun `el camino del reverso no espera al SERVIDOR`() {
+        val camino = File(raiz, "motor/CaminoDelReverso.kt").readText()
+        val quedan = listOf("entrega.await()", "esperarAcuse").filter { it in camino }
+        assertTrue("CaminoDelReverso.kt espera el acuse: $quedan", quedan.isEmpty())
     }
 
     @Test fun `motor y libreta no tocan Gson`() {

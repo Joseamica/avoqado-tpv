@@ -30,7 +30,7 @@ public sealed interface EventoDeCobro {
     public data class Cancelada(val operationNumber: Long) : EventoDeCobro
     public data class Rechazado(val codigo: String, val leyenda: String) : EventoDeCobro
     public data class NoSalioAlBanco(val motivo: MotivoNoSalio, val admision: MotivoNoAdmitida?) : EventoDeCobro
-    /** Se deshizo: sólo con el `REVERSADA` con eco de Blumon o el `REVERSED` del SERVIDOR. */
+    /** Se deshizo: sólo con el `REVERSADA` con eco de Blumon; el acuse del SERVIDOR nunca lo da ni lo quita (bloque S). */
     public data object NoSeCobro : EventoDeCobro
 
     /**

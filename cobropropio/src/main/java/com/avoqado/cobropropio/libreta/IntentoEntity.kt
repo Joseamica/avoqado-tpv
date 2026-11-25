@@ -22,6 +22,7 @@ public enum class EstadoDelReporte { NO_APLICA, PENDIENTE, ENTREGADO, CONCILIAR,
 
 public enum class ResultadoParaReportar { CONFIRMADO, RECHAZADO, PUDO_ENTRAR }
 
+/** `SERVIDOR` ya no tiene escritor (bloque S); se queda porque es un valor guardado: una fila vieja debe seguir leyéndose. */
 public enum class OrigenDeLaAprobacion { BANCO, SERVIDOR }
 
 /** Lo que el SERVIDOR dice del reverso en su acuse (la Tarea 6 traduce su respuesta a esto). */

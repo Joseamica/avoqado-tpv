@@ -147,7 +147,7 @@ class CarrerasEnTiempoRealTest {
         }
         val motor = MotorDeCobro(
             Identidad("AVOQADO", "388", "1234567890", "9000000001", "A910S", "fase2", Ambiente.SANDBOX), lector,
-            object : Red { override fun hayRed() = true }, blumon, servidor, libreta, ColaDeResultados(libreta, servidor),
+            object : Red { override fun hayRed() = true }, blumon, libreta, ColaDeResultados(libreta, servidor),
             HuellaHmac(SecretKeySpec(ByteArray(32) { 3 }, "HmacSHA256")), CatalogoDeRechazos.BLUMON, relojes, fondo, ahora, Instant::now,
         )
         return Mundo(motor, blumon, libreta)

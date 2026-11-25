@@ -2,7 +2,6 @@ package com.avoqado.cobropropio.servidor
 
 import com.avoqado.cobropropio.dominio.AttemptId
 import com.avoqado.cobropropio.dominio.Origen
-import com.avoqado.cobropropio.libreta.EstadoDelIntento
 import com.avoqado.cobropropio.libreta.EstadoDelReporte
 import com.avoqado.cobropropio.libreta.EstadoDelReversoEnServidor
 import com.avoqado.cobropropio.libreta.IntentoEntity
@@ -22,8 +21,9 @@ internal data class ResultadoDeEntrega(val acuse: AcuseDelResultado?, val fila: 
 
 /**
  * La cola durable de `/resultado`: la obligación vive en la libreta (`reporte = PENDIENTE`), y cada acuse se aplica con el CAS
- * de [Libreta.aplicarAcuse] en una transacción por id (r3 R3-09). La cola no tiene reloj: `reversadoEn` sale de la fila.
- * La app sólo la construye para dársela al motor; entregar es del motor (`MotorDeCobro.recuperar`), r2 familia A.
+ * de [Libreta.aplicarAcuse] en una transacción por id (r3 R3-09). El acuse cierra el reporte y guarda lo que dijo el SERVIDOR;
+ * nunca cambia el estado del intento (bloque S, D-4). La cola no tiene reloj: `reversadoEn` sale de la fila. La app sólo la
+ * construye para dársela al motor; entregar es del motor (`MotorDeCobro.recuperar`), r2 familia A.
  */
 internal class ColaDeResultados(
     private val libreta: Libreta,
@@ -41,20 +41,19 @@ internal class ColaDeResultados(
 
         val acuse = servidor.reportarResultado(f.venueId, id, r)
         val aplicada = enLaLibreta {
-            fun aplicar(enServidor: EstadoDelReversoEnServidor?, reporte: EstadoDelReporte, estado: EstadoDelIntento? = null) =
-                libreta.aplicarAcuse(id, acusado, enServidor, reporte, estado)
+            fun aplicar(enServidor: EstadoDelReversoEnServidor?, reporte: EstadoDelReporte) =
+                libreta.aplicarAcuse(id, acusado, enServidor, reporte)
             when (acuse) {
                 is AcuseDelResultado.Guardado -> when (acuse.estado) {
-                    EstadoDelReversoEnServidor.REVERSED -> aplicar(acuse.estado, EstadoDelReporte.ENTREGADO, EstadoDelIntento.NO_SE_COBRO)
-                    EstadoDelReversoEnServidor.REVERSE_FAILED -> aplicar(acuse.estado, EstadoDelReporte.ENTREGADO)
-                    EstadoDelReversoEnServidor.CONTRADICTION -> aplicar(acuse.estado, EstadoDelReporte.ENTREGADO, EstadoDelIntento.NO_SE)
+                    EstadoDelReversoEnServidor.REVERSED, EstadoDelReversoEnServidor.REVERSE_FAILED,
+                    EstadoDelReversoEnServidor.CONTRADICTION -> aplicar(acuse.estado, EstadoDelReporte.ENTREGADO)
                     // Sin desenlace: es el acuse del PUDO_ENTRAR. Para un CONFIRMADO o un RECHAZADO no cuadra ⇒ lo ve una persona.
                     EstadoDelReversoEnServidor.REVERSING, EstadoDelReversoEnServidor.REVERSE_UNCONFIRMED -> aplicar(
                         acuse.estado,
                         if (acusado == ResultadoParaReportar.PUDO_ENTRAR) EstadoDelReporte.ENTREGADO else EstadoDelReporte.CONCILIAR,
                     )
                 }
-                is AcuseDelResultado.Conflicto -> aplicar(acuse.estadoGuardado, EstadoDelReporte.ENTREGADO, EstadoDelIntento.NO_SE)
+                is AcuseDelResultado.Conflicto -> aplicar(acuse.estadoGuardado, EstadoDelReporte.ENTREGADO)
                 // r5/r6 R4-08: con vínculo efectivo un 404/400/401/403 puede ser sesión o sucursal cambiada ⇒ CONCILIAR, nunca FINAL.
                 AcuseDelResultado.NoEncontrado, is AcuseDelResultado.Final ->
                     aplicar(null, if (vinculoEfectivo(f)) EstadoDelReporte.CONCILIAR else EstadoDelReporte.FINAL_SIN_ENTREGAR)

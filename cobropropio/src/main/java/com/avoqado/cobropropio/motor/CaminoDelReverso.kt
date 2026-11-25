@@ -3,14 +3,11 @@ package com.avoqado.cobropropio.motor
 import com.avoqado.cobropropio.blumon.ClaseDelReverso
 import com.avoqado.cobropropio.blumon.Clasificador
 import com.avoqado.cobropropio.blumon.CuerpoCongelado
-import com.avoqado.cobropropio.dominio.EventoDeCobro
-import com.avoqado.cobropropio.dominio.Origen
 import com.avoqado.cobropropio.libreta.Arbitraje
 import com.avoqado.cobropropio.libreta.EstadoDelIntento
 import com.avoqado.cobropropio.libreta.EstadoDelReverso
 import com.avoqado.cobropropio.libreta.ResultadoParaReportar
 import com.avoqado.cobropropio.red.Respuesta
-import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -20,9 +17,10 @@ import kotlin.time.Duration.Companion.milliseconds
 private const val TX_008 = "TX_008"
 
 /**
- * B, D, E y F de la tabla de decisiones: arbitraje, vueltas del reverso con su techo, el acuse y el plazo. Tras el arbitraje
- * durable las vueltas empiezan enseguida: el reverso no le pide permiso al SERVIDOR (bloque S, D-2). El techo es un esfuerzo
- * de puntualidad (parada 2): la corrección sale de la clasificación de cada respuesta, también la que llega tarde.
+ * B, D, E y F de la tabla de decisiones: arbitraje, vueltas del reverso con su techo y el plazo. Tras el arbitraje durable las
+ * vueltas empiezan enseguida: el reverso no le pide permiso al SERVIDOR (bloque S, D-2). Un reverso que Blumon confirma es
+ * `NoSeCobro` en ese instante; el reporte al SERVIDOR queda en la libreta (D-3). El techo es un esfuerzo de puntualidad
+ * (parada 2): la corrección sale de la clasificación de cada respuesta, también la que llega tarde.
  */
 internal suspend fun MotorDeCobro.caminoDelReverso(r: MotorDeCobro.Registro, salida: MotorDeCobro.Salida, t0: Long) {
     val id = r.id
@@ -37,7 +35,6 @@ internal suspend fun MotorDeCobro.caminoDelReverso(r: MotorDeCobro.Registro, sal
             if (a.fila.estado != EstadoDelIntento.ENVIADO || a.fila.reverso != EstadoDelReverso.COMPROMETIDO) return emitirFila(r)
         else -> return emitirFila(r)
     }
-    val vinculado = r.venta.origen == Origen.VINCULADO_AL_POS
 
     // D. Cada vuelta: plazo ⇒ reclamo durable ⇒ plazo ⇒ POST ⇒ clasificación, y su cierre en una transacción. El cuerpo es
     // siempre el congelado; sólo el token cambia si una vuelta contestó 401/403 y se pudo renovar a tiempo.
@@ -58,10 +55,11 @@ internal suspend fun MotorDeCobro.caminoDelReverso(r: MotorDeCobro.Registro, sal
         }
         when (clase) {
             is ClaseDelReverso.Confirmado -> {
-                enLibreta {
-                    libreta.cerrarVuelta(id, clase, ResultadoParaReportar.CONFIRMADO, if (vinculado) null else EstadoDelIntento.NO_SE_COBRO)
-                }
-                return if (vinculado) esperarAcuse(r, t0) else emitirFila(r)
+                enLibreta { libreta.cerrarVuelta(id, clase, ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE_COBRO) }
+                emitirFila(r)
+                // El reporte es una obligación durable de la libreta: aquí sólo se adelanta un intento; `recuperar()` lo repite.
+                fondo.launch { intentar { cola.entregar(id) } }
+                return
             }
             is ClaseDelReverso.Rechazado -> {
                 enLibreta { libreta.cerrarVuelta(id, clase, ResultadoParaReportar.RECHAZADO, EstadoDelIntento.NO_SE) }
@@ -104,21 +102,6 @@ private suspend fun MotorDeCobro.unaVuelta(
         } ?: Respuesta.SinRespuesta("EXCEPCION")
     }
     return buzon.get() ?: clasificar(respuesta ?: Respuesta.SinRespuesta("TIEMPO"))
-}
-
-/** E con V: el `reversed` del SERVIDOR, dentro de lo que le queda a la cajera; si llega después, se publica tarde. */
-private suspend fun MotorDeCobro.esperarAcuse(r: MotorDeCobro.Registro, t0: Long) {
-    val id = r.id
-    val entrega = fondo.async { intentar { cola.entregar(id) } }
-    val listo = withTimeoutOrNull(t0 + relojes.peorCasoCajera - ahora()) { entrega.await() }
-    if (listo?.fila?.estado != EstadoDelIntento.NO_SE_COBRO) {
-        enLibreta { ponerNoSe(id) }
-        if (listo == null) {
-            // Por el candado del Registro (r1 R1-7): si gana al «por confirmar» de abajo, éste ya no se publica viejo.
-            fondo.launch { if (entrega.await()?.fila?.estado == EstadoDelIntento.NO_SE_COBRO) r.emitir(EventoDeCobro.NoSeCobro) }
-        }
-    }
-    emitirFila(r)
 }
 
 /** F. Al vencer el plazo, o si ya no había tiempo (o forma) para reversar. Siempre `NO_SE` + `PorConfirmar`. */

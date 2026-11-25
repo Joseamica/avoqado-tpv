@@ -382,13 +382,15 @@ class PuntaAPuntaTest {
         assertEquals(EstadoDelIntento.NO_SE, f.estado)
     }
 
-    @Test(timeout = T) fun `90 REVERSADA y el SERVIDOR acusa contradiction deja por confirmar`() = contradiccion()
+    /** Bloque S (D-4): el `contradiction` del SERVIDOR se guarda como evidencia y no cambia lo que la terminal ya dijo. */
+    @Test(timeout = T) fun `90 REVERSADA y el SERVIDOR acusa contradiction sigue NoSeCobro`() = contradiccion()
 
     private fun contradiccion() = prueba(Ambiente.PRODUCCION) {
         val s = venta(90, EscenarioDelServidor.ACUSA_CONTRADICCION)
-        assertEquals(inicio(s) + RevisandoConElBanco + PorConfirmar(s.importeCentavos), esperar(callaLaVenta(s)))
+        assertEquals(inicio(s) + RevisandoConElBanco + NoSeCobro, esperar(callaLaVenta(s)))
+        reporteDeFondoCerrado(s.id)
         val f = fila(s.id)
-        assertEquals(EstadoDelIntento.NO_SE, f.estado)
+        assertEquals(EstadoDelIntento.NO_SE_COBRO, f.estado)
         assertEquals(EstadoDelReverso.CONFIRMADO, f.reverso)
         assertEquals(EstadoDelReversoEnServidor.CONTRADICTION, f.estadoEnServidor)
         assertEquals(EstadoDelReporte.ENTREGADO, f.reporte)
@@ -751,7 +753,7 @@ class PuntaAPuntaTest {
             val db = LibretaDatabase.constructor(context, archivo).allowMainThreadQueries().build()
             val libreta = Libreta(db, ahora, { PARED }, proceso) { op -> ganchos[op]?.invoke() }
             val motor = MotorDeCobro(
-                identidad, lector, CON_RED, espia, servidor, libreta, ColaDeResultados(libreta, servidor), HUELLA,
+                identidad, lector, CON_RED, espia, libreta, ColaDeResultados(libreta, servidor), HUELLA,
                 CatalogoDeRechazos.BLUMON, relojes, fondo, ahora, { PARED }, io,
             )
             private val tardias = CopyOnWriteArrayList<Pair<AttemptId, EventoDeCobro>>()
@@ -870,8 +872,21 @@ class PuntaAPuntaTest {
             assertEquals(listOf(BlumonSimuladoDispatcher.Pedida(ruta, c.id.valor, escenario)), blumonSim.pedidas(CANCELACION))
         }
 
-        /** E con V: el `REVERSADA` y el acuse `reversed` del SERVIDOR, en una sola fila, tras una lectura. */
+        /**
+         * Bloque S: el reporte de un reverso confirmado sale en `fondo` después del `NoSeCobro`; aquí se espera a que su acuse
+         * cierre la obligación (con tope de pared [BARRERA], como las barreras).
+         */
+        fun reporteDeFondoCerrado(id: AttemptId) {
+            val limite = System.nanoTime() + BARRERA * 1_000_000
+            while (fila(id).reporte == EstadoDelReporte.PENDIENTE) {
+                if (System.nanoTime() > limite) throw AssertionError("la barrera «el reporte de fondo se cierra» no se liberó en $BARRERA ms")
+                Thread.sleep(10)
+            }
+        }
+
+        /** E: el `REVERSADA` y, después, el acuse `reversed` del SERVIDOR del reporte de fondo, en una sola fila, tras una lectura. */
         fun reversadaYAcusada(s: SolicitudDeVenta, reversos: Int = 1) {
+            reporteDeFondoCerrado(s.id)
             val f = fila(s.id)
             assertEquals(EstadoDelIntento.NO_SE_COBRO, f.estado)
             assertEquals(EstadoDelReverso.CONFIRMADO, f.reverso)

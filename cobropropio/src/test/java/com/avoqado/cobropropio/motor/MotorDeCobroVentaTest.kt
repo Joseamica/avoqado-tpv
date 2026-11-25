@@ -238,7 +238,7 @@ class MotorDeCobroVentaTest {
         val blumon = BlumonFalso(ahora)
         val servidor = ServidorFalso()
         val motor = MotorDeCobro(
-            identidad, lector, red, blumon, servidor, libreta, ColaDeResultados(libreta, servidor, io), huella,
+            identidad, lector, red, blumon, libreta, ColaDeResultados(libreta, servidor, io), huella,
             CatalogoDeRechazos.BLUMON, relojes, fondo, ahora, { pared }, io,
         )
         val tardias = mutableListOf<Pair<AttemptId, EventoDeCobro>>()
@@ -401,8 +401,8 @@ class MotorDeCobroVentaTest {
             val s = solicitud()
             val vistos = cobrar(s)
             val t0 = requireNotNull(fila(s).enviadoEnMs)
-            // El reverso: una vuelta REVERSADA y el acuse, cada uno a 1 s.
-            assertEquals("respuesta $i", NoSeCobro to t0 + 3_000, vistos.last())
+            // El reverso: una vuelta REVERSADA a 1 s (bloque S: sin esperar el acuse).
+            assertEquals("respuesta $i", NoSeCobro to t0 + 2_000, vistos.last())
             assertEquals("respuesta $i", i + 1, blumon.reversos.size)
             assertEquals("respuesta $i", EstadoDelIntento.NO_SE_COBRO, fila(s).estado)
             assertEquals(
@@ -426,8 +426,8 @@ class MotorDeCobroVentaTest {
         ganchos["transicionar"] = {
             if (enLaTransaccion == null) enLaTransaccion = motor.intentos.getValue(s.id).historia.value to ahora()
         }
-        // El final y su hora: la venta, una vuelta REVERSADA y el acuse (1 s cada uno).
-        assertEquals(NoSeCobro to T0 + 3_000, cobrar(s).last())
+        // El final y su hora: la venta y una vuelta REVERSADA (1 s cada una; bloque S: sin esperar el acuse).
+        assertEquals(NoSeCobro to T0 + 2_000, cobrar(s).last())
         assertEquals(777L, fila(s).parcialOperacion)
         assertEquals(50L, fila(s).parcialImporteCentavos)
         val (publicado, cuando) = requireNotNull(enLaTransaccion)
@@ -498,9 +498,9 @@ class MotorDeCobroVentaTest {
         assertEquals("el segundo se engancha a T0 + 1.5 s", T0 + 1_500, ahora())
         val segundo = cobrar(s)
         val uno = primero.await()
-        // El final (el reverso y el acuse, a 1 s cada uno), una sola vez a cada colector.
+        // El final (el reverso, a 1 s; bloque S: sin esperar el acuse), una sola vez a cada colector.
         for (vistos in listOf(uno, segundo)) {
-            assertEquals(NoSeCobro to T0 + 3_000, vistos.last())
+            assertEquals(NoSeCobro to T0 + 2_000, vistos.last())
             assertEquals(1, vistos.count { it.first.esTerminal })
         }
         assertEquals(1, blumon.ventas.size)
@@ -521,7 +521,7 @@ class MotorDeCobroVentaTest {
         val s = solicitud()
         terminal(s)
         val t0 = requireNotNull(fila(s).enviadoEnMs)
-        assertEquals(t0 + Relojes().esperaRespuesta, blumon.reversos.first().first)
+        assertEquals(t0 + motor.relojes.esperaRespuesta, blumon.reversos.first().first)
     }
 
     /** D-2: un SERVIDOR que contesta error no frena el reverso; si Blumon lo confirma, la fila lo dice. */
@@ -533,6 +533,75 @@ class MotorDeCobroVentaTest {
         esperarTodo()
         assertEquals(1, blumon.reversos.size)
         assertEquals(EstadoDelReverso.CONFIRMADO, fila(s).reverso)
+    }
+
+    /**
+     * D-3: Blumon confirma el reverso de una venta de la tablet y el SERVIDOR nunca contesta el reporte. En ese instante es
+     * `NoSeCobro` y la fila ya lo dice; el reporte se queda pendiente en la libreta.
+     */
+    @Test fun `un reverso confirmado es NoSeCobro aunque el SERVIDOR no conteste`() = prueba {
+        blumon.venta = SILENCIO
+        servidor.acuse = { delay(600_000); AcuseDelResultado.Reintentar } // en lo que dura la prueba, nunca regresa
+        val s = solicitud(origen = Origen.VINCULADO_AL_POS)
+        val ultimo = cobrar(s).last()
+        assertEquals("a la hora del REVERSADA, no a t0 + peorCasoCajera", NoSeCobro to blumon.reversos.single().first + 1_000, ultimo)
+        prueba.advanceTimeBy(60_000) // más allá de t0 + peorCasoCajera
+        val f = fila(s)
+        assertEquals(EstadoDelIntento.NO_SE_COBRO, f.estado)
+        assertEquals(EstadoDelReverso.CONFIRMADO, f.reverso)
+        assertEquals(EstadoDelReporte.PENDIENTE, f.reporte)
+        assertEquals(listOf(s.id), servidor.reportados.map { it.first }) // un intento de entrega, en segundo plano
+        assertEquals(listOf<EventoDeCobro>(NoSeCobro), tardiasDe(s))
+    }
+
+    /**
+     * D-4: con el reporte del primero sin entregar, una venta nueva de otro folio se admite y termina sin esperarlo;
+     * `recuperar()` lo vuelve a mandar y su acuse sólo cierra el reporte.
+     */
+    @Test fun `con el reporte sin entregar recuperar lo reintenta y una venta nueva no espera`() = prueba {
+        blumon.venta = { n -> if (n == 1) SILENCIO(n) else { delay(1_000); http(200, APROBADA) } }
+        servidor.acuse = { delay(600_000); AcuseDelResultado.Reintentar } // el primer reporte no regresa
+        val s = solicitud()
+        assertEquals(NoSeCobro, terminal(s))
+
+        val otra = solicitud()
+        val inicio = prueba.currentTime
+        assertEquals("la lectura y la venta, 1 s cada una", APROBADO_VISA to inicio + 2_000, cobrar(otra).last())
+        assertEquals(EstadoDelReporte.PENDIENTE, fila(s).reporte)
+
+        servidor.acuse = { guardado(EstadoDelReversoEnServidor.REVERSED) }
+        assertTrue(s.id in motor.recuperar())
+        assertEquals(2, servidor.reportados.count { it.first == s.id })
+        val f = fila(s)
+        assertEquals(EstadoDelReporte.ENTREGADO, f.reporte)
+        assertEquals(EstadoDelReversoEnServidor.REVERSED, f.estadoEnServidor)
+        assertEquals(EstadoDelIntento.NO_SE_COBRO, f.estado)
+    }
+
+    /** D-4: el acuse que `recuperar()` entrega no publica nada: ni por el `Registro` ni por `resolucionesTardias`. */
+    @Test fun `recuperar no publica finales por un acuse`() = prueba {
+        blumon.venta = SILENCIO
+        blumon.reverso = { delay(1_000); Respuesta.SinRespuesta("TIEMPO") } // tabla F: queda PUDO_ENTRAR por reportar
+        val s = solicitud()
+        assertEquals(PorConfirmar(s.importeCentavos), terminal(s))
+        esperarTodo()
+        val r = motor.intentos.getValue(s.id)
+        assertTrue(r.retirado)
+        assertEquals(ResultadoParaReportar.PUDO_ENTRAR, fila(s).resultadoParaReportar)
+        assertEquals(EstadoDelReporte.PENDIENTE, fila(s).reporte)
+        val historia = r.historia.value
+        val publicadas = tardiasDe(s)
+
+        servidor.acuse = { guardado(EstadoDelReversoEnServidor.REVERSED) }
+        assertTrue(s.id in motor.recuperar())
+        esperarTodo()
+        assertEquals(historia, r.historia.value)
+        assertEquals(publicadas, tardiasDe(s))
+        assertEquals(PorConfirmar(s.importeCentavos), r.actual)
+        val f = fila(s)
+        assertEquals(EstadoDelIntento.NO_SE, f.estado)
+        assertEquals(EstadoDelReporte.ENTREGADO, f.reporte)
+        assertEquals(EstadoDelReversoEnServidor.REVERSED, f.estadoEnServidor)
     }
 
     /**
@@ -581,6 +650,7 @@ class MotorDeCobroVentaTest {
         blumon.venta = SILENCIO
         val s = solicitud()
         assertEquals(NoSeCobro, terminal(s))
+        esperarTodo() // el reporte se adelanta en `fondo`
         val f = fila(s)
         assertEquals(EstadoDelReverso.CONFIRMADO, f.reverso)
         assertEquals(ResultadoParaReportar.CONFIRMADO, f.resultadoParaReportar)
@@ -680,6 +750,7 @@ class MotorDeCobroVentaTest {
             assertEquals(codigo, EstadoDelIntento.NO_SE_COBRO, f.estado)
             assertTrue(codigo, f.pudoEntrar)
             assertEquals(codigo, primera + 1, blumon.reversos.size) // confirmó la segunda vuelta, no la del código de error
+            esperarTodo() // el reporte se adelanta en `fondo`
             assertEquals(codigo, "REVERSADA", servidor.reportados.last().second.descripcion)
         }
     }
@@ -700,42 +771,44 @@ class MotorDeCobroVentaTest {
 
     // ───────────── E. Después de un Confirmado ─────────────
 
+    /** Bloque S (D-3): sin vínculo, igual que con él: `NoSeCobro` en el acto y el reporte se adelanta en `fondo`. */
     @Test fun `tabla E V no`() = prueba {
         blumon.venta = SILENCIO
         val s = solicitud(origen = Origen.LOCAL_SIN_SOLICITUD)
         assertEquals(NoSeCobro, terminal(s))
         val f = fila(s)
         assertEquals(EstadoDelIntento.NO_SE_COBRO, f.estado)
-        assertEquals(ResultadoParaReportar.CONFIRMADO, f.resultadoParaReportar) // la cola lo avisa después
-        assertTrue(servidor.reportados.isEmpty())
+        assertEquals(ResultadoParaReportar.CONFIRMADO, f.resultadoParaReportar)
+        esperarTodo()
+        assertEquals(listOf(s.id), servidor.reportados.map { it.first })
+        assertEquals(EstadoDelReporte.ENTREGADO, fila(s).reporte)
     }
 
+    /**
+     * Bloque S (D-3, D-4): con vínculo, el final es `NoSeCobro` a la hora del `REVERSADA`, llegue el acuse cuando llegue (también
+     * después de `t0 + peorCasoCajera`) y diga lo que diga: el estado no cambia, sólo se guarda lo que dijo el SERVIDOR.
+     */
     @Test fun `tabla E V si`() = prueba {
         blumon.venta = SILENCIO
-        val casos = listOf<Pair<suspend () -> AcuseDelResultado, EstadoDelIntento>>(
-            suspend { delay(1_000); guardado(EstadoDelReversoEnServidor.REVERSED) } to EstadoDelIntento.NO_SE_COBRO,
-            suspend { delay(1_000); guardado(EstadoDelReversoEnServidor.REVERSE_FAILED) } to EstadoDelIntento.NO_SE,
-            suspend { delay(1_000); AcuseDelResultado.Reintentar } to EstadoDelIntento.NO_SE,
-            suspend { delay(1_000); AcuseDelResultado.Conflicto(EstadoDelReversoEnServidor.REVERSE_FAILED) } to EstadoDelIntento.NO_SE,
+        val casos = listOf<Pair<suspend () -> AcuseDelResultado, EstadoDelReversoEnServidor?>>(
+            suspend { delay(1_000); guardado(EstadoDelReversoEnServidor.REVERSED) } to EstadoDelReversoEnServidor.REVERSED,
+            suspend { delay(1_000); guardado(EstadoDelReversoEnServidor.REVERSE_FAILED) } to EstadoDelReversoEnServidor.REVERSE_FAILED,
+            suspend { delay(1_000); guardado(EstadoDelReversoEnServidor.CONTRADICTION) } to EstadoDelReversoEnServidor.CONTRADICTION,
+            suspend { delay(1_000); AcuseDelResultado.Reintentar } to null,
+            suspend { delay(1_000); AcuseDelResultado.Conflicto(EstadoDelReversoEnServidor.REVERSE_FAILED) } to EstadoDelReversoEnServidor.REVERSE_FAILED,
+            suspend { delay(20_000); guardado(EstadoDelReversoEnServidor.REVERSED) } to EstadoDelReversoEnServidor.REVERSED,
         )
-        for ((acuse, estado) in casos) {
+        for ((i, caso) in casos.withIndex()) {
+            val (acuse, enServidor) = caso
             servidor.acuse = acuse
             val s = solicitud()
-            val esperado = if (estado == EstadoDelIntento.NO_SE_COBRO) NoSeCobro else PorConfirmar(s.importeCentavos)
-            assertEquals("$estado", esperado, terminal(s))
-            assertEquals(estado, fila(s).estado)
+            val ultimo = cobrar(s).last()
+            assertEquals("acuse $i", NoSeCobro to blumon.reversos.last().first + 1_000, ultimo)
+            esperarTodo()
+            assertEquals("acuse $i", EstadoDelIntento.NO_SE_COBRO, fila(s).estado)
+            assertEquals("acuse $i", enServidor, fila(s).estadoEnServidor)
+            assertEquals("acuse $i", listOf<EventoDeCobro>(NoSeCobro), tardiasDe(s))
         }
-
-        // El `reversed` que llega después de soltar a la cajera deja NO_SE_COBRO y se publica tarde.
-        servidor.acuse = { delay(20_000); guardado(EstadoDelReversoEnServidor.REVERSED) }
-        val tarde = solicitud()
-        val inicio = prueba.currentTime
-        val eventos = cobrar(tarde)
-        assertEquals(PorConfirmar(tarde.importeCentavos), eventos.last().first)
-        assertEquals(inicio + CAJERA, eventos.last().second)
-        esperarTodo()
-        assertEquals(EstadoDelIntento.NO_SE_COBRO, fila(tarde).estado)
-        assertTrue(NoSeCobro in tardiasDe(tarde))
     }
 
     // ───────────── F. Al vencer el plazo, o si ya no había tiempo para reversar ─────────────
@@ -1037,32 +1110,6 @@ class MotorDeCobroVentaTest {
 
     // ───────────── Reverso ─────────────
 
-    @Test fun `reverso confirmado vinculado espera el acuse`() = prueba {
-        blumon.venta = SILENCIO
-        servidor.acuse = { delay(5_000); guardado(EstadoDelReversoEnServidor.REVERSED) }
-        val s = solicitud()
-        val eventos = cobrar(s)
-        assertEquals(NoSeCobro, eventos.last().first)
-        assertEquals(blumon.reversos.single().first + 1_000 + 5_000, eventos.last().second) // el banco y luego el acuse
-
-        servidor.acuse = { delay(1_000); AcuseDelResultado.Reintentar }
-        val sinAcuse = solicitud()
-        assertEquals(PorConfirmar(sinAcuse.importeCentavos), terminal(sinAcuse))
-        assertEquals(EstadoDelReverso.CONFIRMADO, fila(sinAcuse).reverso) // el banco sí lo confirmó
-        assertEquals(EstadoDelIntento.NO_SE, fila(sinAcuse).estado)
-    }
-
-    @Test fun `contradiction deja por confirmar`() = prueba {
-        blumon.venta = SILENCIO
-        servidor.acuse = { delay(1_000); guardado(EstadoDelReversoEnServidor.CONTRADICTION) }
-        val s = solicitud()
-        assertEquals(PorConfirmar(s.importeCentavos), terminal(s))
-        esperarTodo()
-        assertEquals(EstadoDelIntento.NO_SE, fila(s).estado)
-        assertEquals(EstadoDelReversoEnServidor.CONTRADICTION, fila(s).estadoEnServidor)
-        assertFalse(NoSeCobro in tardiasDe(s))
-    }
-
     @Test fun `nunca reversa despues del techo`() {
         prueba {
             blumon.venta = SILENCIO
@@ -1261,17 +1308,15 @@ class MotorDeCobroVentaTest {
         segundo.cerrar()
     }
 
-    @Test fun `acuse reversed tardio se reconstruye de la fila tras apagar antes de publicar`() = runTest {
+    @Test fun `un reverso confirmado se reconstruye de la fila tras apagar antes de publicar`() = runTest {
         val antes = Mundo(this)
         antes.blumon.venta = SILENCIO
-        antes.servidor.acuse = { delay(20_000); guardado(EstadoDelReversoEnServidor.REVERSED) }
-        // El proceso muere justo después del commit del acuse, antes de publicarlo.
-        antes.ganchos["aplicarAcuse"] = { antes.fondo.cancel() }
+        // El proceso muere justo después del commit del REVERSADA, antes de publicarlo: la cajera sale desde la memoria.
+        antes.ganchos["cerrarVuelta"] = { antes.fondo.cancel() }
         val s = solicitud()
         assertEquals(PorConfirmar(s.importeCentavos), antes.terminal(s))
         advanceUntilIdle()
         assertEquals(EstadoDelIntento.NO_SE_COBRO, antes.fila(s).estado)
-        assertFalse(NoSeCobro in antes.tardiasDe(s))
         antes.db.close()
 
         val despues = Mundo(this, archivo = antes.archivo, proceso = UUID.randomUUID().toString())
@@ -1281,25 +1326,30 @@ class MotorDeCobroVentaTest {
         despues.cerrar()
     }
 
+    /** Bloque S (D-4): `recuperar()` entrega los dos; el `contradiction` se guarda como evidencia y no cambia lo que se dijo. */
     @Test fun `dos pendientes uno reversed y otro contradiction`() = prueba {
         blumon.venta = SILENCIO
         servidor.acuse = { delay(1_000); AcuseDelResultado.Reintentar }
         val uno = solicitud()
         val otro = solicitud()
-        assertEquals(PorConfirmar(uno.importeCentavos), terminal(uno))
-        assertEquals(PorConfirmar(otro.importeCentavos), terminal(otro))
+        assertEquals(NoSeCobro, terminal(uno))
+        assertEquals(NoSeCobro, terminal(otro))
+        esperarTodo() // los intentos de `fondo` contestan Reintentar
         assertEquals(EstadoDelReporte.PENDIENTE, fila(uno).reporte)
         assertEquals(EstadoDelReporte.PENDIENTE, fila(otro).reporte)
 
         val acuses = ArrayDeque(listOf(guardado(EstadoDelReversoEnServidor.REVERSED), guardado(EstadoDelReversoEnServidor.CONTRADICTION)))
         servidor.acuse = { acuses.removeFirst() }
+        val publicadas = tardias.toList()
         assertTrue(motor.recuperar().containsAll(listOf(uno.id, otro.id)))
+        esperarTodo()
+        assertEquals(EstadoDelReversoEnServidor.REVERSED, fila(uno).estadoEnServidor)
+        assertEquals(EstadoDelReversoEnServidor.CONTRADICTION, fila(otro).estadoEnServidor)
         assertEquals(EstadoDelIntento.NO_SE_COBRO, fila(uno).estado)
-        assertEquals(EstadoDelIntento.NO_SE, fila(otro).estado)
-        assertTrue(NoSeCobro in tardiasDe(uno))
-        assertFalse(NoSeCobro in tardiasDe(otro))
+        assertEquals(EstadoDelIntento.NO_SE_COBRO, fila(otro).estado)
+        assertEquals(publicadas, tardias)
         assertEquals(NoSeCobro, terminal(uno))
-        assertEquals(PorConfirmar(otro.importeCentavos), terminal(otro))
+        assertEquals(NoSeCobro, terminal(otro))
     }
 
     @Test fun `venta NoEnviada da NO_SALIO y no reversa`() = prueba {
@@ -1569,7 +1619,7 @@ class MotorDeCobroVentaTest {
         val nombre = "abrir-${UUID.randomUUID()}.db"
         val a = Libreta.abrir(context, nombre)
         fun motorSobre(l: Libreta) = MotorDeCobro(
-            identidad, lector, red, blumon, servidor, l, ColaDeResultados(l, servidor, io), huella,
+            identidad, lector, red, blumon, l, ColaDeResultados(l, servidor, io), huella,
             CatalogoDeRechazos.BLUMON, Relojes(), fondo, ahora, { pared }, io,
         )
         try {
@@ -1590,7 +1640,7 @@ class MotorDeCobroVentaTest {
     @Test fun `un motor que no se arma no toma el dueno de la libreta`() = prueba {
         val l = Libreta.abrir(context, "sin-forma-${UUID.randomUUID()}.db")
         fun motorCon(id: Identidad) = MotorDeCobro(
-            id, lector, red, blumon, servidor, l, ColaDeResultados(l, servidor, io), huella,
+            id, lector, red, blumon, l, ColaDeResultados(l, servidor, io), huella,
             CatalogoDeRechazos.BLUMON, Relojes(), fondo, ahora, { pared }, io,
         )
         try {
@@ -1648,7 +1698,7 @@ class MotorDeCobroVentaTest {
         assertEquals(EstadoDelReporte.PENDIENTE, f.reporte) // sólo el barrido lo deja pendiente
         assertEquals(ResultadoParaReportar.PUDO_ENTRAR, f.resultadoParaReportar)
         assertEquals(EstadoDelIntento.ENVIADO, fila(viva).estado) // la viva sigue su camino
-        assertEquals(PorConfirmar(viva.importeCentavos), desenlace.await()) // el acuse no llegó: por confirmar
+        assertEquals(NoSeCobro, desenlace.await()) // Blumon confirmó su reverso; el acuse que no llega no cambia nada
         assertEquals(2, blumon.reversos.size) // la viva sí reversó
     }
 
@@ -1990,37 +2040,16 @@ class MotorDeCobroVentaTest {
     }
 
     /**
-     * El reverso ya confirmó y el acuse del SERVIDOR se atora; la cajera se fue. Al volver la red, `recuperar()` entrega el
-     * acuse `reversed`. Dejarlo afuera es el arreglo de r2; aquí se arma el mundo hasta ese momento.
+     * Un solo embudo: el desenlace tardío de un intento vivo (bloque S: el `REVERSADA` que llega después de soltar a la cajera)
+     * se publica UNA vez, después de su `PorConfirmar`, y nada viejo sale después.
      */
-    private suspend fun Mundo.recuperarConUnIntentoVivo(): SolicitudDeVenta {
-        blumon.venta = SILENCIO
-        var entregas = 0
-        servidor.acuse = { entregas++; if (entregas == 1) delay(600_000); guardado(EstadoDelReversoEnServidor.REVERSED) }
-        val s = solicitud()
-        val cajera = prueba.async { cobrar(s) }
-        prueba.advanceTimeBy(5_000)
-        cajera.cancel() // nadie mira
-        prueba.advanceTimeBy(15_000) // el reverso confirmó (T0 + 16 s) y la primera entrega sigue atorada
-        assertEquals(EstadoDelReporte.PENDIENTE, fila(s).reporte)
-        assertEquals(EstadoDelIntento.ENVIADO, fila(s).estado)
-        motor.recuperar()
-        assertEquals(EstadoDelIntento.NO_SE_COBRO, fila(s).estado)
-        return s
-    }
-
-    /** R1-7 (otra vez): lo que `recuperar()` resuelve de un intento VIVO entra por su `Registro`: quien mira lo ve en ese momento. */
-    @Test fun `recuperar le dice al intento vivo no se cobro en ese momento`() = prueba {
-        val s = recuperarConUnIntentoVivo()
-        val ahoraMismo = prueba.currentTime
-        assertEquals(NoSeCobro to ahoraMismo, cobrar(s).last()) // se adjunta al vivo, que ya terminó; no espera a los 30 s
-    }
-
-    /** Un solo embudo: el desenlace tardío de un intento vivo se publica UNA vez, y nada viejo sale después. */
     @Test fun `una resolucion tardia de un intento vivo se publica una sola vez`() = prueba {
-        val s = recuperarConUnIntentoVivo()
+        blumon.venta = SILENCIO
+        blumon.reverso = { n -> delay(9_000); if (n < 3) http(200, error("TX_008")) else http(200, REVERSADA) }
+        val s = solicitud()
+        assertEquals(PorConfirmar(s.importeCentavos), terminal(s))
         esperarTodo()
-        assertEquals(listOf<EventoDeCobro>(NoSeCobro), tardiasDe(s))
+        assertEquals(listOf(PorConfirmar(s.importeCentavos), NoSeCobro), tardiasDe(s))
     }
 
     // ───────────── Codex rama r2 · Familia E: el veto de llaves ─────────────
@@ -2266,22 +2295,6 @@ class MotorDeCobroVentaTest {
         assertEquals(APROBADO_VISA to inicio + 1_000, cobrar(ventas[1]).last()) // de la lápida, sin esperar
     }
 
-    /** Test 19: un acuse `reversed` que `recuperar()` entrega tarde actualiza el final de la LÁPIDA; reabrir contesta de memoria. */
-    @Test fun `recuperar actualiza el final de una lapida`() = prueba {
-        blumon.venta = SILENCIO
-        var entregas = 0
-        servidor.acuse = { entregas++; if (entregas == 1) delay(600_000); guardado(EstadoDelReversoEnServidor.REVERSED) }
-        val s = solicitud()
-        assertEquals(PorConfirmar(s.importeCentavos), terminal(s))
-        prueba.advanceTimeBy(1_000)
-        assertEquals(true, motor.intentos[s.id]?.retirado)
-        motor.recuperar()
-        assertEquals(NoSeCobro, motor.intentos[s.id]?.actual)
-        motor.antesDeBuscar = { delay(60_000) } // si fuera a Room se notaría
-        val ahoraMismo = prueba.currentTime
-        assertEquals(NoSeCobro to ahoraMismo, cobrar(s).last())
-    }
-
     /**
      * Test 22 (v3-1): con el tope en 1, T queda detenido con su foto `ANOTADO` de X; X aprueba y se retira, y otra venta se
      * retira después ⇒ la lápida de X no se borra mientras T está en vuelo, y T contesta `Aprobado`. Después el tope alcanza.
@@ -2358,27 +2371,21 @@ class MotorDeCobroVentaTest {
     }
 
     /**
-     * Test 25 (cambiado en r10, R10-1): `recuperar()` aplica el `reversed` de A y se cancela mientras entrega B; A quedó como
-     * lápida en duda. La PRIMERA reapertura da `PorConfirmar` al instante y dispara UN refresco en `fondo` (aunque se reabra otra
-     * vez mientras corre); al terminar, `NoSeCobro` sale por `resolucionesTardias` y la SIGUIENTE reapertura da `NoSeCobro`.
+     * Test 25 (cambiado en r10, R10-1; bloque S): el `REVERSADA` de A se guarda, pero la fila no se puede leer justo después (una
+     * falla pasajera de Room): ni el motor ni su `catch` publican el definitivo y A queda como lápida en duda. La PRIMERA
+     * reapertura da `PorConfirmar` al instante y dispara UN refresco en `fondo` (aunque se reabra otra vez mientras corre); al
+     * terminar, `NoSeCobro` sale por `resolucionesTardias` y la SIGUIENTE reapertura da `NoSeCobro`.
      */
     @Test fun `una lapida en duda contesta ya y se refresca de la fila en fondo`() = prueba {
         blumon.venta = SILENCIO
-        servidor.acuse = { delay(600_000); guardado(EstadoDelReversoEnServidor.REVERSED) } // el primer acuse de cada una se atora
         val a = solicitud()
-        val b = solicitud()
+        ganchos["cerrarVuelta"] = { danar(a, "NO_SE_COBRO") } // dentro de la transacción del REVERSADA
         assertEquals(PorConfirmar(a.importeCentavos), terminal(a))
-        assertEquals(PorConfirmar(b.importeCentavos), terminal(b))
         prueba.advanceTimeBy(1_000)
         assertEquals(true, motor.intentos[a.id]?.retirado)
-        servidor.acuse = {
-            if (servidor.reportados.last().first == a.id) guardado(EstadoDelReversoEnServidor.REVERSED)
-            else { delay(600_000); guardado(EstadoDelReversoEnServidor.REVERSED) }
-        }
-        val barrido = prueba.async { motor.recuperar() }
-        prueba.advanceTimeBy(5_000)
-        assertEquals(EstadoDelIntento.NO_SE_COBRO, fila(a).estado)
-        barrido.cancel() // a media tanda: el aviso de A nunca sale
+        ganchos.clear()
+        db.openHelper.writableDatabase.execSQL("UPDATE intentos SET operationNumber = NULL WHERE attemptId = ?", arrayOf(a.id.valor))
+        assertEquals(EstadoDelIntento.NO_SE_COBRO, fila(a).estado) // Room se recuperó: el definitivo está guardado
         assertEquals(PorConfirmar(a.importeCentavos), motor.intentos[a.id]?.actual)
 
         var lecturas = 0
@@ -2399,13 +2406,14 @@ class MotorDeCobroVentaTest {
     /** R10-1: volver a escuchar un intento que se retiró en `PorConfirmar`, con la libreta detenida ⇒ `PorConfirmar` sin esperar. */
     @Test fun `reabrir una lapida en duda con Room detenido contesta al instante`() = prueba {
         blumon.venta = SILENCIO
-        servidor.acuse = { delay(600_000); guardado(EstadoDelReversoEnServidor.REVERSED) }
+        blumon.reverso = { delay(1_000); http(200, error("TX_007")) } // Blumon rechaza el reverso: queda en duda (tabla D)
         val s = solicitud()
-        assertEquals(PorConfirmar(s.importeCentavos) to CAJERA, cobrar(s).last())
+        val ultimo = cobrar(s).last()
+        assertEquals(PorConfirmar(s.importeCentavos), ultimo.first)
         prueba.testScheduler.runCurrent()
         assertEquals(true, motor.intentos[s.id]?.retirado)
         motor.antesDeBuscar = { delay(60_000) }
-        assertEquals(PorConfirmar(s.importeCentavos) to CAJERA, cobrar(s).last()) // 0 ms después del retiro
+        assertEquals(ultimo, cobrar(s).last()) // 0 ms después del retiro
     }
 
     /**
@@ -2462,7 +2470,7 @@ class MotorDeCobroVentaTest {
     /** 2 · La reconsulta de un intento que sigue en memoria (una lápida en duda): el refresco desde la fila no publica nada. */
     @Test fun `la reconsulta en memoria de una fila que no pasa la validacion no publica un desenlace`() = prueba {
         blumon.venta = SILENCIO
-        servidor.acuse = { delay(600_000); guardado(EstadoDelReversoEnServidor.REVERSED) } // el acuse se atora: queda en duda
+        blumon.reverso = { delay(1_000); http(200, error("TX_007")) } // Blumon rechaza el reverso: queda en duda (tabla D)
         val s = solicitud()
         assertEquals(PorConfirmar(s.importeCentavos), terminal(s))
         prueba.advanceTimeBy(1_000)
@@ -2474,18 +2482,7 @@ class MotorDeCobroVentaTest {
         assertEquals(PorConfirmar(s.importeCentavos), motor.intentos[s.id]?.actual)
     }
 
-    /** 3 · El acuse tardío (después de soltar a la cajera): la fila se daña mientras llega; nunca publica «No se cobró». */
-    @Test fun `el acuse tardio no publica no se cobro desde una fila que no pasa la validacion`() = prueba {
-        blumon.venta = SILENCIO
-        val s = solicitud()
-        servidor.acuse = { delay(31_000); danar(s, "NO_SE_COBRO"); AcuseDelResultado.Reintentar } // llega después de la cajera
-        assertEquals(PorConfirmar(s.importeCentavos), terminal(s))
-        prueba.advanceTimeBy(60_000)
-        assertFalse(NoSeCobro in tardiasDe(s))
-        assertEquals(PorConfirmar(s.importeCentavos), motor.intentos[s.id]?.actual)
-    }
-
-    /** 4 · Codex r4 #2, salida «evento»: una fila APROBADO sin folio bancario ni id de pago nunca da «Aprobado». */
+    /** 3 · Codex r4 #2, salida «evento»: una fila APROBADO sin folio bancario ni id de pago nunca da «Aprobado». */
     @Test fun `un aprobado sin folio ni pago da por confirmar`() = prueba {
         val s = solicitud()
         filaDirecta(s) { it.copy(estado = EstadoDelIntento.APROBADO, operationNumber = 1_234_567) }

@@ -29,6 +29,7 @@ import com.avoqado.cobropropio.fixtures.LecturasDePrueba
 import com.avoqado.cobropropio.fixtures.LecturasDePrueba.con
 import com.avoqado.cobropropio.fixtures.LecturasDePrueba.toque
 import com.avoqado.cobropropio.libreta.EstadoDelIntento
+import com.avoqado.cobropropio.libreta.EstadoDelReporte
 import com.avoqado.cobropropio.libreta.EstadoDelReverso
 import com.avoqado.cobropropio.libreta.EstadoDelReversoEnServidor
 import com.avoqado.cobropropio.libreta.IntentoEntity
@@ -253,7 +254,7 @@ class RecorridoSandboxTest {
         val fondo = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val lector = LectorFalso()
         val motor = MotorDeCobro(
-            identidad, lector, object : Red { override fun hayRed() = true }, blumon, servidor, libreta,
+            identidad, lector, object : Red { override fun hayRed() = true }, blumon, libreta,
             ColaDeResultados(libreta, servidor), HuellaHmac(SecretKeySpec(ByteArray(32).also(SecureRandom()::nextBytes), "HmacSHA256")),
             CatalogoDeRechazos.BLUMON, relojes, fondo, mono, Instant::now,
         )
@@ -409,11 +410,16 @@ class RecorridoSandboxTest {
         val esperado: Clasificador.Esperado,
     )
 
-    /** Hasta 60 s: la fila sale de ENVIADO y su reverso ya no está en curso. */
+    /**
+     * Hasta 60 s: la fila sale de ENVIADO y su reverso ya no está en curso; si es un reverso confirmado, también su reporte, que
+     * sale en `fondo` después del «no se cobró» (bloque S).
+     */
     private suspend fun esperarResultadoDelReverso(libreta: Libreta, id: AttemptId): IntentoEntity? {
         val limite = mono() + 60_000
         var f = libreta.buscar(id)
-        while (mono() < limite && !(f != null && f.estado != EstadoDelIntento.ENVIADO && f.reverso in CON_RESULTADO)) {
+        fun quieta(f: IntentoEntity?) = f != null && f.estado != EstadoDelIntento.ENVIADO && f.reverso in CON_RESULTADO &&
+            (f.reverso != EstadoDelReverso.CONFIRMADO || f.reporte != EstadoDelReporte.PENDIENTE)
+        while (mono() < limite && !quieta(f)) {
             delay(500)
             f = libreta.buscar(id)
         }
@@ -551,7 +557,7 @@ class RecorridoSandboxTest {
         "estado=${f.estado} motivo=${f.motivoNoSalio} reverso=${f.reverso} pudoEntrar=${f.pudoEntrar} " +
             "códigoReverso=${f.ultimoCodigoReverso} paraReportar=${f.resultadoParaReportar} reporte=${f.reporte} " +
             "enServidor=${f.estadoEnServidor} op=${f.operationNumber} aut=${forma(f.autorizacion)} código=${f.codigo} " +
-            "leyenda=${f.leyenda} tardía=${f.evidenciaTardiaOperacion} contador=${f.contadorUsado} vinculadoPorPermiso=${f.vinculoAcreditadoPorPermiso}"
+            "leyenda=${f.leyenda} tardía=${f.evidenciaTardiaOperacion} contador=${f.contadorUsado}"
 
     private fun ev(e: EventoDeCobro): String = when (e) {
         is EventoDeCobro.Iniciado -> "Iniciado"

@@ -211,7 +211,7 @@ class MotorDeCobroCancelacionTest {
         val blumon = BlumonFalso(ahora)
         val servidor = ServidorFalso()
         val motor = MotorDeCobro(
-            identidad, lector, object : Red { override fun hayRed() = true }, blumon, servidor, libreta,
+            identidad, lector, object : Red { override fun hayRed() = true }, blumon, libreta,
             ColaDeResultados(libreta, servidor, io), huella, CatalogoDeRechazos.BLUMON, Relojes(), fondo, ahora, { pared }, io,
         )
         val tardias = mutableListOf<Pair<AttemptId, EventoDeCobro>>()

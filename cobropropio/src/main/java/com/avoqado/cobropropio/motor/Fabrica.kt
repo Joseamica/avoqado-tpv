@@ -60,7 +60,7 @@ public fun crearMotorDeCobro(
     val servidor = ReversoDelServidorHttp(urlDelServidor, credencialDelServidor, pinDelServidor)
     val libreta = Libreta.abrir(context)
     return MotorDeCobro(
-        identidad, lector, red, blumon, servidor, libreta, ColaDeResultados(libreta, servidor), HuellaHmac(llaveDeHuellas),
+        identidad, lector, red, blumon, libreta, ColaDeResultados(libreta, servidor), HuellaHmac(llaveDeHuellas),
         CatalogoDeRechazos.BLUMON, Relojes(), CoroutineScope(SupervisorJob() + Dispatchers.Default), ahora, Instant::now,
     )
 }

@@ -617,28 +617,38 @@ class CancelTrasReclamarRoomTest {
         assertThat(intento.hostApproved).isTrue()
     }
 
-    @Test fun `P1 con la pantalla todavia en Cobrado sincronizacion pendiente la sonda dice ejecucion viva y no cierra`() = runTest {
+    // 🔒 D26 (22-nov, founder: «si dice rechazado, ¿por qué congelar el pago?»): la bandera de la pantalla YA NO decide la sonda ni el
+    // cancel. Sin un intento con el lector en uso, la terminal certifica el cese aunque la pantalla siga en «Cobrado. Sincronización
+    // pendiente»: el SERVIDOR suelta la ranura, el aprobado sigue intacto y se registra (el positivo gana) y una venta NUEVA del POS
+    // que llegue mientras esa pantalla siga arriba la rechaza la navegación al instante (`NO_INICIADO_POR_COBRO_EN_CURSO`), sin trabar.
+    @Test fun `D26 con la pantalla todavia en Cobrado sincronizacion pendiente la sonda certifica el cese y el aprobado sigue intacto`() = runTest {
         cobradoConSincronizacionPendiente()
 
         val sonda = coordinator.probeSocketPaymentRequest("req-1", "venue-1")
 
         assertThat(sonda.disposition).isEqualTo(RemotePaymentProbeDisposition.ACTIVE)
-        assertThat(sonda.executionAlive).isTrue()
-        assertThat(sonda.closedForExecution).isFalse()
+        assertThat(sonda.executionAlive).isFalse()
+        assertThat(sonda.closedForExecution).isTrue()
         assertThat(sonda.finalResultJson).isNull()
-        nadaEscrito()
+        val fila = bandeja()
+        assertThat(fila.status).isEqualTo(RemotePaymentRequestEntity.STATUS_PROCESSING)
+        assertThat(fila.finalEmittedAt).isNull()
+        val intento = db.paymentAttemptDao().getById("a1")!!
+        assertThat(intento.state).isEqualTo(PaymentAttemptEntity.STATE_HOST_RESPONDIO)
+        assertThat(intento.hostApproved).isTrue()
     }
 
-    @Test fun `P1 con la pantalla todavia en Cobrado sincronizacion pendiente el cancel dice ejecucion viva y no cierra`() = runTest {
+    @Test fun `D26 con la pantalla todavia en Cobrado sincronizacion pendiente el cancel certifica el cese y no escribe un final`() = runTest {
         cobradoConSincronizacionPendiente()
 
         val cancel = coordinator.cancelSocketPaymentRequest("req-1")
 
         assertThat(cancel.disposition).isEqualTo(RemotePaymentCancelDisposition.ACTIVE)
-        assertThat(cancel.executionAlive).isTrue()
-        assertThat(cancel.closedForExecution).isFalse()
+        assertThat(cancel.executionAlive).isFalse()
+        assertThat(cancel.closedForExecution).isTrue()
         assertThat(cancel.finalResultJson).isNull()
-        nadaEscrito()
+        assertThat(bandeja().cancelAcceptedAt).isNull()
+        assertThat(db.paymentAttemptDao().getById("a1")!!.hostApproved).isTrue()
     }
 
     @Test fun `P1 control - con las banderas apagadas (tras Cancelar) certifica como antes`() = runTest {

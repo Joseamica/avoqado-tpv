@@ -111,15 +111,27 @@ internal fun blumonRechazoDefinitivo(failure: Any, isContactless: Boolean): Bool
     if (code in BLUMON_CODIGOS_RECHAZO_EMISOR) return true
     if (failure.javaClass.simpleName != "MomentumFailure") return false
     val textos = textosDelFallo(failure)
-    // Hasta el siguiente campo: un motivo puede traer comas («NO HUBO ERROR, APROBADA»).
-    fun campo(nombre: String) = textos.firstNotNullOfOrNull { Regex("""\b$nombre=(.*?)(?:, \w+=|\))""").find(it)?.groupValues?.get(1)?.trim() }
-        ?.takeIf { it.isNotEmpty() && it != "null" }
+    fun campo(nombre: String) = campoDelFallo(textos, nombre)
     val crudo = campo("code")
     val motivo = campo("description")
     if (crudo?.uppercase() in BLUMON_CODIGOS_SIN_RECHAZO || crudo.esCodigoTecnico() || motivo.suenaAprobado()) return false
     val http = campo("httpCode")?.toIntOrNull() ?: return false
     val contesto = http in 200..299 || (http in 400..499 && http != 408)
     return contesto && (crudo != null || motivo != null)
+}
+
+/** Un campo del texto del fallo (`nombre=valor`), hasta el siguiente campo: un motivo puede traer comas («NO HUBO ERROR, APROBADA»). */
+private fun campoDelFallo(textos: List<String>, nombre: String): String? =
+    textos.firstNotNullOfOrNull { Regex("""\b$nombre=(.*?)(?:, \w+=|\))""").find(it)?.groupValues?.get(1)?.trim() }
+        ?.takeIf { it.isNotEmpty() && it != "null" }
+
+/**
+ * D26 (22-nov): el código y el `httpCode` con los que contestó Momentum, para el registro del rechazo. La PAX de Testarudo guardó sólo
+ * «TRANSACCIÓN NO PERMITIDA» y no se pudo saber por qué [blumonRechazoDefinitivo] la dejó en duda. Nunca datos de la tarjeta.
+ */
+internal fun blumonCodigoYHttp(failure: Any): Pair<String?, String?> {
+    val textos = textosDelFallo(failure)
+    return campoDelFallo(textos, "code") to campoDelFallo(textos, "httpCode")
 }
 
 /** Cuatro dígitos no son un código del emisor: `2000` es falla de conexión, y el catálogo del host no está en el SDK. */

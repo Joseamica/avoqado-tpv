@@ -2211,6 +2211,46 @@ class SocketManager @Inject constructor(
         }
     }
 
+    /**
+     * 🔒 D26 (22-nov): murió una pantalla de cobro. En el scope de la app (la de la pantalla ya se canceló): primero [cerrarFilas] (lo
+     * que esa pantalla sabe que dejó sin veredicto), después, si era un cobro del POS, se suelta la propiedad y se contesta como a una
+     * sonda (`RemotePaymentInbox.probe`, la misma respuesta que daría la siguiente). Si la respuesta ya no es «viva» se manda al SERVIDOR
+     * sin esperar a que pregunte: así la ranura se suelta en segundos aunque nadie cancele en la tablet. «Viva» no se manda: no hay nada
+     * nuevo que decir. Sin socket no sale nada y la siguiente sonda la vuelve a pedir.
+     */
+    fun alMorirUnaPantallaDeCobro(requestId: String?, venueId: String?, cerrarFilas: suspend () -> Unit = {}) {
+        socketScope.launch {
+            try {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { cerrarFilas() }
+            } catch (error: Exception) {
+                Timber.e(error, "❌ [D26] No se pudieron cerrar las filas de la pantalla que se fue")
+            }
+            val solicitud = requestId?.takeIf { it.isNotBlank() } ?: return@launch
+            remotePaymentCoordinator.soltarPropiedad(solicitud)
+            val venue = venueId?.takeIf { it.isNotBlank() } ?: run {
+                Timber.w("🔓 [D26] La pantalla de %s se fue sin venue: se soltó la propiedad; contesta la siguiente sonda", solicitud)
+                return@launch
+            }
+            try {
+                val answer = remotePaymentCoordinator.probeSocketPaymentRequest(solicitud, venue)
+                if (answer.disposition == com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition.ACTIVE && answer.executionAlive) {
+                    Timber.i("🔓 [D26] La pantalla de %s se fue con una llamada al SDK en vuelo: sigue viva hasta que regrese o venza el tope", solicitud)
+                    return@launch
+                }
+                Timber.i("🔓 [D26] La pantalla de %s se fue: la terminal avisa %s sin esperar la sonda", solicitud, answer.disposition)
+                socket?.emit("terminal:payment_probe_result", JSONObject().apply {
+                    put("requestId", solicitud)
+                    put("disposition", answer.disposition.name)
+                    answer.finalResultJson?.let { put("finalResult", JSONObject(it)) }
+                    ponerEstadoDeEjecucion(answer.executionAlive, answer.closedForExecution)
+                })
+                answer.finalResultJson?.let(::emitPersistedTerminalPaymentResult)
+            } catch (error: Exception) {
+                Timber.e(error, "❌ [D26] No se pudo contestar por la pantalla que se fue; la siguiente sonda la pide")
+            }
+        }
+    }
+
     fun emitTerminalReceiptPrintResult(
         requestId: String,
         status: String,

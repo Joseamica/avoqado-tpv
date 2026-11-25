@@ -200,6 +200,16 @@ class RemotePaymentCoordinator @Inject constructor(
     }
 
     /**
+     * 🔒 D26 (22-nov): la pantalla DUEÑA de [requestId] murió (`onCleared`). La propiedad en memoria ya no tiene quién la respalde: sin
+     * soltarla, la sonda seguía contestando «viva» (caso 1 de `RemotePaymentInbox.respuestaEnProceso`) hasta reiniciar la app. Sin
+     * propiedad, la bandeja la resuelve como la de un proceso que ya no la ejecuta (caso 2, sólo sin intentos bloqueadores) o le pregunta
+     * a la libreta (caso 3). Sólo la llama la pantalla dueña al morir.
+     */
+    fun soltarPropiedad(requestId: String) {
+        synchronized(reclamadasEnEsteProceso) { reclamadasEnEsteProceso.remove(requestId) }
+    }
+
+    /**
      * Sonda del servidor: contesta desde la bandeja durable; nunca entrega ni navega. El `venueId` viene del propio
      * evento (el servidor sólo sonda filas del venue de esta terminal) y es el tenant de la lápida que deja NOT_FOUND.
      */

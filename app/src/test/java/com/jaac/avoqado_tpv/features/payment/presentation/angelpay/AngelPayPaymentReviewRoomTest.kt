@@ -38,6 +38,8 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayCha
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.VerificacionDelCobro
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder
+import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity
+import com.google.common.truth.Truth.assertWithMessage
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEnvironment
@@ -183,6 +185,8 @@ class AngelPayPaymentReviewRoomTest {
             coEvery { intentoDeLaSolicitud(any()) } returns null
             coEvery { openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns true
             coEvery { markAuthorizing(any()) } returns true
+            // D26: el relanzamiento tras la sesión vencida conserva el lector (un relajado diría false: nunca relanzaría).
+            coEvery { relanzaConElLector(any()) } returns true
             // C.5: por defecto la solicitud no está cercada y el efectivo/cripto puede arrancar.
             coEvery { cercaDeSolicitud(any()) } returns com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud.LIBRE
             coEvery { iniciarEjecucionNoTarjeta(any()) } returns com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud.LIBRE
@@ -1332,6 +1336,128 @@ class AngelPayPaymentReviewRoomTest {
                     else -> com.jaac.avoqado_tpv.features.payment.presentation.CryptoGestureUi("OTHER")
                 } }, waitFor = { predicate -> task5Wait(predicate) })
         } finally { vm?.viewModelScope?.cancel(); db.close() }
+    }
+
+    // ═══ D26 (22-nov, Nexgo de Testarudo: la cajera cerró y reabrió la app con el MISMO proceso y la terminal siguió «viva») ═══
+
+    private fun morir(vm: AngelPayPaymentViewModel) =
+        AngelPayPaymentViewModel::class.java.getDeclaredMethod("onCleared").apply { isAccessible = true }.invoke(vm)
+
+    /**
+     * La barrera pasó (`AUTORIZANDO`) y la pantalla murió ANTES de lanzar el SDK de AngelPay: el intento se cierra con el «no se cobró»
+     * acreditado de siempre (`no_lanzado`), así su venta no queda cercada por una autorización que nunca existió; y la solicitud del POS
+     * suelta su propiedad (la terminal le dice al SERVIDOR lo que diría la sonda).
+     */
+    @Test
+    fun `D26 la pantalla que muere con la barrera pasada y sin lanzar el SDK cierra el intento como no lanzado`() = kotlinx.coroutines.runBlocking {
+        Dispatchers.setMain(kotlinx.coroutines.Dispatchers.Unconfined)
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java)
+            .allowMainThreadQueries().build()
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
+        val cierre = slot<suspend () -> Unit>()
+        every { socketManager.alMorirUnaPantallaDeCobro(any(), any(), capture(cierre)) } returns Unit
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "REQ-A")
+            vm.initPayment("100.00")
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("a-1")).isTrue()
+            assertThat(db.paymentAttemptDao().getById("a-1")!!.state).isEqualTo(PaymentAttemptEntity.STATE_AUTORIZANDO)
+
+            vm.viewModelScope.cancel()
+            morir(vm)
+            verify(exactly = 1) { socketManager.alMorirUnaPantallaDeCobro("REQ-A", "v1", any()) }
+            // Codex r1 #6: su propia marca (el intento sin lanzar, que se cierra abajo) no deja arriba la ventana del dinero.
+            verify(exactly = 1) { paymentStateHolder.salePantallaDeCobro(any(), soltarVentanaDelDinero = true) }
+            cierre.captured.invoke()
+
+            val fila = db.paymentAttemptDao().getById("a-1")!!
+            assertThat(fila.state).isEqualTo(PaymentAttemptEntity.STATE_DESCARTADA)
+            assertThat(fila.lastError).isEqualTo("no_lanzado:pantalla_cerrada")
+            assertWithMessage("la misma cuenta se puede volver a cobrar: nada la cerca ni aparta la terminal")
+                .that(paymentAttemptLedger.retencionDelAparato()).isNull()
+        } finally { vm.viewModelScope.cancel(); db.close() }
+        Unit
+    }
+
+    /** Control: con el SDK YA lanzado (onIntentLaunched), morir no lo declara «no lanzado»: su fila sigue como estaba. */
+    @Test
+    fun `D26 control - con el SDK ya lanzado la pantalla que muere no toca el intento`() = kotlinx.coroutines.runBlocking {
+        Dispatchers.setMain(kotlinx.coroutines.Dispatchers.Unconfined)
+        val db = androidx.room.Room.inMemoryDatabaseBuilder(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+            com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase::class.java)
+            .allowMainThreadQueries().build()
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        paymentAttemptLedger = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger(db.paymentAttemptDao(), tpvSettingsRepository)
+        val cierre = slot<suspend () -> Unit>()
+        every { socketManager.alMorirUnaPantallaDeCobro(any(), any(), capture(cierre)) } returns Unit
+        val vm = createViewModel()
+        try {
+            every { paymentStateHolder.salePantallaDeCobro(any(), any()) } returns true
+            vm.setSocketPaymentSource("SOCKET", "REQ-A")
+            vm.initPayment("100.00")
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("a-1")).isTrue()
+            vm.onIntentLaunched()
+
+            vm.viewModelScope.cancel()
+            morir(vm)
+            if (cierre.isCaptured) cierre.captured.invoke()
+
+            assertThat(db.paymentAttemptDao().getById("a-1")!!.state).isEqualTo(PaymentAttemptEntity.STATE_AUTORIZANDO)
+            assertWithMessage("el lector del SDK lanzado cuenta hasta el tope").that(paymentAttemptLedger.hayLectorEnUso()).isTrue()
+            // Codex r2 #5: la ventana del dinero no se queda arriba para siempre: queda una con tope.
+            verify(exactly = 1) { paymentStateHolder.marcarCobroSinPantalla(any()) }
+        } finally { vm.viewModelScope.cancel(); db.close() }
+        Unit
+    }
+
+    /** Codex r1 #9: el `timeout` que se le manda al POS es provisional (la bandeja sigue pendiente): al morir igual se suelta y se avisa. */
+    @Test
+    fun `D26 tras un timeout provisional la pantalla que muere igual suelta la solicitud y avisa al SERVIDOR`() = runTest(testDispatcher) {
+        every { socketManager.alMorirUnaPantallaDeCobro(any(), any(), any()) } returns Unit
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "REQ-T")
+            vm.emitSocketResultForTest(status = "timeout")
+            vm.viewModelScope.cancel()
+            morir(vm)
+            verify(exactly = 1) { socketManager.alMorirUnaPantallaDeCobro("REQ-T", any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    /** La pantalla que muere baja su bandera de cobro activo (antes sólo lo hacía la PAX): con ella arriba la terminal no cobraba. */
+    @Test
+    fun `D26 la pantalla de AngelPay que muere baja la bandera de cobro activo, y la duda no la sube`() = runTest(testDispatcher) {
+        val banderas = PaymentStateHolder()
+        paymentStateHolder = banderas
+        val vm = createViewModel()
+        try {
+            vm.onIntentLaunched()   // → WaitingForResult: cobro activo
+            runCurrent()
+            assertThat(banderas.isChargeAttemptActive()).isTrue()
+            @Suppress("UNCHECKED_CAST")
+            (AngelPayPaymentViewModel::class.java.getDeclaredField("_state").apply { isAccessible = true }.get(vm)
+                as kotlinx.coroutines.flow.MutableStateFlow<AngelPayPaymentState>).value =
+                AngelPayPaymentState.ResultadoIncierto(message = "Confirmando", verificando = false)
+            runCurrent()
+            assertWithMessage("la duda aparta su venta, no la terminal").that(banderas.isChargeAttemptActive()).isFalse()
+            (AngelPayPaymentViewModel::class.java.getDeclaredField("_state").apply { isAccessible = true }.get(vm)
+                as kotlinx.coroutines.flow.MutableStateFlow<AngelPayPaymentState>).value = AngelPayPaymentState.WaitingForResult()
+            runCurrent()
+            assertThat(banderas.isChargeAttemptActive()).isTrue()
+
+            vm.viewModelScope.cancel()
+            morir(vm)
+
+            assertThat(banderas.isChargeAttemptActive()).isFalse()
+        } finally { vm.viewModelScope.cancel() }
     }
 
 }

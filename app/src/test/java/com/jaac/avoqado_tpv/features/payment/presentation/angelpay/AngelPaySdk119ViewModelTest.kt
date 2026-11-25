@@ -121,6 +121,8 @@ class AngelPaySdk119ViewModelTest {
             coEvery { intentoDeLaSolicitud(any()) } returns null
             coEvery { openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns true
             coEvery { markAuthorizing(any()) } returns true
+            // D26: el relanzamiento tras la sesión vencida conserva el lector (un relajado diría false: nunca relanzaría).
+            coEvery { relanzaConElLector(any()) } returns true
             coEvery { cercaDeSolicitud(any()) } returns CercaDeSolicitud.LIBRE
             coEvery { iniciarEjecucionNoTarjeta(any()) } returns CercaDeSolicitud.LIBRE
             coEvery { aplicarVeredictoDelServidor(any()) } returns Result.success(

@@ -59,15 +59,20 @@ data class RemotePaymentCancelDecision(
  * `{ false }` NUNCA certifica: la respuesta sigue siendo «puede seguir viva», como antes de B2.
  *
  * Codex TPV r1, ronda 2 (N1): [laTerminalRechazariaUnaVentaNueva] es la pregunta «¿la terminal rechazaría AHORA una venta nueva
- * del POS?» (`CobroRemotoDelPos.laTerminalRechazariaUnaVentaNueva`, la MISMA regla de la admisión). Mientras diga true no se
- * certifica el cese. Sin cablear, el default `{ true }` tampoco certifica. Va ANTES de [cerrarSiCeso] a propósito: una lambda al
- * final de la llamada sigue siendo la de la libreta.
+ * del POS?» (`CobroRemotoDelPos.laTerminalRechazariaUnaVentaNueva`, la MISMA regla de la admisión). D26 (22-nov): ya NO decide si
+ * se certifica el cese (eso lo decide [tieneElLectorEnUso]); sólo evita tocar la red al reclamar con la terminal ocupada. Las dos
+ * van ANTES de [cerrarSiCeso] a propósito: una lambda al final de la llamada sigue siendo la de la libreta.
  */
 @Singleton
 class RemotePaymentInbox(
     private val dao: RemotePaymentRequestDao,
     private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
     private val laTerminalRechazariaUnaVentaNueva: () -> Boolean = { true },
+    /**
+     * 🔒 D26 (22-nov): ¿algún intento de ESTA solicitud tiene el lector o el SDK en uso AHORA, en este proceso? Es lo ÚNICO que hace
+     * contestar «sigo cobrando» además de la pantalla dueña que puede reintentar (caso 1). Sin cablear: no.
+     */
+    private val tieneElLectorEnUso: (requestId: String) -> Boolean = { false },
     private val cerrarSiCeso: suspend (requestId: String) -> Boolean = { false },
 ) {
     /**
@@ -87,6 +92,7 @@ class RemotePaymentInbox(
         laTerminalRechazariaUnaVentaNueva = {
             com.jaac.avoqado_tpv.features.payment.presentation.CobroRemotoDelPos.laTerminalRechazariaUnaVentaNueva(estadoDeLasPantallas)
         },
+        tieneElLectorEnUso = { requestId -> libreta.hayLectorEnUsoDeLaSolicitud(requestId) },
         cerrarSiCeso = { requestId -> libreta.cerrarSolicitudSiCeso(requestId) },
     )
 
@@ -273,51 +279,54 @@ class RemotePaymentInbox(
     }
 
     /**
-     * 🔒 B2 (22-oct, «ninguna duda de cobro sin salida», T1) — la MISMA pregunta para la sonda y el cancel, en este orden:
-     *  1. con propiedad en ESTE proceso, la solicitud SIN cerrar para ejecución y la pantalla todavía capaz de seguir
-     *     ([laPantallaPuedeReintentar]: cero intentos —espera el toque de «Tarjeta»—, o sólo un rechazo final del banco,
-     *     descartes o una reserva PREPARANDO, sin dinero ni contradicción —ofrece «Reintentar»—) ⇒ ACTIVE, ejecución viva y
-     *     no cerrada. NUNCA se le pregunta a la libreta:
-     *     `cerrarSolicitudSiCeso` no ve la pantalla y cerraría, y «cerrada para ejecución» tiene que ser verdad (decisión del
-     *     controlador, 22-oct, duda 2 de B2).
-     *  2. sin propiedad ⇒ [resolverSinPropiedad] (`resolverDesenlaceNegativo`, el ÚNICO camino que escribe un «no se cobró»:
-     *     exige cero intentos bloqueadores y, D6, una fila nacida bajo la barrera durable). Si escribe ⇒ [RespuestaEnProceso.Resuelta].
-     *  3. si no resolvió (o con propiedad y algún intento pendiente, con dinero o contradicción) ⇒ [certificarCese], SALVO que
-     *     la terminal rechace ahora una venta nueva del POS ([laTerminalRechazariaUnaVentaNueva], Codex TPV r1 ronda 2, N1: la
-     *     PAX en «Cobrado. Sincronización pendiente» con la bandera de cobro activo arriba) ⇒ ACTIVE viva, sin preguntarle a la
-     *     libreta y sin escribir nada: «libre» en el SERVIDOR tiene que significar que la terminal SÍ aceptaría otra venta.
-     * Una reserva PREPARANDO de este proceso «puede seguir viva» (Codex plan-r2-1): tiene propiedad, así que nunca pasa por el
-     * caso 2 (cae en el 1) — la sonda nunca la aborta.
-     *
-     * ⚠️ Residuo aceptado (caso 1): si la pantalla muere sin escribir su final y el proceso sigue vivo, la propiedad sigue en
-     * memoria y la respuesta sigue siendo «viva»: la terminal queda apartada COMO HOY (los 20 min del servidor, la declaración
-     * del cajero o soporte). Sin dinero de por medio, contestar «viva» nunca libera nada.
-     * ⚠️ Salvedad (D6, 2-nov; M2 de su revisión): en una RECEIVED HEREDADA que el APK nuevo reclama (ventana de milisegundos: el
-     * proceso viejo murió entre el `insert` y el reclamo, y el servidor reentregó antes de sondear) la pantalla no escribe su
-     * negativo (`persistResult` ⇒ null) y la propiedad queda en memoria, así que cada sonda contesta «viva» y el servidor sella
-     * `probeActiveAt`: ahí la declaración del cajero TAMBIÉN se veta. La salida es REINICIAR la app de la terminal: sin dueño,
-     * el caso 3 certifica el cese. Un cobro aprobado no se afecta.
+     * 🔒 B2 (22-oct) y D26 (22-nov, founder: «si dice rechazado, ¿por qué tendríamos que congelar el pago?») — la MISMA pregunta para la
+     * sonda y el cancel, en este orden:
+     *  0. un intento de ESTA solicitud tiene el lector o el SDK EN USO en este proceso ([tieneElLectorEnUso]: un hecho del proceso con
+     *     tope, `PaymentAttemptLedger.hayLectorEnUsoDeLaSolicitud`, nunca una nota de la libreta) ⇒ ACTIVE, ejecución viva;
+     *  1. con propiedad en ESTE proceso (la pantalla dueña sigue abierta: la propiedad se suelta cuando muere), la solicitud SIN
+     *     cerrar para ejecución y la pantalla todavía capaz de seguir ([laPantallaPuedeReintentar]: cero intentos —espera el toque de
+     *     «Tarjeta»—, o sólo un rechazo final del banco, descartes o una reserva, sin dinero ni contradicción —ofrece «Reintentar» con
+     *     la misma tarjeta u otra—) ⇒ ACTIVE, ejecución viva y no cerrada (founder, 22-nov). NUNCA se le pregunta a la libreta;
+     *  2. sin propiedad ⇒ [resolverSinPropiedad] (`resolverDesenlaceNegativo`, el ÚNICO camino que escribe un «no se cobró»: exige cero
+     *     intentos bloqueadores y, D6, una fila nacida bajo la barrera durable). Si escribe ⇒ [RespuestaEnProceso.Resuelta];
+     *  3. todo lo demás ⇒ [certificarCese]: sin el lector en uso, la libreta certifica el cese aunque sus notas digan
+     *     `KERNEL_ACTIVO`/`AUTORIZANDO`/`INDETERMINADO`… (las notas siguen cercando SU venta). Ya no se miran las banderas de las
+     *     pantallas (N1): una de otra venta, o una que se quedó arriba, dejaba «viva» a ésta hasta reiniciar.
+     * Una reserva PREPARANDO de este proceso con su pantalla viva cae en el 1 — la sonda nunca la aborta.
+     * ⚠️ Salvedad (D6, 2-nov; M2 de su revisión): en una RECEIVED HEREDADA que el APK nuevo reclama la pantalla no escribe su negativo
+     * (`persistResult` ⇒ null): mientras la pantalla viva, el caso 1 la mantiene; al morir suelta la propiedad. Un cobro aprobado no se
+     * afecta.
      */
     private suspend fun respuestaEnProceso(
         fila: RemotePaymentRequestEntity,
         propiedadEnEsteProceso: Boolean,
         resolverSinPropiedad: suspend () -> String?,
     ): RespuestaEnProceso {
+        // 🔒 D26 (22-nov, founder: «si dice rechazado, ¿por qué congelar el pago?»): el lector o el SDK EN USO por un intento de esta
+        // solicitud — un hecho del proceso, no una nota de la libreta — es lo que dice «sigo cobrando». Va primero: con el lector
+        // abierto ni la rama sin dueño la resuelve (Codex r0 #2).
+        if (lectorEnUso(fila.requestId)) {
+            return RespuestaEnProceso.Activa(ejecucionViva = true, cerradaParaEjecucion = fila.executionClosedAt != null)
+        }
         // Fix round 1 (M2): ya CERRADA para ejecución, la pantalla dueña tampoco puede reintentar (la cerca rige): no hay caso 1,
         // va al 3 y la libreta confirma el cierre sin volver a escribir. Así una sonda posterior no contradice a la que cerró.
+        // Founder, 22-nov: el rechazo con «Reintentar» abierto sigue siendo de la terminal (misma tarjeta u otra); la propiedad se
+        // suelta cuando esa pantalla muere (`RemotePaymentCoordinator.soltarPropiedad`).
         if (propiedadEnEsteProceso && fila.executionClosedAt == null && laPantallaPuedeReintentar(fila.requestId)) {
             return RespuestaEnProceso.Activa(ejecucionViva = true, cerradaParaEjecucion = false)
         }
         if (!propiedadEnEsteProceso) {
             resolverSinPropiedad()?.let { return RespuestaEnProceso.Resuelta(it) }
         }
-        // Codex TPV r1, ronda 2 (N1): si la terminal rechazaría AHORA una venta nueva del POS (la misma regla de la admisión), el
-        // certificado haría que el SERVIDOR dijera «libre» sin serlo. Sin preguntarle a la libreta y sin escribir nada.
-        if (laTerminalRechazariaAhora()) {
-            Timber.i("🔒 [RemotePaymentInbox] ${fila.requestId}: la pantalla tiene un cobro activo; no se certifica el cese (sigue viva)")
-            return RespuestaEnProceso.Activa(ejecucionViva = true, cerradaParaEjecucion = fila.executionClosedAt != null)
-        }
+        // D26: ya no se pregunta por las banderas de las pantallas (N1): una bandera de OTRA venta, o una que se quedó arriba, volvía
+        // «viva» a ésta (Codex r0 #8). Sin el lector en uso, la libreta certifica el cese aunque sus notas digan otra cosa.
         return certificarCese(fila)
+    }
+
+    /** D26: [tieneElLectorEnUso]; si no se puede saber (lanza), se supone que sí — el lado que no certifica. */
+    private fun lectorEnUso(requestId: String): Boolean = runCatching { tieneElLectorEnUso(requestId) }.getOrElse { error ->
+        Timber.e(error, "❌ [RemotePaymentInbox] No se pudo saber si el lector está en uso: no se certifica")
+        true
     }
 
     /** N1: [laTerminalRechazariaUnaVentaNueva]; si no se puede saber (lanza), se supone que sí — el lado que no certifica. */

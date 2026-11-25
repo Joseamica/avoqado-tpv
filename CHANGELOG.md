@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Fixed**
+- **Nexgo (AngelPay) · «Tarjeta» tras ~8 min en «Método de pago» ya no da «La sesión de AngelPay quedó en otro comercio» (hz:2c70dfc6:D2)**: si la auth justo antes de cobrar rehace el login y la cuenta (con varios comercios) pide elegir comercio, la terminal vuelve a elegir sola el comercio YA elegido, como al entrar al cobro (si su token venció, login nuevo de la misma cuenta). Sólo con el login de la cuenta de ese comercio y si la cuenta lo ofrece. El candado no cambia: después se revisa otra vez contra la sesión viva y la regla de cuentas, y si no coincide sale el error de hoy sin abrir la libreta ni el lector. Aplica a TPV · PAGO RÁPIDO, TPV SOLA (Cobrar) y POS → TPV en Nexgo; PAX no cambia.
+
 ---
 
 ## [2.22.4] - 2026-11-25

@@ -53,6 +53,7 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayErr
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayOutcomeClassifier
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.DecisionDelSdk
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.DesenlaceDelCobro
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.TarjetaDeAngelPay
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.paraLaReglaDelSdk
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.VerificacionDelCobro
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayIntentBuilder
@@ -581,6 +582,17 @@ class AngelPayPaymentViewModel @Inject constructor(
     private var cachedVenueId: String? = null
     private var cachedStaffId: String? = null
 
+    /** D26: esta pantalla de cobro se anota en las vivas (D666, como la de la PAX), para soltar su bandera al morir sin pisar a otra. */
+    private val pantallaDeCobro = paymentStateHolder.entraPantallaDeCobro()
+
+    /**
+     * 🔒 D26: el intento que ESTA instancia pasó a `AUTORIZANDO` (la barrera) y todavía no le entregó al SDK. Si la pantalla muere así,
+     * el SDK nunca corrió con él: se cierra con el mismo CAS acreditado de siempre ([PaymentAttemptLedger.markSinAutorizacion]). En
+     * memoria a propósito: sólo esta instancia sabe que no lanzó.
+     */
+    @Volatile private var intentoSinLanzar: String? = null
+
+
     /**
      * 🔴 Candado simétrico al del riel Blumon ([com.jaac.avoqado_tpv.features.payment.presentation.PaymentViewModel],
      * 2026-09-07). Este riel HOY no tiene el defecto —fija `ProcessingCash` en la primera línea
@@ -907,7 +919,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         var decision: ResultadoDelVeredicto? = null
         if (attemptId != null) {
             // 📒 [Libreta] HOST_RESPONDIO → AUTORIZADO (card facts); el paso a REGISTRADO lo decide el veredicto.
-            paymentAttemptLedger.markAuthorized(attemptId, null, cardDetails.cardBrand.name, cardDetails.entryMode.name)
+            paymentAttemptLedger.markAuthorized(attemptId, cardDetails.maskedPan.ifBlank { null }, cardDetails.cardBrand.name, cardDetails.entryMode.name)
             decision = paymentAttemptLedger.aplicarVeredictoDelServidor(
                 VeredictoDeIntento.desdeRecibo(
                     venueId = paymentContext.venueId, attemptId = attemptId,
@@ -1167,8 +1179,10 @@ class AngelPayPaymentViewModel @Inject constructor(
             // ── Checkpoint 2 · N1: anunciar el intento (ya DURABLE en PREPARANDO) y decidir con el ACK ANTES del SDK.
             if (!vincularIntentoAntesDelSdk(paymentAttemptId)) return false
             // A second launch is only the known pre-authorization D308/validation fallback.
+            // D26 (Codex r0 #5): se anota ANTES del CAS: si Room lo confirma y la pantalla muere antes de volver, igual se sabe.
+            intentoSinLanzar = paymentAttemptId
             val marked = paymentAttemptLedger.markAuthorizing(paymentAttemptId)
-            marked.also { if (it) { authorizationWasLaunched = true; confirmedNegativeOutcome = false; confirmedNegativeEvidence = null } }
+            marked.also { if (it) { authorizationWasLaunched = true; confirmedNegativeOutcome = false; confirmedNegativeEvidence = null } else if (intentoSinLanzar == paymentAttemptId) intentoSinLanzar = null }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
@@ -1325,7 +1339,10 @@ class AngelPayPaymentViewModel @Inject constructor(
                         s !is AngelPayPaymentState.Success &&
                         s !is AngelPayPaymentState.Queued &&
                         s !is AngelPayPaymentState.Error &&
-                        s !is AngelPayPaymentState.Cancelled,
+                        s !is AngelPayPaymentState.Cancelled &&
+                        // D26 (Codex r0 #7): la DUDA llega cuando el SDK ya regresó: aparta su venta, no la terminal. La siguiente venta
+                        // del POS puede abrir su pantalla encima; la duda sigue en la libreta y en el aviso de Inicio.
+                        s !is AngelPayPaymentState.ResultadoIncierto,
                 )
             }
         }
@@ -2657,7 +2674,27 @@ class AngelPayPaymentViewModel @Inject constructor(
             return false
         }
         authorizationWasLaunched = false
+        if (intentoSinLanzar == attemptId) intentoSinLanzar = null
         return true
+    }
+
+    /**
+     * 🔒 D26 (Codex r2 #1): la última palabra antes de que la PANTALLA lance el SDK embebido. Publicar el lanzamiento y lanzarlo son pasos
+     * distintos: con la app en segundo plano, el tope puede vencer y la sonda certificar el cese en medio. Sólo con el lector vigente y la
+     * solicitud del POS abierta ([PaymentAttemptLedger.relanzaConElLector], que renueva el tope); si no, el intento —que nunca llegó al
+     * SDK esta vez— se cierra como «no lanzado» y la pantalla lo dice. Sin intento de libreta (pruebas, QA) no cambia nada.
+     */
+    suspend fun confirmarLanzamientoDelSdk(): Boolean {
+        val intento = currentPaymentAttemptId ?: return true
+        if (paymentAttemptLedger.relanzaConElLector(intento)) return true
+        Timber.w("🔐 [AngelPay SDK] el lector del intento %s venció o su solicitud se cerró antes de lanzar: NO se lanza", intento)
+        if (cerrarIntentoQueNoSeLanzo(intento, causa = "lector_vencido")) {
+            fallaAntesDeAutorizar("El cobro se cerró sin cobrar.", mensajeParaPos = "La terminal cerró el cobro sin lanzarlo", queHacer = "Vuelve a cobrar desde el punto de venta.")
+        } else {
+            _state.value = AngelPayPaymentState.Error(message = "El cobro no se lanzó. Revisa el aviso de Inicio antes de volver a cobrar.", canRetry = false)
+        }
+        clearChargingOnTerminal()
+        return false
     }
 
     /** La barrera de libreta suspende: comprobar otra vez la sesión justo antes de publicar el lanzamiento. */
@@ -3037,6 +3074,7 @@ class AngelPayPaymentViewModel @Inject constructor(
      * Called by Screen after launching the AngelPay intent.
      */
     fun onIntentLaunched() {
+        intentoSinLanzar = null   // D26: ya se lanzó; si la pantalla muere, el lector cuenta hasta el tope de la libreta
         authorizationWasLaunched = true
         confirmedNegativeOutcome = false
         confirmedNegativeEvidence = null
@@ -4043,6 +4081,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                     authCode = verificacion.authCode,
                     reference = verificacion.referencia,
                     cardBin = verificacion.cardBin,
+                    cardLast4 = verificacion.cardLast4,
+                    cardEntryMode = verificacion.cardEntryMode,
                 )
             }
 
@@ -4988,6 +5028,12 @@ class AngelPayPaymentViewModel @Inject constructor(
                 _socketResultEmitted = true
                 return false
             }
+            // 🔒 D26 (Codex r1 #1): el relanzamiento no vuelve a reservar. Sólo si el intento conserva el lector y su solicitud no se
+            // cerró para ejecución (la terminal ya pudo certificar el cese mientras se renovaba la sesión); si no, el rechazo es final.
+            if (!paymentAttemptLedger.relanzaConElLector(attemptId)) {
+                Timber.w("🔐 [AngelPay SDK] Sesión renovada, pero el intento ya no tiene el lector o su solicitud se cerró: NO se relanza | attemptId=%s", attemptId)
+                return false
+            }
             launchSdkRequest(request = request, usedQaTipFallback = lastSdkLaunchUsedTipFallback)
             return true
         } finally {
@@ -5142,6 +5188,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         issuerCountryCode = result.cardCountryCode,
         // D5: el tipo del BIN que contesta AngelPay («CREDITO»/«DEBITO»). Sin él toda venta salía CREDIT_CARD.
         cardType = result.cardType,
+        // D27: los últimos 4 y el modo de lectura que el SDK sí trae (antes se registraba "" / OTHER).
+        cardLast4 = result.cardLast4,
+        cardEntryMode = result.cardEntryMode,
     )
 
     /**
@@ -5159,6 +5208,8 @@ class AngelPayPaymentViewModel @Inject constructor(
         cardBin: String?,
         issuerCountryCode: String? = null,
         cardType: String? = null,
+        cardLast4: String? = null,
+        cardEntryMode: String? = null,
     ) {
         _state.value = AngelPayPaymentState.RecordingPayment()
 
@@ -5177,9 +5228,10 @@ class AngelPayPaymentViewModel @Inject constructor(
         val detectedBrand = cardBin?.let { CardBrand.fromBin(it) } ?: CardBrand.UNKNOWN
         val paisDelEmisor = issuerCountryCode?.trim()?.takeIf { it.isNotEmpty() }
         val cardDetails = CardDetails(
-            maskedPan = "",
+            // D27: lo que AngelPay dice de la tarjeta; sin dato válido queda "" / OTHER como antes.
+            maskedPan = TarjetaDeAngelPay.numeroEnmascarado(cardLast4),
             cardBrand = detectedBrand,
-            entryMode = CardEntryMode.OTHER,
+            entryMode = TarjetaDeAngelPay.modoDeLectura(cardEntryMode),
             // Sólo evidencia para el clasificador sombra del servidor; `isInternational` no cambia (mismo trato que la PAX).
             issuerCountryCode = paisDelEmisor,
             issuerCountrySource = paisDelEmisor?.let { com.jaac.avoqado_tpv.features.payment.domain.model.IssuerCountrySource.EMV_5F28 },
@@ -6065,7 +6117,39 @@ class AngelPayPaymentViewModel @Inject constructor(
         Timber.d("♻️ [AngelPay] onCleared — la pantalla murió, evaluando si hay que avisarle al POS")
         cancelarCierrePorAbandono()
         emitCancelledIfAbandoned()
+        soltarAlMorir()
         super.onCleared()
+    }
+
+    /**
+     * 🔓 D26 (22-nov, Nexgo de Testarudo: la cajera cerró y reabrió la app con el MISMO proceso y la terminal siguió «viva» hasta el
+     * reinicio real). Al morir, esta pantalla:
+     *  - baja su bandera de cobro activo si no nació otra pantalla de cobro después (D666, como la PAX); la ventana del dinero
+     *    (`charging`) sólo si ningún intento tiene el lector en uso (con el SDK todavía en pantalla, la conserva);
+     *  - si pasó la barrera y nunca lanzó el SDK, la cierra con el «no se cobró» acreditado de siempre (`no_lanzado`): así su venta
+     *    no queda cercada por una autorización que nunca existió;
+     *  - y, si era un cobro del POS, suelta su propiedad y avisa al SERVIDOR lo que diría la sonda (con un final ya emitido, lo repite).
+     * El SDK lanzado sin resultado no se toca: su lector cuenta hasta el tope de la libreta y su fila sigue cercando su venta.
+     */
+    private fun soltarAlMorir() {
+        val sinLanzar = intentoSinLanzar
+        // Codex r1 #6 y r2 #5: la ventana del dinero se suelta siempre; si el SDK quedó lanzado (su lector cuenta), queda una ventana
+        // CON TOPE ([PaymentStateHolder.marcarCobroSinPantalla]) que se apaga sola: no frena el cambio de comercio para siempre. La
+        // marca del propio intento sin lanzar no cuenta: ese intento se cierra abajo.
+        val conSdkLanzado = paymentAttemptLedger.hayLectorEnUso(excepto = sinLanzar)
+        if (paymentStateHolder.salePantallaDeCobro(pantallaDeCobro, soltarVentanaDelDinero = true) && conSdkLanzado) {
+            paymentStateHolder.marcarCobroSinPantalla()
+        }
+        val venue = cachedVenueId ?: authRepository.getVenueId() ?: secureStorage.getVenueId()
+        // Codex r1 #9 y r2 #7: la solicitud VINCULADA (sobrevive a `resetPayment` y a emitir, también tras un `timeout` provisional).
+        // Con un desenlace final, la sonda sólo lo repite.
+        val solicitud = solicitudVinculada
+        if (solicitud == null && sinLanzar == null) return
+        socketManager.alMorirUnaPantallaDeCobro(solicitud, venue) {
+            if (sinLanzar != null && venue != null) {
+                paymentAttemptLedger.markSinAutorizacion(sinLanzar, venue, "no_lanzado:pantalla_cerrada")
+            }
+        }
     }
 
     // ── Reset ────────────────────────────────────────────────────────

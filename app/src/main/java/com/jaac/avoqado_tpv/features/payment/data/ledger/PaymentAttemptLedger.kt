@@ -94,6 +94,122 @@ class PaymentAttemptLedger(
     }
 
     /**
+     * 🔒 D26 (22-nov, founder: «si dice rechazado, ¿por qué tendríamos que congelar el pago?»). La ÚNICA verdad de «esta terminal
+     * sigue cobrando»: un intento de ESTE proceso tiene el lector o el SDK en uso AHORA. Es un hecho del proceso, nunca una nota de
+     * la libreta: antes, cualquier fila que se quedara en `KERNEL_ACTIVO`/`AUTORIZANDO`/`INDETERMINADO` sin el fin del SDK (una
+     * excepción, una pantalla que se fue, un código raro) apartaba la terminal hasta reiniciar la app.
+     *  - Entra al reservar ([abrirIntento]): desde ahí el intento puede abrir el lector.
+     *  - Sale cuando consta que el SDK ya no corre con él: su pantalla terminó el flujo sin cancelarse ([sueltaElLector]), o la
+     *    libreta escribe un hecho que lo prueba ([marcarSdkRegreso], [markKernelRefused], [markDiscardedBeforeCharge],
+     *    [markSinAutorizacion]).
+     *  - Y deja de contar sola a los [TOPE_LECTOR_EN_USO_MS] (en [relojMonotonico]): una corrutina cancelada no prueba que la llamada
+     *    nativa terminó, así que ahí no se suelta; el tope es lo más que el SDK puede seguir dentro.
+     * Mientras cuenta, todo sigue como antes (las filas deciden: aparta el aparato, no se certifica el cese). Sin intento en uso, las
+     * notas de este proceso ya no apartan nada; siguen sirviendo para lo suyo: cercar SU venta con dinero en juego y el barrido.
+     * En memoria a propósito: muere con el proceso, y con él la llamada nativa.
+     */
+    private class LectorEnUso(val desde: Long, val solicitud: String?)
+    private val lectorEnUso = java.util.concurrent.ConcurrentHashMap<String, LectorEnUso>()
+
+    /**
+     * D26 (Codex r1 #1 y #2): cada paso al SDK (lector, autorización, cierre EMV) vuelve a contar el tope desde ahora: el tope es de
+     * UNA llamada, no del cobro entero (tarjeta + PIN + banco pueden pasar de [TOPE_LECTOR_EN_USO_MS] sin que nada esté trabado).
+     */
+    private fun renueva(attemptId: String, aunVencida: Boolean) {
+        // Codex r2 #2: sólo la entrada al lector o a la autorización (con la solicitud comprobada abierta bajo [candadoDelCese]) puede
+        // revivir una marca vencida; tras el banco no (si el cese ya se certificó, una sonda posterior no vuelve a decir «viva»).
+        lectorEnUso.computeIfPresent(attemptId) { _, uso ->
+            if (aunVencida || relojMonotonico() - uso.desde < TOPE_LECTOR_EN_USO_MS) LectorEnUso(relojMonotonico(), uso.solicitud) else uso
+        }
+    }
+
+    /**
+     * D26 (Codex r3 #4): tras el aprobado del banco sigue el cierre EMV (`CompleteEmvTrans`), con sus propios 150 s, aunque la marca ya
+     * hubiera vencido mientras esperaba al banco, salvo que el cese ya se haya certificado (entonces no revive: una sonda posterior no
+     * vuelve a decir «viva» y el aprobado se registra igual). Nunca lanza: el aprobado ya quedó escrito.
+     */
+    private suspend fun renuevaParaElCierreEmv(attemptId: String) {
+        try {
+            candadoDelCese.withLock { renueva(attemptId, aunVencida = !solicitudYaNoAdmite(attemptId)) }
+        } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (e: Exception) {
+            Timber.w(e, "📒 [Libreta] no se pudo renovar el lector para el cierre EMV de %s", attemptId)
+        }
+    }
+
+    /**
+     * D26 (Codex r2 #2): ¿la solicitud del POS de [attemptId] ya no admite que algo suyo entre al SDK (cese certificado, cancel
+     * aceptado, desenlace emitido o lápida)? Con el tope, el cese se puede certificar con una fila `KERNEL_ACTIVO` de este proceso; sin
+     * esto, la autorización que siguiera cobraría DESPUÉS del certificado. Ilegible ⇒ no admite (no se entra a ciegas).
+     */
+    private suspend fun solicitudYaNoAdmite(attemptId: String): Boolean = try {
+        val solicitud = dao.getById(attemptId)?.terminalPaymentRequestId
+        solicitud != null && dao.cercaDeSolicitud(solicitud).let { it != null && it != "LIBRE" }
+    } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (e: Exception) { true }
+
+    /** Ordena [cerrarSolicitudSiCeso] contra [relanzaConElLector]: o se certifica el cese, o se relanza; nunca las dos. */
+    private val candadoDelCese = Mutex()
+
+    /**
+     * 🔒 D26 (Codex r1 #1): AngelPay relanza el SDK con la MISMA llave tras la sesión vencida (D308), sin reservar otra vez. Sólo si el
+     * intento todavía tiene el lector (no venció su tope ni lo soltó) y su solicitud del POS no se cerró, se canceló ni tuvo desenlace;
+     * entonces renueva el tope. Bajo el mismo candado que el certificado de cese. false = no se relanza (el rechazo es el final).
+     */
+    suspend fun relanzaConElLector(attemptId: String): Boolean = candadoDelCese.withLock {
+        val uso = lectorEnUso[attemptId] ?: return@withLock false
+        if (relojMonotonico() - uso.desde >= TOPE_LECTOR_EN_USO_MS) return@withLock false
+        val cerca = uso.solicitud?.let { solicitud ->
+            try { dao.cercaDeSolicitud(solicitud) } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (e: Exception) { "ILEGIBLE" }
+        }
+        if (cerca != null && cerca != "LIBRE") {
+            Timber.w("📒 [Libreta] NO se relanza %s: su solicitud %s ya está %s", attemptId, uso.solicitud, cerca)
+            return@withLock false
+        }
+        lectorEnUso[attemptId] = LectorEnUso(relojMonotonico(), uso.solicitud)
+        true
+    }
+
+    /**
+     * 🔒 D26 (Codex r1 #2): el flujo de la PAX terminó SIN cancelarse. Suelta el lector salvo que la fila diga que una llamada al SDK
+     * pudo quedar dentro sin regreso comprobado (lector, autorización, o un estado posterior sin `sdk_returned_at`: una excepción a
+     * media llamada no prueba que la llamada nativa terminó). Ésa cuenta hasta el tope. Nunca lanza (salvo la cancelación).
+     */
+    suspend fun sueltaElLectorAlTerminarElFlujo(attemptId: String) {
+        val fila = try { dao.getById(attemptId) } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (e: Exception) {
+            Timber.e(e, "📒 [Libreta] no se pudo leer %s al terminar el flujo: su lector cuenta hasta el tope", attemptId); return
+        }
+        val puedeSeguirDentro = fila != null && (
+            fila.state == PaymentAttemptEntity.STATE_KERNEL_ACTIVO || fila.state == PaymentAttemptEntity.STATE_AUTORIZANDO ||
+                (fila.sdkReturnedAt == null && fila.state in ESTADOS_TRAS_EL_HOST))
+        if (puedeSeguirDentro) Timber.w("📒 [Libreta] el flujo de %s terminó con la fila en %s sin regreso del SDK: su lector cuenta hasta el tope", attemptId, fila?.state)
+        else sueltaElLector(attemptId)
+    }
+
+
+    /** D26: el intento [attemptId] ya no tiene el SDK dentro (su pantalla lo comprobó). Idempotente. */
+    fun sueltaElLector(attemptId: String) {
+        if (lectorEnUso.remove(attemptId) != null) Timber.d("📒 [Libreta] el intento %s soltó el lector", attemptId)
+    }
+
+    /** D26: ¿algún intento de ESTE proceso, salvo [excepto], tiene el lector o el SDK en uso ahora (dentro del tope)? */
+    fun hayLectorEnUso(excepto: String? = null): Boolean {
+        val ahora = relojMonotonico()
+        return lectorEnUso.any { (id, uso) -> id != excepto && ahora - uso.desde < TOPE_LECTOR_EN_USO_MS }
+    }
+
+    /** D26: ¿algún intento de ESTA solicitud del POS tiene el lector o el SDK en uso ahora? Lo pregunta la sonda y el cancel. */
+    fun hayLectorEnUsoDeLaSolicitud(requestId: String): Boolean {
+        val ahora = relojMonotonico()
+        return lectorEnUso.values.any { it.solicitud == requestId && ahora - it.desde < TOPE_LECTOR_EN_USO_MS }
+    }
+
+    /**
+     * D26: el token con el que se pregunta «¿qué corre en este proceso?» (aparta el aparato, puede seguir vivo, la cuarentena de este
+     * proceso). Con un intento en uso, el de siempre: las filas deciden como antes. Sin ninguno, uno que no es de nadie: ninguna nota
+     * de este proceso cuenta como cobro corriendo. NUNCA se escribe en una fila: las filas llevan [processToken].
+     */
+    private fun tokenDeLoQueCorre(enUso: Boolean): String = if (enUso) processToken else SIN_PROCESO
+
+    /**
      * 🔴 Ronda 20 (founder, 23-sep: «no debería trabarse nunca»). Al reabrir, lo que un proceso MUERTO dejó a medias pasa AL
      * INSTANTE a «en duda» — antes esperaba la cuarentena por reloj (10 min) con la terminal apartada, y medido en la N86 eso
      * era exactamente lo que el cajero veía: «resuélvelo o cobra con otra terminal», sin nada que tocar.
@@ -243,8 +359,12 @@ class PaymentAttemptLedger(
                         contextJson = contextJson, orderJsonFragment = fragment, now = now,
                         terminalPaymentRequestId = solicitudRemota, processToken = processToken,
                         shiftMembership = belonging.kind, localShiftSessionId = belonging.localSessionId,
-                        cashDrawerSessionId = belonging.cashDrawerSessionId
-                    )
+                        cashDrawerSessionId = belonging.cashDrawerSessionId,
+                        otroIntentoConElLector = hayLectorEnUso(excepto = attemptId),   // D26
+                    ).also { fila ->
+                        // D26 (Codex r1 #8): la marca se publica BAJO el mismo candado que la reserva: otra reserva simultánea ya la ve.
+                        if (fila > 0L) lectorEnUso[attemptId] = LectorEnUso(relojMonotonico(), solicitudRemota)
+                    }
                 }
                 val rowId = if (evidenceLockHeld) reserve() else candadoDeEvidencia.withLock { reserve() }
                 if (rowId > 0L) {
@@ -380,13 +500,17 @@ class PaymentAttemptLedger(
             if (puertaBajoCandado()) {
                 Timber.w("📒 [Libreta] autorización RECHAZADA: hay dinero del servidor sin escribir (%s) | attemptId=%s", evidenciaSinGuardar.keys, attemptId)
                 false
-            } else withContext(Dispatchers.IO) {
+            } else candadoDelCese.withLock { withContext(Dispatchers.IO) {
                 // KERNEL_ACTIVO entra aquí como continuación EXPLÍCITA (kernel → autorización
                 // online) y sólo por este camino: es del mismo intento, nunca de uno recreado.
-                dao.casTransition(attemptId,
+                if (solicitudYaNoAdmite(attemptId)) {
+                    Timber.w("📒 [Libreta] autorización RECHAZADA: la solicitud del POS ya se cerró o canceló | attemptId=%s", attemptId)
+                    false
+                } else (dao.casTransition(attemptId,
                     listOf(PaymentAttemptEntity.STATE_PREPARANDO, PaymentAttemptEntity.STATE_KERNEL_ACTIVO),
-                    PaymentAttemptEntity.STATE_AUTORIZANDO, System.currentTimeMillis(), processToken = processToken) == 1
-            }
+                    PaymentAttemptEntity.STATE_AUTORIZANDO, System.currentTimeMillis(), processToken = processToken,
+                    otroIntentoConElLector = hayLectorEnUso(excepto = attemptId)) == 1).also { if (it) renueva(attemptId, aunVencida = true) }
+            } }
         }
     } catch (cancelled: kotlinx.coroutines.CancellationException) {
         throw cancelled
@@ -414,10 +538,14 @@ class PaymentAttemptLedger(
             if (puertaBajoCandado()) {
                 Timber.w("📒 [Libreta] entrada al lector RECHAZADA: hay dinero del servidor sin escribir (%s) | attemptId=%s", evidenciaSinGuardar.keys, attemptId)
                 false
-            } else withContext(Dispatchers.IO) {
-                dao.casTransition(attemptId, listOf(PaymentAttemptEntity.STATE_PREPARANDO),
-                    PaymentAttemptEntity.STATE_KERNEL_ACTIVO, System.currentTimeMillis(), processToken = processToken) == 1
-            }
+            } else candadoDelCese.withLock { withContext(Dispatchers.IO) {
+                if (solicitudYaNoAdmite(attemptId)) {
+                    Timber.w("📒 [Libreta] entrada al lector RECHAZADA: la solicitud del POS ya se cerró o canceló | attemptId=%s", attemptId)
+                    false
+                } else (dao.casTransition(attemptId, listOf(PaymentAttemptEntity.STATE_PREPARANDO),
+                    PaymentAttemptEntity.STATE_KERNEL_ACTIVO, System.currentTimeMillis(), processToken = processToken,
+                    otroIntentoConElLector = hayLectorEnUso(excepto = attemptId)) == 1).also { if (it) renueva(attemptId, aunVencida = true) }
+            } }
         }
     } catch (cancelled: kotlinx.coroutines.CancellationException) {
         throw cancelled
@@ -442,7 +570,7 @@ class PaymentAttemptLedger(
         authCode: String?
     ): Boolean {
         if (!isEnabled()) return true
-        if (approved) return aprobacionDelHost(attemptId, operationId, referenceNumber, authCode)
+        if (approved) return aprobacionDelHost(attemptId, operationId, referenceNumber, authCode).also { renuevaParaElCierreEmv(attemptId) }
         return runCatching {
             withContext(NonCancellable + Dispatchers.IO) {
                 // 🔴 Codex, pasada final (P1-1): un RECHAZO dice «no se cobró» y va bajo el candado de la evidencia.
@@ -836,7 +964,7 @@ class PaymentAttemptLedger(
             if (hayDineroSinEscribir(attemptId)) {
                 Timber.w("📒 [Libreta] %s RECHAZADA: hay dinero de este intento sin escribir | attemptId=%s", etiqueta, attemptId)
                 false
-            } else escribir()
+            } else escribir().also { if (it) sueltaElLector(attemptId) }   // D26: la salida escrita prueba que el SDK ya no corre
         }
 
     /**
@@ -1057,6 +1185,7 @@ class PaymentAttemptLedger(
      * hasta que este proceso muera — el lado seguro (no se certifica nada).
      */
     suspend fun marcarSdkRegreso(attemptId: String) {
+        sueltaElLector(attemptId)   // D26: el regreso comprobado del SDK es el fin de su uso del lector
         runCatching {
             withContext(NonCancellable + Dispatchers.IO) {
                 val n = dao.marcarSdkRegreso(attemptId, System.currentTimeMillis())
@@ -1105,6 +1234,11 @@ class PaymentAttemptLedger(
      * Nunca lanza (una cancelación se propaga): un fallo de lectura o escritura es false — no se certifica lo que no se pudo ver.
      */
     suspend fun cerrarSolicitudSiCeso(requestId: String): Boolean {
+        // D26 (Codex r1 #7): ya CERRADA para ejecución y ningún intento suyo con el lector en uso: el cierre durable rige. Una pantalla
+        // del SDK de OTRA venta encima (la pila) no la vuelve a «viva».
+        if (!hayLectorEnUsoDeLaSolicitud(requestId) &&
+            runCatching { dao.bandejaDe(requestId)?.executionClosedAt }.getOrNull() != null
+        ) return true
         val ejecucion = runCatching { ejecucionDelCobro() }.getOrDefault(EjecucionDelCobro.DESCONOCIDO)
         if (ejecucion != EjecucionDelCobro.EMBEBIDO) {
             // Debug y no warning (fix 1, M5): en una terminal app-a-app sale en CADA sonda y es la conducta esperada.
@@ -1116,7 +1250,11 @@ class PaymentAttemptLedger(
             return false
         }
         return try {
-            val cerrada = dao.cerrarSolicitudSiCeso(requestId, processToken, System.currentTimeMillis())
+            // D26: sin un intento de la solicitud con el lector en uso, ninguna nota de este proceso la mantiene viva. Bajo
+            // [candadoDelCese]: un relanzamiento ([relanzaConElLector]) no se cuela entre la pregunta y el cierre.
+            val cerrada = candadoDelCese.withLock {
+                dao.cerrarSolicitudSiCeso(requestId, tokenDeLoQueCorre(hayLectorEnUsoDeLaSolicitud(requestId)), System.currentTimeMillis())
+            }
             if (cerrada) Timber.w("📒 [Libreta] solicitud %s CERRADA PARA EJECUCIÓN: ningún intento suyo puede seguir vivo", requestId)
             else Timber.i("📒 [Libreta] la solicitud %s no se cierra: puede seguir viva o no está reclamada", requestId)
             cerrada
@@ -1225,7 +1363,7 @@ class PaymentAttemptLedger(
      * sólo deja de nombrarse; nunca cambia la decisión, que ya tomó la barrera.
      */
     suspend fun retencionDelAparato(): PaymentAttemptEntity? = try {
-        dao.findTerminalHold(processToken)
+        dao.findTerminalHold(tokenDeLoQueCorre(hayLectorEnUso()))
     } catch (cancelled: kotlinx.coroutines.CancellationException) {
         throw cancelled
     } catch (error: Exception) {
@@ -1557,3 +1695,19 @@ enum class EjecucionDelCobro {
             }
     }
 }
+
+/**
+ * D26: lo más que el SDK puede seguir dentro de un intento sin que su pantalla lo compruebe (una corrutina cancelada a media llamada,
+ * la pantalla de AngelPay destruida sin resultado). Pasado esto, el intento deja de apartar la terminal; su fila sigue cercando SU venta
+ * si hay dinero en juego. Va de la mano con el techo del SERVIDOR (150 s sin intento abierto, `fix/d26-techo-sigo-cobrando`).
+ */
+internal const val TOPE_LECTOR_EN_USO_MS = 150_000L
+
+/** D26: token que no es de ningún proceso: con él, ninguna nota de la libreta cuenta como «cobro corriendo» ([PaymentAttemptLedger]). */
+private const val SIN_PROCESO = "d26:ningun-intento-con-el-lector"
+
+/** D26: los estados tras la respuesta del host en los que, sin `sdk_returned_at`, el SDK pudo seguir dentro (como [PaymentAttemptEntity.SQL_PUEDE_SEGUIR_VIVO]). */
+private val ESTADOS_TRAS_EL_HOST = setOf(
+    PaymentAttemptEntity.STATE_HOST_RESPONDIO, PaymentAttemptEntity.STATE_AUTORIZADO,
+    PaymentAttemptEntity.STATE_REGISTRO_FALLIDO, PaymentAttemptEntity.STATE_INDETERMINADO,
+)

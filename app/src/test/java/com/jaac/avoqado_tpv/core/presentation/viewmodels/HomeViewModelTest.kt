@@ -134,6 +134,7 @@ class HomeViewModelTest {
         connectionStateManager = mockk(relaxed = true)
         every { connectionStateManager.connectionState } returns fakeConnectionState
         remotePaymentCoordinator = mockk(relaxed = true)
+        every { remotePaymentCoordinator.esDevolucionNueva(any()) } returns true
         updateCheckManager = mockk(relaxed = true)
         sessionManager = mockk(relaxed = true)
         paymentQueueRepository = mockk(relaxed = true)
@@ -912,6 +913,74 @@ class HomeViewModelTest {
         vm.refreshPendingVerifications(); runCurrent()
 
         coVerify(exactly = 0) { actionableSales.refresh() }
+        vm.viewModelScope.cancel()
+    }
+
+    // ========================================
+    // D669: DEVOLUCIÓN PEDIDA POR EL POS CON LA TERMINAL BLOQUEADA
+    // ========================================
+
+    private suspend fun pedirDevolucion(requestId: String) {
+        withContext(Dispatchers.IO) {
+            kotlinx.coroutines.withTimeout(5_000) { fakeSocketEvents.subscriptionCount.first { it > 0 } }
+        }
+        fakeSocketEvents.emit(com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent.TerminalRefundRequest(
+            requestId = requestId, paymentId = "pay-1", maxRefundableCents = 1000, reason = null,
+            venueId = "venue-123", timestamp = "2026-11-21T12:00:00Z",
+        ))
+    }
+
+    @Test
+    fun `P2 D669 terminal bloqueada - la devolucion del POS no se abre y se le dice por que`() = runTest(testDispatcher) {
+        every { lockScreenManager.isCurrentlyLocked() } returns true
+        val vm = createViewModel()
+
+        pedirDevolucion("refund-bloqueada")
+
+        verify(exactly = 1) {
+            socketManager.emitTerminalRefundResult("refund-bloqueada", "rejected", "La terminal está bloqueada desde Avoqado. No se abrió la devolución.")
+        }
+        verify(exactly = 0) { socketManager.emitTerminalRefundResult("refund-bloqueada", "opened", any()) }
+        verify(exactly = 0) { remotePaymentCoordinator.submitSocketRefundRequest(any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P2 D669 terminal en mantenimiento - la devolucion del POS tampoco se abre`() = runTest(testDispatcher) {
+        every { maintenanceManager.isCurrentlyInMaintenance() } returns true
+        val vm = createViewModel()
+
+        pedirDevolucion("refund-mantenimiento")
+
+        verify(exactly = 1) {
+            socketManager.emitTerminalRefundResult("refund-mantenimiento", "rejected", "La terminal está en mantenimiento. No se abrió la devolución.")
+        }
+        verify(exactly = 0) { remotePaymentCoordinator.submitSocketRefundRequest(any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `D669 sin candado la devolucion del POS se abre como siempre`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+
+        pedirDevolucion("refund-libre")
+
+        verify(exactly = 1) { remotePaymentCoordinator.submitSocketRefundRequest(match { it.socketRequestId == "refund-libre" }) }
+        verify(exactly = 1) { socketManager.emitTerminalRefundResult("refund-libre", "opened", any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    // D669 (Codex r2 #2): el último evento del socket se reentrega a cada HomeViewModel nuevo; una devolución ya contestada no se
+    // vuelve a abrir (con la terminal ya desbloqueada abría lo que la tablet dio por rechazado) ni a contestar.
+    @Test
+    fun `P2 D669 una devolucion ya contestada que se reentrega no se vuelve a abrir ni a contestar`() = runTest(testDispatcher) {
+        every { remotePaymentCoordinator.esDevolucionNueva("refund-repetida") } returns false
+        val vm = createViewModel()
+
+        pedirDevolucion("refund-repetida")
+
+        verify(exactly = 0) { socketManager.emitTerminalRefundResult("refund-repetida", any(), any()) }
+        verify(exactly = 0) { remotePaymentCoordinator.submitSocketRefundRequest(any()) }
         vm.viewModelScope.cancel()
     }
 }

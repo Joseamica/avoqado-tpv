@@ -227,6 +227,117 @@ class Task5ShiftOwnershipRoomTest {
             com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NotAdmitted("No tienes permiso para esta operación."))
     }
 
+    // D669: con la terminal bloqueada desde Avoqado (o en mantenimiento) un cobro del POS se reclamaba y abría el lector debajo del
+    // aviso, aunque la caja estuviera abierta. Ahora no se reclama: el «no» queda escrito en la MISMA escritura que lo decide
+    // (Codex r1 #1: si el rechazo se guardaba después, una reentrega con la terminal recién desbloqueada se reclamaba y el rechazo
+    // atrasado cerraba la solicitud ya reclamada).
+    @Test fun `P2 D669 terminal bloqueada con la caja abierta no reclama el cobro del POS y lo cierra sin cobro`() = runTest {
+        open()
+        val inbox = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox(db.remotePaymentRequestDao(), shifts)
+        val coordinador = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator(inbox)
+        db.remotePaymentRequestDao().insert(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity(
+            "bloqueada", "v1", 1000, 0, null, false, null, null, null, "2026-11-21", "RECEIVED", createdAt = 1, updatedAt = 1))
+        val candado = "Está bloqueada desde Avoqado. Este cobro NO se inició."
+        assertThat(coordinador.prepareSocketPaymentRequest("bloqueada", { true }, { "v1" }, motivoDelCandado = { candado }))
+            .isEqualTo(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NotAdmitted(candado))
+        val fila = db.remotePaymentRequestDao().getById("bloqueada")!!
+        assertThat(fila.status).isEqualTo("RESOLVED")
+        assertThat(fila.localShiftSessionId).isNull()
+        val guardado = org.json.JSONObject(fila.finalResultJson!!)
+        assertThat(guardado.getString("status")).isEqualTo("failed")
+        assertThat(guardado.getString("outcomeEvidence")).isEqualTo("PRE_AUTHORIZATION")
+        assertThat(guardado.getString("errorMessage")).isEqualTo("En la terminal: $candado")
+        // Codex r1 #1: la desbloquean y la misma solicitud vuelve a llegar ⇒ ya no se reclama (sigue cerrada sin cobro).
+        assertThat(coordinador.prepareSocketPaymentRequest("bloqueada", { true }, { "v1" }, motivoDelCandado = { null }))
+            .isEqualTo(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NOT_CLAIMABLE)
+        assertThat(db.remotePaymentRequestDao().getById("bloqueada")?.status).isEqualTo("RESOLVED")
+        // Lo que manda rejectRemotePaymentBeforeAuthorization reproduce lo guardado; la reentrega por socket, también.
+        val rechazo = org.json.JSONObject().put("requestId", "bloqueada").put("status", "failed")
+            .put("outcomeEvidence", "PRE_AUTHORIZATION").put("errorMessage", "En la terminal: $candado")
+        assertThat(org.json.JSONObject(inbox.persistResult("bloqueada", rechazo.toString())!!).getString("errorMessage"))
+            .isEqualTo("En la terminal: $candado")
+        val reentrega = inbox.receive(com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent.TerminalPaymentRequest(
+            requestId = "bloqueada", amountCents = 1000, tipCents = 0, rating = null, skipReview = false, orderId = null,
+            processedByStaffId = null, senderDeviceName = null, venueId = "v1", timestamp = "2026-11-21"))
+        assertThat(reentrega).isInstanceOf(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentReceiveDecision.ReplayResult::class.java)
+    }
+
+    // D669: el candado manda sobre la caja cerrada (lo que dice la tablet es lo que de verdad aparta la terminal).
+    @Test fun `P2 D669 bloqueada y con la caja cerrada dice que esta bloqueada`() = runTest {
+        val inbox = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox(db.remotePaymentRequestDao(), shifts)
+        db.remotePaymentRequestDao().insert(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity(
+            "bloqueada-sin-caja", "v1", 1000, 0, null, false, null, null, null, "2026-11-21", "RECEIVED", createdAt = 1, updatedAt = 1))
+        val candado = "Está en mantenimiento. Este cobro NO se inició."
+        assertThat(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator(inbox)
+            .prepareSocketPaymentRequest("bloqueada-sin-caja", { true }, { "v1" }, motivoDelCandado = { candado }))
+            .isEqualTo(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NotAdmitted(candado))
+    }
+
+    // D669 (Codex r1 #3): con el candado no se espera a que se prepare el lector (tras reiniciar, la PAX tarda): se contesta ya.
+    @Test fun `P2 D669 con candado no espera al lector para contestar`() = runTest {
+        val inbox = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox(db.remotePaymentRequestDao(), shifts)
+        db.remotePaymentRequestDao().insert(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity(
+            "en-frio", "v1", 1000, 0, null, false, null, null, null, "2026-11-21", "RECEIVED", createdAt = 1, updatedAt = 1))
+        var esperoAlLector = false
+        val candado = "Está bloqueada desde Avoqado. Este cobro NO se inició."
+        assertThat(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator(inbox)
+            .prepareSocketPaymentRequest("en-frio", { esperoAlLector = true; true }, { "v1" }, motivoDelCandado = { candado }))
+            .isEqualTo(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NotAdmitted(candado))
+        assertThat(esperoAlLector).isFalse()
+    }
+
+    // D669 (Codex r2 #1): si no se puede guardar el rechazo (Room), se contesta igual por el camino de la caja (D8) en vez de callar.
+    @Test fun `P2 D669 si no se puede guardar el rechazo por candado igual se le contesta al POS`() = runTest {
+        val inbox = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox(db.remotePaymentRequestDao(), shifts)
+        db.remotePaymentRequestDao().insert(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity(
+            "sin-disco", "v1", 1000, 0, null, false, null, null, null, "2026-11-21", "RECEIVED", createdAt = 1, updatedAt = 1))
+        db.openHelper.writableDatabase.execSQL(
+            "CREATE TRIGGER rechazo_sin_disco BEFORE UPDATE ON remote_payment_requests BEGIN SELECT RAISE(ABORT,'sin disco'); END")
+        val candado = "Está bloqueada desde Avoqado. Este cobro NO se inició."
+        assertThat(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator(inbox)
+            .prepareSocketPaymentRequest("sin-disco", { true }, { "v1" }, motivoDelCandado = { candado }))
+            .isEqualTo(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NotAdmitted(candado))
+        assertThat(db.remotePaymentRequestDao().getById("sin-disco")?.status).isEqualTo("RECEIVED")
+        db.openHelper.writableDatabase.execSQL("DROP TRIGGER rechazo_sin_disco")
+        // Lo que hace después la navegación (rejectRemotePaymentBeforeAuthorization ⇒ persistResult), igual que con la caja.
+        val rechazo = org.json.JSONObject().put("requestId", "sin-disco").put("status", "failed")
+            .put("outcomeEvidence", "PRE_AUTHORIZATION").put("errorMessage", "En la terminal: $candado")
+        assertThat(org.json.JSONObject(inbox.persistResult("sin-disco", rechazo.toString())!!).getString("errorMessage"))
+            .isEqualTo("En la terminal: $candado")
+        assertThat(db.remotePaymentRequestDao().getById("sin-disco")?.status).isEqualTo("RESOLVED")
+    }
+
+    // D669 (Codex r2 #4): sin sede activa (el latido borró la activación) el candado no cierra nada: como antes, no se toca.
+    @Test fun `P2 D669 sin sede activa el candado no cierra la solicitud`() = runTest {
+        val inbox = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox(db.remotePaymentRequestDao(), shifts)
+        db.remotePaymentRequestDao().insert(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity(
+            "sin-sede", "v1", 1000, 0, null, false, null, null, null, "2026-11-21", "RECEIVED", createdAt = 1, updatedAt = 1))
+        assertThat(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator(inbox)
+            .prepareSocketPaymentRequest("sin-sede", { true }, { "" },
+                motivoDelCandado = { "Está bloqueada desde Avoqado. Este cobro NO se inició." }))
+            .isEqualTo(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NOT_CLAIMABLE)
+        assertThat(db.remotePaymentRequestDao().getById("sin-sede")?.status).isEqualTo("RECEIVED")
+    }
+
+    // 🔴 D669: el candado tampoco rechaza lo ya reclamado (puede tener el lector abierto), y sin candado todo sigue igual.
+    @Test fun `P1 D669 con candado una solicitud ya reclamada no se toca y sin candado se reclama como siempre`() = runTest {
+        open()
+        val inbox = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox(db.remotePaymentRequestDao(), shifts)
+        val coordinador = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator(inbox)
+        db.remotePaymentRequestDao().insert(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity(
+            "ya-reclamada", "v1", 1000, 0, null, false, null, null, null, "2026-11-21", "PROCESSING", createdAt = 1, updatedAt = 1))
+        assertThat(coordinador.prepareSocketPaymentRequest("ya-reclamada", { true }, { "v1" },
+            motivoDelCandado = { "Está bloqueada desde Avoqado. Este cobro NO se inició." }))
+            .isEqualTo(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NOT_CLAIMABLE)
+        assertThat(db.remotePaymentRequestDao().getById("ya-reclamada")?.status).isEqualTo("PROCESSING")
+        assertThat(db.remotePaymentRequestDao().getById("ya-reclamada")?.finalResultJson).isNull()
+        db.remotePaymentRequestDao().insert(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity(
+            "libre", "v1", 1000, 0, null, false, null, null, null, "2026-11-21", "RECEIVED", createdAt = 1, updatedAt = 1))
+        assertThat(coordinador.prepareSocketPaymentRequest("libre", { true }, { "v1" }, motivoDelCandado = { null }))
+            .isEqualTo(com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.READY)
+        assertThat(db.remotePaymentRequestDao().getById("libre")?.status).isEqualTo("PROCESSING")
+    }
+
     // 🔴 Lo reclamado no se rechaza: puede tener el lector abierto. Sólo una solicitud aún RECEIVED admite este «no».
     @Test fun `una solicitud ya reclamada sigue sin reclamarse dos veces aunque la caja este cerrada`() = runTest {
         val inbox = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox(db.remotePaymentRequestDao(), shifts)

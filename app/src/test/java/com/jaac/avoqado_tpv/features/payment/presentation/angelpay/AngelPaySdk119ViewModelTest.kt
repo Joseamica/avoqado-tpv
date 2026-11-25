@@ -121,6 +121,8 @@ class AngelPaySdk119ViewModelTest {
             coEvery { intentoDeLaSolicitud(any()) } returns null
             coEvery { openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns true
             coEvery { markAuthorizing(any()) } returns true
+            // D26: el relanzamiento tras la sesión vencida conserva el lector (un relajado diría false: nunca relanzaría).
+            coEvery { relanzaConElLector(any()) } returns true
             coEvery { cercaDeSolicitud(any()) } returns CercaDeSolicitud.LIBRE
             coEvery { iniciarEjecucionNoTarjeta(any()) } returns CercaDeSolicitud.LIBRE
             coEvery { aplicarVeredictoDelServidor(any()) } returns Result.success(
@@ -1153,6 +1155,54 @@ class AngelPaySdk119ViewModelTest {
     @Test
     fun `P1 D5 un tipo desconocido sigue como hoy - CREDIT_CARD`() = runTest(testDispatcher) {
         assertThat(metodoRegistradoCon("PREPAGO")).isEqualTo("CREDIT_CARD")
+    }
+
+    /**
+     * D27 (hz:248b195b, 23-nov): el SDK trae `cardLast4` y `cardEntryMode`; antes la Nexgo registraba TODO cobro con tarjeta
+     * con `maskedPan = ""` y `entryMode = OTHER`, y el dueño no podía saber con qué tarjeta se pagó.
+     */
+    private suspend fun TestScope.tarjetaRegistradaCon(
+        cardLast4: String?,
+        cardEntryMode: String?,
+    ): com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails {
+        val tarjetas = mutableListOf<com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails>()
+        coEvery { recordPaymentUseCase(any(), capture(tarjetas), any(), any()) } returns Result.success(
+            PaymentReceipt(paymentId = "pay-1", receiptUrl = "", accessKey = "", amount = java.math.BigDecimal("100.00"), tipAmount = java.math.BigDecimal.ZERO),
+        )
+        val (vm, intento) = cobroLanzado()
+        try {
+            vm.onAngelPaySdkResult(
+                delHost(intento, aprobado = true, codigo = AppErrorCatalog.Code.S000, codigoEmisor = "00")
+                    .copy(cardBin = "411111", cardLast4 = cardLast4, cardEntryMode = cardEntryMode),
+            )
+            runCurrent()
+            esperarDesenlace(vm)
+            coVerify(exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
+            return tarjetas.single()
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P2 D27 el cobro aprobado se registra con los ultimos 4 y el modo de lectura del SDK`() = runTest(testDispatcher) {
+        val tarjeta = tarjetaRegistradaCon(cardLast4 = "4242", cardEntryMode = "contactless")
+        assertThat(tarjeta.maskedPan).isEqualTo("************4242")
+        assertThat(tarjeta.entryMode).isEqualTo(com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode.CONTACTLESS)
+        assertThat(tarjeta.cardBrand).isEqualTo(com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand.VISA)
+    }
+
+    @Test
+    fun `P2 D27 con chip se registra CHIP`() = runTest(testDispatcher) {
+        assertThat(tarjetaRegistradaCon(cardLast4 = "1111", cardEntryMode = "chip").entryMode)
+            .isEqualTo(com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode.CHIP)
+    }
+
+    @Test
+    fun `P2 D27 sin datos del SDK se registra como hoy - vacio y OTHER`() = runTest(testDispatcher) {
+        val tarjeta = tarjetaRegistradaCon(cardLast4 = null, cardEntryMode = null)
+        assertThat(tarjeta.maskedPan).isEqualTo("")
+        assertThat(tarjeta.entryMode).isEqualTo(com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode.OTHER)
     }
 
     @Test

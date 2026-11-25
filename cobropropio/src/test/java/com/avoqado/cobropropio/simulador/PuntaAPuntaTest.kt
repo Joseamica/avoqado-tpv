@@ -197,7 +197,7 @@ class PuntaAPuntaTest {
 
     private fun parcial() = prueba(Ambiente.PRODUCCION) {
         val s = venta(10)
-        assertEquals(inicio(s) + NoSeCobro, esperar(cobrar(s)))
+        assertEquals(inicio(s) + RevisandoConElBanco + NoSeCobro, esperar(cobrar(s)))
         val f = fila(s.id)
         assertEquals(blumonSim.folioDe(s.id), f.parcialOperacion)
         assertEquals(s.importeCentavos / 2, f.parcialImporteCentavos)
@@ -209,7 +209,7 @@ class PuntaAPuntaTest {
 
     private fun codigo68() = prueba(Ambiente.PRODUCCION) {
         val s = venta(85)
-        assertEquals(inicio(s) + NoSeCobro, esperar(cobrar(s)))
+        assertEquals(inicio(s) + RevisandoConElBanco + NoSeCobro, esperar(cobrar(s)))
         assertNull(fila(s.id).codigo)
         reversadaYAcusada(s)
     }
@@ -220,7 +220,7 @@ class PuntaAPuntaTest {
     private fun simulationTrue() = prueba(Ambiente.PRODUCCION) {
         val s = venta(80)
         val eventos = esperar(cobrar(s))
-        assertEquals(inicio(s) + PorConfirmar(s.importeCentavos), eventos)
+        assertEquals(inicio(s) + RevisandoConElBanco + PorConfirmar(s.importeCentavos), eventos)
         assertTrue(eventos.none { it is Aprobado })
         pudoEntrarSinConfirmar(s, reversos = 2)
     }
@@ -250,7 +250,7 @@ class PuntaAPuntaTest {
     /** Un sobre que no es evidencia de nada: ni `Aprobado` ni `Rechazado`; el camino de la duda lo reversa. */
     private fun dudaQueSeReversa(centavos: Int) = prueba(Ambiente.PRODUCCION) {
         val s = venta(centavos)
-        assertEquals(inicio(s) + NoSeCobro, esperar(cobrar(s)))
+        assertEquals(inicio(s) + RevisandoConElBanco + NoSeCobro, esperar(cobrar(s)))
         val f = fila(s.id)
         assertNull(f.operationNumber)
         assertNull(f.codigo)

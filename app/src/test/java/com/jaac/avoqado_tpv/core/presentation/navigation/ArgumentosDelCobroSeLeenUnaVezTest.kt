@@ -117,16 +117,26 @@ class ArgumentosDelCobroSeLeenUnaVezTest {
     @Test
     fun `D2 Cobrar usa las reglas puras para no esperar al lector en solo efectivo`() {
         val cuerpo = cuerpoDe("NavRoute.Checkout.route")
+        // D671: la espera del lector y la escritura de los argumentos viven en abrirUnSoloCobro / escribirArgumentosDeCobrar.
         assertTrue(
             "La entrada desde Cobrar debe decidir con cobrarSaltaElLector(…) y la regla de la tarjeta tarjetaSinRed(…) " +
                 "(su comportamiento se prueba en SoloEfectivoSinRedTest), y saltarse awaitPaxPaymentReady con soloEfectivo.",
             cuerpo.contains("cobrarSaltaElLector(") && cuerpo.contains("tarjetaSinRed(") &&
-                cuerpo.contains("!soloEfectivo && !awaitPaxPaymentReady("),
+                cuerpo.contains("lectorListo = {") && cuerpo.contains("awaitPaxPaymentReady(context, initializationManager, \"Checkout payment\")") &&
+                cuerpoDeLaFuncion("internal fun abrirUnSoloCobro(").contains("if (!soloEfectivo && !lectorListo()) return@launch"),
         )
         assertTrue(
             "La entrada desde Cobrar debe pasarle \"soloEfectivo\" a la pantalla de cobro.",
-            cuerpo.contains("set(\"soloEfectivo\", soloEfectivo)"),
+            cuerpo.contains("escribirArgumentosDeCobrar(handle, payload, soloEfectivo)") &&
+                cuerpoDeLaFuncion("internal fun escribirArgumentosDeCobrar(").contains("set(\"soloEfectivo\", soloEfectivo)"),
         )
+    }
+
+    /** D671: el cuerpo de una función de nivel superior de AppNavigation.kt (hasta la llave que la cierra en la columna 0). */
+    private fun cuerpoDeLaFuncion(firma: String): String {
+        val inicio = navegacion.indexOf(firma)
+        require(inicio >= 0) { "No encontré «$firma» en AppNavigation.kt" }
+        return navegacion.substring(inicio, navegacion.indexOf("\n}\n", inicio))
     }
 
     /**
@@ -189,7 +199,7 @@ class ArgumentosDelCobroSeLeenUnaVezTest {
         )
         assertTrue(
             "La entrada desde Cobrar debe pasarle la venta guardada a la pantalla de cobro en \"ventaLocalJson\".",
-            cuerpo.contains("set(\"ventaLocalJson\", payload.ventaLocalJson)"),
+            cuerpoDeLaFuncion("internal fun escribirArgumentosDeCobrar(").contains("set(\"ventaLocalJson\", payload.ventaLocalJson)"),
         )
         val limpieza = navegacion.substring(navegacion.indexOf("fun clearPaymentArgs("))
         assertTrue(

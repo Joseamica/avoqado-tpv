@@ -290,6 +290,9 @@ fun AngelPayPaymentScreen(
         val currentState = state
         when (currentState) {
             is AngelPayPaymentState.LaunchingAngelPaySdk -> {
+                // 🔒 D26 (Codex r2 #1): con la app en segundo plano este efecto corre al volver; si en medio venció el lector o se
+                // certificó el cese, no se lanza.
+                if (!viewModel.confirmarLanzamientoDelSdk()) return@LaunchedEffect
                 try {
                     angelPaySdkLauncher.launch(currentState.request)
                     viewModel.onIntentLaunched()

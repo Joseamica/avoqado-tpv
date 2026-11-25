@@ -69,6 +69,8 @@ fun SerializedSaleScreen(
     onNavigateBack: () -> Unit,
     onNavigateToPayment: (orderId: String, orderNumber: String?, orderTotal: String, isPortabilidad: Boolean, serialNumber: String?, categoryName: String?) -> Unit,
     resetOnEnter: Boolean = false,
+    // D671: false = otra venta espera al lector (quien la pasa ya avisó): no se vende otra SIM en el servidor.
+    puedeCobrar: () -> Boolean = { true },
     onNavigateToMisSims: () -> Unit = {},
     viewModel: SerializedSaleViewModel = hiltViewModel()
 ) {
@@ -467,6 +469,7 @@ fun SerializedSaleScreen(
                                         if (uiState.isZeroPrice) {
                                             showGiftConfirmDialog = true
                                         } else {
+                                            if (!puedeCobrar()) return@Button // D671
                                             val isPortabilidadValue = uiState.isPortabilidad
                                             val serialNumberValue = uiState.currentSerialNumber
                                             val categoryNameValue = uiState.selectedCategory?.name
@@ -509,6 +512,7 @@ fun SerializedSaleScreen(
                                     confirmButton = {
                                         Button(onClick = {
                                             showGiftConfirmDialog = false
+                                            if (!puedeCobrar()) return@Button // D671
                                             val isPortabilidadValue = uiState.isPortabilidad
                                             val serialNumberValue = uiState.currentSerialNumber
                                             val categoryNameValue = uiState.selectedCategory?.name

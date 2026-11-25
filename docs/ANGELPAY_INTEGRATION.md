@@ -136,6 +136,35 @@ data class CallResult(
 
 Full catalog in AngelPay Manual v1.2 pages 25-28.
 
+## SDK 1.0.24 — la respuesta ilegible ya se verifica (25-nov-2026)
+
+**El AAR:** `app/libs/angelpaySDK-v1.0.24-fat-release.aar`.
+- SHA-256 `96fe76888e6d35319d17113fdb19bd1512668a1d26000242b369e2cc85b6be64`. Es la del portal: «SDK-Angelpay-Nexgo — v1.0.24»,
+  24-nov-2026. El portal lo descarga como `angelpaySDK-v1.0.21 (3).aar`: el nombre miente; `AngelPaySDK.version() == "1.0.24"` no.
+- **Re-auditado en bytecode contra el 1.0.23** (`javap -p -c -constants`, normalizando numeración): de los paquetes del cobro,
+  la red y el historial sólo cambian 8 clases (`c0.v0`, `c0.r0`, `a.j`, `a.k`, `a.v`, `t.m`, `t.n`, `x.d`). `PaymentActivity`,
+  el traductor de errores (`o.r`, `o.h`, `o.n`) y el manifiesto del AAR son idénticos. API pública: los mismos 78 métodos.
+
+**Qué cambia:**
+- **Cobro.** De `c0.v0` cambia un solo método, la verificación tras duda. Antes entraba con timeout o conexión perdida (`o.i`,
+  `o.j`); ahora también con una respuesta que llegó ilegible (`o.h`). Resultado: `S000` «Aprobada (verificada en historial)» o
+  `G505` con `authorizationAttempted = true`.
+- **Lo que NO cambia:** un error que el traductor no reconoce (`o.n`) sigue saliendo `G500` sin verificación. Por eso la regla
+  de la terminal «`G500` sin ningún dato del banco = duda» (`AngelPayOutcomeClassifier`, paso 3a) se queda igual.
+- **Cancelar / devolver.** `resolveInDoubtPostOp` ahora recibe la terminal de la venta y compara cada renglón del historial por
+  terminal + referencia; antes confirmaba con el primer renglón que trajera la referencia.
+
+**En la app:** `VERSION_SDK_AUDITADA = "1.0.24"`. No hay cambio de comportamiento de la terminal.
+
+**Probado en aparato (25-nov-2026, N86 de laboratorio, ambiente QA de AngelPay, TPV · Pago rápido):**
+- Cobro sin contacto aprobado (`code=00`, `S000`): un solo `Payment`, con `entryMode` y los últimos 4 guardados.
+- Rechazo del emisor con el monto de prueba de «fondos insuficientes»: el intento queda descartado, se imprime el ticket de
+  rechazo y no se registra ningún cobro.
+- Cancelación del mismo día de la venta aprobada (`cancelTransaction`): `code=00`, reembolso registrado y el pago queda
+  «Reembolsado».
+- No se puede provocar a mano la respuesta ilegible ni la respuesta perdida: esos caminos quedan cubiertos sólo por la lectura
+  del bytecode.
+
 ## SDK 1.0.23 — cancelar o devolver desde otra terminal (12-nov-2026)
 
 **El AAR:** `app/libs/angelpaySDK-v1.0.23-fat-release.aar`.

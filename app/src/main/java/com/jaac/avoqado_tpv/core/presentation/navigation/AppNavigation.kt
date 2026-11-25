@@ -1735,87 +1735,57 @@ fun AppNavigation(
             val checkoutScope = rememberCoroutineScope()
             // D36: un retiro que quedó anotado sin red sale al volver a abrir Cobrar.
             LaunchedEffect(Unit) { retiroDeVentaSinCobro.reintentarPendientes() }
+            // D671: un «Cobrar» a la vez mientras se prepara el lector, y el cobro sólo se abre si Cobrar sigue arriba.
+            val envio = remember { EnvioDePagoRapido(NavRoute.Checkout.route) }
             CheckoutScreen(
                 onNavigateBack = { navController.safePopBackStack() },
+                // D671: aquí no hay pregunta antes de preparar la venta (Codex r1 #1): con el SERVIDOR caído ese segundo toque es el
+                // que pasa a venta local en sólo efectivo, sin esperar al lector. El mismo carrito vuelve a dar la misma orden
+                // (`externalId`), así que el toque que el candado ignora no deja otra.
                 onNavigateToPayment = { payload ->
-                    checkoutScope.launch {
-                        // 💵 D2 «Cobrar sin red» (21-oct-2026): con el lector de Blumon sin preparar (sin red no
-                        // termina) y la tarjeta sin red según la MISMA regla del toque de «Tarjeta» (tarjetaSinRed),
-                        // el cobro va en sólo efectivo y NO espera al lector (antes ni el efectivo pasaba). Con red,
-                        // igual que hoy: se espera. Con el lector ya listo no hace falta: la pantalla decide sola.
-                        // 💵 C2b: una venta local (sin red, o el servidor no contestó) va SIEMPRE en sólo efectivo, y
-                        // tampoco espera al lector: la tarjeta necesita internet.
-                        val soloEfectivo = payload is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.VentaLocal ||
-                            cobrarSaltaElLector(
-                                hayLectorBlumon = BuildConfig.ENABLE_PAX_SDK,
-                                lectorListo = initializationManager.isInitialized.value,
-                                tarjetaSinRed = tarjetaSinRed(
-                                    requiereServidorDeAvoqado = tpvSettingsRepository.getCurrentSettings().requireAvoqadoServerForCardPayment,
-                                    // Un cobro de Cobrar sin orden (sólo importes); con productos hay orden.
-                                    esCobro = payload is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Fast,
-                                    hayInternet = connectionStateManager.hasInternet(),
-                                    conexionCompleta = connectionStateManager.isFullyConnected(),
-                                ),
-                            )
-                        // D2: con soloEfectivo no se espera al lector (la misma expresión de siempre, dentro del try de D36).
-                        val lectorNoListo = try {
-                            !soloEfectivo && !awaitPaxPaymentReady(context, initializationManager, "Checkout payment")
-                        } catch (salio: kotlinx.coroutines.CancellationException) {
-                            // D36 (Codex r2 #5): la cajera salió de Cobrar mientras se esperaba el lector: la pantalla de cobro nunca
-                            // abrió y la venta ya existe en el SERVIDOR. Corre fuera de esta corrutina (que ya se canceló).
-                            if (payload is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Order) {
-                                retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), payload.orderId)
+                    // 💵 D2 «Cobrar sin red» (21-oct-2026): con el lector de Blumon sin preparar (sin red no
+                    // termina) y la tarjeta sin red según la MISMA regla del toque de «Tarjeta» (tarjetaSinRed),
+                    // el cobro va en sólo efectivo y NO espera al lector (antes ni el efectivo pasaba). Con red,
+                    // igual que hoy: se espera. Con el lector ya listo no hace falta: la pantalla decide sola.
+                    // 💵 C2b: una venta local (sin red, o el servidor no contestó) va SIEMPRE en sólo efectivo, y
+                    // tampoco espera al lector: la tarjeta necesita internet.
+                    val soloEfectivo = payload is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.VentaLocal ||
+                        cobrarSaltaElLector(
+                            hayLectorBlumon = BuildConfig.ENABLE_PAX_SDK,
+                            lectorListo = initializationManager.isInitialized.value,
+                            tarjetaSinRed = tarjetaSinRed(
+                                requiereServidorDeAvoqado = tpvSettingsRepository.getCurrentSettings().requireAvoqadoServerForCardPayment,
+                                // Un cobro de Cobrar sin orden (sólo importes); con productos hay orden.
+                                esCobro = payload is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Fast,
+                                hayInternet = connectionStateManager.hasInternet(),
+                                conexionCompleta = connectionStateManager.isFullyConnected(),
+                            ),
+                        )
+                    // D36: la venta ya existe en el SERVIDOR; si su pantalla de cobro nunca abre, se pide retirarla. Cobrar olvida la llave
+                    // al confirmar la orden, así que cada toque es OTRA orden: la que no abre nunca la abre nadie más (Codex r2 #1).
+                    val orden = (payload as? com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Order)?.orderId
+                    val lanzado = abrirUnSoloCobro(
+                        envio, checkoutScope, navController, getPaymentRoute(), soloEfectivo,
+                        lectorListo = {
+                            // La cajera sale de Cobrar mientras se espera el lector (la corrutina se cancela), o el lector no queda listo.
+                            val listo = try {
+                                awaitPaxPaymentReady(context, initializationManager, "Checkout payment")
+                            } catch (salio: kotlinx.coroutines.CancellationException) {
+                                if (orden != null) retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), orden)
+                                throw salio
                             }
-                            throw salio
-                        }
-                        if (lectorNoListo) {
-                            // D36 (Codex r1 #10): la venta ya se creó en el SERVIDOR y la pantalla de cobro nunca abrió (el lector no
-                            // estuvo listo): no hubo ningún intento posible. El carrito sigue en Cobrar; si vuelve a cobrar, nace otra.
-                            if (payload is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Order) {
-                                retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), payload.orderId)
-                            }
-                            return@launch
-                        }
-                        navController.currentBackStackEntry?.savedStateHandle?.apply {
-                            set("initialAmount", payload.amountPesosString)
-                            set("soloEfectivo", soloEfectivo)
-                            // Tag the source so the Payment success screen knows
-                            // to route "Nueva Orden" / "Nuevo Pago" back to the
-                            // unified Cart instead of the legacy FastPaymentEntry
-                            // or MenuScreen.
-                            set("entryPoint", "checkout")
-                            when (payload) {
-                                is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Order -> {
-                                    set("orderId", payload.orderId)
-                                    set("orderNumber", payload.orderNumber)
-                                    set("wasPayLaterOrder", payload.wasPayLaterOrder)
-                                }
-                                is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Fast -> {
-                                    // Nothing extra — FAST flow uses just initialAmount,
-                                    // matching the existing FastPaymentEntry behavior.
-                                }
-                                is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.CompletedFreeCart -> {
-                                    // Unreachable: CheckoutScreen short-circuits this payload
-                                    // (free cart already closed on the backend; UI shows a
-                                    // snackbar and stays on Checkout instead of navigating).
-                                    // Branch kept exhaustive for the compiler.
-                                }
-                                is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.VentaLocal -> {
-                                    // 💵 «Cobrar» sin red: la venta guardada viaja a la pantalla de cobro (sólo efectivo, arriba),
-                                    // que inserta su fila con la MISMA llave antes de tocar la red (C3). Sin orden: la crea el
-                                    // servidor al subirla.
-                                    set("ventaLocalJson", payload.ventaLocalJson)
-                                }
-                                is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.VentaEnCeroGuardada -> {
-                                    // Unreachable: CheckoutScreen short-circuits this payload (la venta en $0 ya quedó guardada
-                                    // como fila; Cobrar muestra «Venta en $0 guardada» y no abre la pantalla de cobro).
-                                    // Branch kept exhaustive for the compiler.
-                                }
-                            }
-                        }
+                            if (!listo && orden != null) retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), orden)
+                            listo
+                        },
+                        // D671 (Codex r2 #1 y #2): otro toque mientras uno espera, un turno viejo o el cobro del POS arriba.
+                        alNoAbrirse = {
+                            if (orden != null) retiroDeVentaSinCobro.alRegresarSinCobrar(secureStorage.getVenueId(), orden)
+                        },
+                    ) { handle ->
+                        escribirArgumentosDeCobrar(handle, payload, soloEfectivo)
                         Timber.d("💳 Checkout → Payment: origin=${payload.origin} amount=${payload.amountPesosString}")
-                        navController.navigate(getPaymentRoute())
                     }
+                    if (!lanzado) avisarQueYaSeAbreUnCobro(context)
                 },
             )
         }
@@ -2985,6 +2955,8 @@ fun AppNavigation(
         composable(NavRoute.SerializedSale.route) { backStackEntry ->
             val shouldReset = backStackEntry.savedStateHandle.get<Boolean>("resetSerializedSale") == true
             val serializedPaymentScope = rememberCoroutineScope()
+            // D671: una venta a la vez mientras se prepara el lector, y el cobro sólo se abre si la Venta de SIMs sigue arriba.
+            val envio = remember { EnvioDePagoRapido(NavRoute.SerializedSale.route) }
             if (shouldReset) {
                 backStackEntry.savedStateHandle.remove<Boolean>("resetSerializedSale")
             }
@@ -2993,34 +2965,21 @@ fun AppNavigation(
                     navController.safePopBackStack()
                 },
                 onNavigateToPayment = { orderId, orderNumber, orderTotal, isPortabilidad, serialNumber, categoryName ->
-                    serializedPaymentScope.launch {
-                        if (!awaitPaxPaymentReady(context, initializationManager, "Serialized sale payment")) {
-                            return@launch
-                        }
-                        // Navigate to PaymentScreen with order details
-                        // ⚠️ SERIALIZED SALE: Order was created by backend quick-sell API
-                        // and doesn't exist locally. Pass skipLocalOrderValidation flag
-                        // so PaymentViewModel skips the local order lookup.
-                        navController.currentBackStackEntry?.savedStateHandle?.apply {
-                            set("initialAmount", orderTotal.toString())
-                            set("orderId", orderId)
-                            set("orderNumber", orderNumber)  // 🆕 Pass order number for receipt FOLIO
-                            set("skipReview", true)  // Skip tip/review for serialized sales
-                            set("skipLocalOrderValidation", true)  // 🆕 Order exists only on backend
-                            set("isPortabilidad", isPortabilidad)  // Portabilidad: 1 vs 2 proof-of-sale photos
-                            set("serialNumber", serialNumber)  // 📱 ICCID/serial for receipt
-                            set("categoryName", categoryName)  // 📱 Category name for receipt
-                        }
-                        // 📱 Serialized (SIM) sales skip pre-payment verification on
-                        // BOTH hardware paths — Blumon does this too (see
-                        // `submitAmountDirectToMerchant` in PaymentScreen.kt, driven by
-                        // the same `skipReview` flag above). Proof-of-sale photos are
-                        // captured AFTER the charge, on the success screen, not here.
-                        navController.navigate(getPaymentRoute())
+                    // 📱 Serialized (SIM) sales skip pre-payment verification on BOTH hardware paths — Blumon does this too (see
+                    // `submitAmountDirectToMerchant` in PaymentScreen.kt, driven by `skipReview`). Proof-of-sale photos are
+                    // captured AFTER the charge, on the success screen, not here.
+                    val lanzado = abrirUnSoloCobro(
+                        envio, serializedPaymentScope, navController, getPaymentRoute(), soloEfectivo = false,
+                        lectorListo = { awaitPaxPaymentReady(context, initializationManager, "Serialized sale payment") },
+                    ) { handle ->
+                        escribirArgumentosDeVentaSerializada(handle, orderId, orderNumber, orderTotal, isPortabilidad, serialNumber, categoryName)
                         Timber.d("💳 Serialized sale → payment | order $orderId (#$orderNumber), serial=$serialNumber, portabilidad=$isPortabilidad, nexgo=${isAppToAppPayment()}")
                     }
+                    if (!lanzado) avisarQueYaSeAbreUnCobro(context)
                 },
                 resetOnEnter = shouldReset,
+                // D671: se pregunta ANTES de vender la SIM en el servidor (quick-sell): si otra venta espera al lector, no se vende.
+                puedeCobrar = { (!envio.esperando).also { if (!it) avisarQueYaSeAbreUnCobro(context) } },
                 onNavigateToMisSims = {
                     // Plan §3.3 — deep-link when backend returns SIM_NOT_ACCEPTED
                     navController.navigate(NavRoute.MisSims.route)
@@ -3629,10 +3588,14 @@ internal fun prepareManualPaymentArgs(handle: SavedStateHandle, amount: String, 
  *  - [abrir]: además, sólo si la pantalla que lo pidió ([origen]) sigue arriba. Si no (el cobro ya se abrió y un toque cae
  *    en la animación de salida, el POS abrió su cobro primero), no escribe en la entrada de nadie ni apila otro.
  * Una instancia por pantalla (`remember`), usada sólo en el hilo principal.
+ * D671: Cobrar y Venta de SIMs usan la misma pieza ([abrirUnSoloCobro]), con sus propios argumentos.
  */
 internal class EnvioDePagoRapido(private val origen: String) {
     private var ultimoTurno = 0
     private var turnoEsperando: Int? = null
+
+    /** D671: un envío espera al lector. Cobrar y SIMs lo preguntan ANTES de crear la orden o vender la SIM en el servidor. */
+    val esperando: Boolean get() = turnoEsperando != null
 
     fun lanzar(sinEspera: Boolean = false, arrancar: (turno: Int) -> kotlinx.coroutines.Job): Boolean {
         if (!sinEspera && turnoEsperando != null) return false
@@ -3642,16 +3605,109 @@ internal class EnvioDePagoRapido(private val origen: String) {
         return true
     }
 
-    fun abrir(turno: Int, navController: androidx.navigation.NavController, rutaDelCobro: String, amount: String, soloEfectivo: Boolean): Boolean {
+    fun abrir(turno: Int, navController: androidx.navigation.NavController, rutaDelCobro: String, amount: String, soloEfectivo: Boolean): Boolean =
+        abrir(turno, navController, rutaDelCobro) { prepareManualPaymentArgs(it, amount, soloEfectivo) }
+
+    /** D671: [escribir] deja los argumentos del cobro en la entrada de [origen], sólo si este turno abre. */
+    fun abrir(turno: Int, navController: androidx.navigation.NavController, rutaDelCobro: String, escribir: (SavedStateHandle) -> Unit): Boolean {
         val arriba = navController.currentDestination?.route
         if (turno != ultimoTurno || arriba != origen) {
-            Timber.w("💳 [Pago rápido] No se abre el cobro del turno $turno (último $ultimoTurno; arriba «$arriba», origen «$origen») (D667)")
+            Timber.w("💳 [Un cobro] No se abre el cobro del turno $turno (último $ultimoTurno; arriba «$arriba», origen «$origen») (D667/D671)")
             return false
         }
-        navController.currentBackStackEntry?.savedStateHandle?.let { prepareManualPaymentArgs(it, amount, soloEfectivo) }
+        navController.currentBackStackEntry?.savedStateHandle?.let(escribir)
         navController.navigate(rutaDelCobro)
         return true
     }
+}
+
+/**
+ * D671 (21-nov) · TPV SOLA · COBRAR y VENTA DE SIMs. El mismo hueco de D667: con el lector preparándose (renovación de las 23 h,
+ * reparación, cambio de comercio) cada toque arrancaba su espera y, al estar listo, los dos navegaban; el segundo escribía en la
+ * entrada del primer cobro y apilaba otro encima. Ahora pasa por [EnvioDePagoRapido]: un envío a la vez, sólo el último turno
+ * abre y sólo si la pantalla de origen sigue arriba. [soloEfectivo] (sin red) no espera al lector ni respeta el candado.
+ * [lectorListo] es `awaitPaxPaymentReady`. Devuelve false si se ignoró (quien llama avisa).
+ * [alNoAbrirse] corre UNA vez por cada envío que el candado no deja abrir: ignorado mientras otro espera, sustituido por un turno
+ * más nuevo, o con otra pantalla arriba (Codex r2 #1 y #2). No corre si el lector falla o se sale de la pantalla: eso lo ve
+ * [lectorListo]. Cobrar lo usa para retirar con D36 la orden que ya creó y que nunca tendrá pantalla de cobro.
+ */
+internal fun abrirUnSoloCobro(
+    envio: EnvioDePagoRapido,
+    scope: kotlinx.coroutines.CoroutineScope,
+    navController: androidx.navigation.NavController,
+    rutaDelCobro: String,
+    soloEfectivo: Boolean,
+    lectorListo: suspend () -> Boolean,
+    alNoAbrirse: () -> Unit = {},
+    escribir: (SavedStateHandle) -> Unit,
+): Boolean {
+    val lanzado = envio.lanzar(sinEspera = soloEfectivo) { turno ->
+        scope.launch {
+            if (!soloEfectivo && !lectorListo()) return@launch
+            if (!envio.abrir(turno, navController, rutaDelCobro, escribir)) alNoAbrirse()
+        }
+    }
+    if (!lanzado) alNoAbrirse()
+    return lanzado
+}
+
+/** Lo que «Cobrar» le deja a la pantalla de cobro (movido tal cual de `onNavigateToPayment`, D671). */
+internal fun escribirArgumentosDeCobrar(
+    handle: SavedStateHandle,
+    payload: com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload,
+    soloEfectivo: Boolean,
+) {
+    handle.set("initialAmount", payload.amountPesosString)
+    handle.set("soloEfectivo", soloEfectivo)
+    // Tag the source so the Payment success screen knows to route "Nueva Orden" / "Nuevo Pago" back to the unified Cart
+    // instead of the legacy FastPaymentEntry or MenuScreen.
+    handle.set("entryPoint", "checkout")
+    when (payload) {
+        is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Order -> {
+            handle.set("orderId", payload.orderId)
+            handle.set("orderNumber", payload.orderNumber)
+            handle.set("wasPayLaterOrder", payload.wasPayLaterOrder)
+        }
+        is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Fast -> {
+            // Nothing extra — FAST flow uses just initialAmount, matching the existing FastPaymentEntry behavior.
+        }
+        is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.CompletedFreeCart -> {
+            // Unreachable: CheckoutScreen short-circuits this payload (free cart already closed on the backend; UI shows a
+            // snackbar and stays on Checkout instead of navigating). Branch kept exhaustive for the compiler.
+        }
+        is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.VentaLocal -> {
+            // 💵 «Cobrar» sin red: la venta guardada viaja a la pantalla de cobro (sólo efectivo), que inserta su fila con la MISMA
+            // llave antes de tocar la red (C3). Sin orden: la crea el servidor al subirla.
+            handle.set("ventaLocalJson", payload.ventaLocalJson)
+        }
+        is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.VentaEnCeroGuardada -> {
+            // Unreachable: CheckoutScreen short-circuits this payload (la venta en $0 ya quedó guardada como fila; Cobrar muestra
+            // «Venta en $0 guardada» y no abre la pantalla de cobro). Branch kept exhaustive for the compiler.
+        }
+    }
+}
+
+/**
+ * Lo que la Venta de SIMs le deja a la pantalla de cobro (movido tal cual de `onNavigateToPayment`, D671).
+ * ⚠️ La orden la creó el quick-sell del servidor y no existe en el aparato: `skipLocalOrderValidation`.
+ */
+internal fun escribirArgumentosDeVentaSerializada(
+    handle: SavedStateHandle,
+    orderId: String,
+    orderNumber: String?,
+    orderTotal: String,
+    isPortabilidad: Boolean,
+    serialNumber: String?,
+    categoryName: String?,
+) {
+    handle.set("initialAmount", orderTotal)
+    handle.set("orderId", orderId)
+    handle.set("orderNumber", orderNumber)  // 🆕 Pass order number for receipt FOLIO
+    handle.set("skipReview", true)  // Skip tip/review for serialized sales
+    handle.set("skipLocalOrderValidation", true)  // 🆕 Order exists only on backend
+    handle.set("isPortabilidad", isPortabilidad)  // Portabilidad: 1 vs 2 proof-of-sale photos
+    handle.set("serialNumber", serialNumber)  // 📱 ICCID/serial for receipt
+    handle.set("categoryName", categoryName)  // 📱 Category name for receipt
 }
 
 /**
@@ -3737,9 +3793,9 @@ private fun formatAmountFromCents(amountCents: Long): String {
         .toPlainString()
 }
 
-/** D667: un segundo «Cobrar» de Pago rápido mientras el primero se prepara no hace nada, pero se dice. */
+/** D667/D671: un segundo «Cobrar» (Pago rápido, Cobrar, Venta de SIMs) mientras el primero se prepara no hace nada, pero se dice. */
 private fun avisarQueYaSeAbreUnCobro(context: Context) {
-    Timber.w("💳 [Pago rápido] «Cobrar» ignorado: ya se está abriendo un cobro (D667)")
+    Timber.w("💳 [Un cobro] «Cobrar» ignorado: ya se está abriendo un cobro (D667/D671)")
     Toast.makeText(context, "Ya se está abriendo un cobro. Espera un momento.", Toast.LENGTH_SHORT).show()
 }
 

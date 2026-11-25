@@ -313,6 +313,32 @@ class FastPaymentRecorderTest {
     }
 
     @Test
+    fun `D7 la tarjeta recuperada manda la edad de su intento y una venta normal o el efectivo no`() = runTest {
+        val captured = mutableListOf<FastPaymentRequest>()
+        coEvery { apiService.recordFastPayment(any(), capture(captured)) } returns successResponse()
+        val tarjeta = CardDetails(
+            maskedPan = "411111******1111",
+            cardBrand = CardBrand.VISA,
+            entryMode = CardEntryMode.CHIP,
+            cardNature = CardNature.CREDIT,
+        )
+
+        recorder.recordPayment(cardContext().copy(capturadoEnAparato = 1_763_830_000_000L), tarjeta, "067718", "000000067718")
+        recorder.recordPayment(cardContext(), tarjeta, "067719", "000000067719")
+        recorder.recordPayment(
+            cashContextWithLeakedMerchantId().copy(capturadoEnAparato = 1_763_830_000_000L),
+            CardDetails.CASH,
+            "EFECTIVO",
+            "CASH-1",
+        )
+
+        // Una DURACIÓN con el reloj de la terminal (ahora − intento), nunca la hora: el servidor la resta a su propia llegada.
+        val edad = captured[0].edadDelIntentoMs!!
+        assertThat(edad).isAtLeast(System.currentTimeMillis() - 1_763_830_000_000L - 60_000L)
+        assertThat(captured.drop(1).map { it.edadDelIntentoMs }).containsExactly(null, null).inOrder()
+    }
+
+    @Test
     fun `recordPayment sends issuer evidence without changing legacy international flag`() = runTest {
         val captured = slot<FastPaymentRequest>()
         coEvery { apiService.recordFastPayment(any(), capture(captured)) } returns successResponse()

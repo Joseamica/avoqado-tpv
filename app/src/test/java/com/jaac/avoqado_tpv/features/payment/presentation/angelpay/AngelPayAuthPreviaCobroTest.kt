@@ -1231,4 +1231,46 @@ class AngelPayAuthPreviaCobroTest {
         }
     }
 
+
+    @Test
+    fun `D2 Codex r2 4 si el POS cancela mientras se lee la sesion viva no se pisa el Cancelado`() = runTest(testDispatcher) {
+        sesionVencidaTrasOchoMinutos()
+        lateinit var vm: AngelPayPaymentViewModel
+        reeleccionExitosa {
+            // La lectura de la sesión viva (candado de alineación) tarda; en ese rato el POS cancela y la lectura falla.
+            coEvery { sdkGateway.getUserMerchants() } answers {
+                vm.ponerCampo("cobroCanceladoPorElPos", true)
+                vm.ponerCampo("_state", AngelPayPaymentState.Cancelled)
+                Result.failure(IllegalStateException("sin respuesta"))
+            }
+        }
+        vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            runCurrent()
+
+            assertThat(vm.state.value).isEqualTo(AngelPayPaymentState.Cancelled)
+            coVerify(exactly = 0) { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D2 Codex r2 5 una excepcion al volver a elegir no tumba el cobro y queda el error de hoy`() = runTest(testDispatcher) {
+        sesionVencidaTrasOchoMinutos()
+        coEvery { angelPayAuthRepository.completeMerchantSelection(11, "TOKEN-8MIN") } throws IllegalStateException("Room no guardó")
+        val vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            runCurrent()
+
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("quedó en otro comercio")
+            assertThat(candado.isLocked).isFalse()
+            coVerify(exactly = 0) { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
 }

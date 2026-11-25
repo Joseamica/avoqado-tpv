@@ -2557,13 +2557,16 @@ class AngelPayPaymentViewModel @Inject constructor(
         // hz:2c70dfc6:D2: si esa auth rehízo el login y la cuenta pide elegir comercio, se vuelve a elegir el MISMO
         // (como al entrar al cobro) y el candado de abajo se revisa igual, sin aflojarse.
         val reeleccionIntentada = reelegirComercioTrasLoginNuevo()
+        val sesionCobrable = sessionAlignedWithSelectedMerchant() &&
+            (!reeleccionIntentada || comercioReelegidoSigueCobrable())
         if (reeleccionIntentada && cobroCanceladoPorElPos) {
-            // Codex r1 #4: el POS canceló mientras se elegía: la pantalla ya dice «Cancelado»; nada que pisar ni lanzar.
+            // Codex r1 #4 / r2 #4: el POS canceló mientras se elegía o se leía la sesión viva: la pantalla ya dice
+            // «Cancelado» y la bandeja ya escribió el desenlace; nada que pisar ni lanzar.
             Timber.w("🛑 [AngelPay] El POS canceló mientras se volvía a elegir el comercio: no se lanza el SDK")
             clearChargingOnTerminal()
             return
         }
-        if (!sessionAlignedWithSelectedMerchant() || (reeleccionIntentada && !comercioReelegidoSigueCobrable())) {
+        if (!sesionCobrable) {
             // 📡 T36: antes de la libreta y del SDK — mismo camino que la auth previa (retenido + reloj de abandono).
             fallaAntesDeAutorizar(
                 base = "La sesión de AngelPay quedó en otro comercio. Vuelve a seleccionar el comercio.",
@@ -5148,7 +5151,15 @@ class AngelPayPaymentViewModel @Inject constructor(
             return false
         }
         Timber.i("🔶 [AngelPay] La auth antes de cobrar pidió elegir comercio: vuelvo a elegir el $targetId")
-        val elegido = angelPayAuthRepository.completeMerchantSelection(targetId, pide.temporaryToken)
+        // Codex r2 #5: una falla fuera del Result (p. ej. Room al guardar el comercio activo) no tumba el cobro: es un fallo más
+        // y el candado da el error de hoy, con su final retenido (H.3).
+        val elegido = try {
+            angelPayAuthRepository.completeMerchantSelection(targetId, pide.temporaryToken)
+        } catch (cancelada: CancellationException) {
+            throw cancelada
+        } catch (error: Exception) {
+            Result.failure(error)
+        }
         if (elegido.isFailure) {
             Timber.e(elegido.exceptionOrNull(), "❌ [AngelPay] No se pudo volver a elegir el comercio $targetId antes de cobrar")
         }

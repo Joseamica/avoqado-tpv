@@ -172,7 +172,7 @@ interface PaymentAttemptDao {
             :shiftMembership, :localShiftSessionId, :cashDrawerSessionId
         WHERE (:shiftMembership != 'MANAGED' OR EXISTS (SELECT 1 FROM local_shift_sessions
             WHERE venue_id = :venueId AND local_session_id = :localShiftSessionId AND local_status = 'OPEN'))
-        AND NOT EXISTS (SELECT 1 FROM payment_attempts WHERE """ + PaymentAttemptEntity.SQL_APARTA_EL_APARATO + """)
+        AND (:otroIntentoConElLector = 0 OR NOT EXISTS (SELECT 1 FROM payment_attempts WHERE """ + PaymentAttemptEntity.SQL_APARTA_EL_APARATO + """))
         AND (:orderJsonFragment IS NULL OR NOT EXISTS (
             SELECT 1 FROM payment_attempts WHERE """ + PaymentAttemptEntity.SQL_CERCA_LA_VENTA + """
             AND instr(payment_context_json, :orderJsonFragment) > 0))
@@ -188,6 +188,12 @@ interface PaymentAttemptDao {
         contextJson: String, orderJsonFragment: String?, now: Long,
         terminalPaymentRequestId: String?, processToken: String,
         shiftMembership: String = "UNKNOWN", localShiftSessionId: String? = null, cashDrawerSessionId: String? = null,
+        /**
+         * D26 (22-nov): ¿OTRO intento de este proceso tiene el lector o el SDK en uso ahora (`PaymentAttemptLedger.hayLectorEnUso`)?
+         * Sólo entonces la cerca del APARATO lee las notas de la libreta; sin ninguno, una nota que se quedó «corriendo» ya no aparta
+         * la terminal. La cerca de la VENTA no cambia (sigue con [processToken]: la cuarentena de este proceso cerca su cuenta).
+         */
+        otroIntentoConElLector: Boolean = true,
     ): Long
 
     /**
@@ -440,8 +446,8 @@ interface PaymentAttemptDao {
                (shift_membership != 'MANAGED' OR EXISTS (SELECT 1 FROM local_shift_sessions
                    WHERE venue_id = payment_attempts.venue_id AND local_session_id = payment_attempts.local_shift_session_id
                    AND local_status = 'OPEN'))
-               AND NOT EXISTS (SELECT 1 FROM payment_attempts other WHERE other.attempt_id != :attemptId
-                           AND """ + PaymentAttemptEntity.SQL_EJECUCION_VIVA + """)
+               AND (:otroIntentoConElLector = 0 OR NOT EXISTS (SELECT 1 FROM payment_attempts other WHERE other.attempt_id != :attemptId
+                           AND """ + PaymentAttemptEntity.SQL_EJECUCION_VIVA + """))
                AND NOT EXISTS (SELECT 1 FROM payment_attempts other WHERE other.attempt_id != :attemptId
                    AND """ + PaymentAttemptEntity.SQL_CERCA_LA_VENTA + """
                    AND instr(payment_attempts.payment_context_json, '"orderId":"') > 0
@@ -452,7 +458,9 @@ interface PaymentAttemptDao {
                                     11 + instr(substr(payment_attempts.payment_context_json,
                                                       instr(payment_attempts.payment_context_json, '"orderId":"') + 11), '"'))) > 0)))"""
     )
-    suspend fun casTransitionRow(attemptId: String, expectedStates: List<String>, newState: String, now: Long, processToken: String): Int
+    suspend fun casTransitionRow(attemptId: String, expectedStates: List<String>, newState: String, now: Long, processToken: String,
+        /** D26: como en [reserveTerminal] — la cerca del aparato sólo lee las notas si OTRO intento tiene el lector en uso. */
+        otroIntentoConElLector: Boolean = true): Int
 
     @Query("SELECT * FROM pending_payments WHERE venue_id = :venueId AND idempotency_key = :key LIMIT 2")
     suspend fun queuedSalesForHandoff(venueId: String, key: String): List<com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity>
@@ -466,9 +474,10 @@ interface PaymentAttemptDao {
 
     /** Compatibilidad de callers antiguos: sólo un sucesor durable y demostrado puede asumir la obligación. */
     @Transaction
-    suspend fun casTransition(attemptId: String, expectedStates: List<String>, newState: String, now: Long, processToken: String): Int {
+    suspend fun casTransition(attemptId: String, expectedStates: List<String>, newState: String, now: Long, processToken: String,
+        otroIntentoConElLector: Boolean = true): Int {
         if (newState != PaymentAttemptEntity.STATE_ENTREGADA_A_COLA)
-            return casTransitionRow(attemptId, expectedStates, newState, now, processToken)
+            return casTransitionRow(attemptId, expectedStates, newState, now, processToken, otroIntentoConElLector)
         val owner = getById(attemptId) ?: return 0
         if (owner.state !in expectedStates) return 0
         val status = if (owner.kind == PaymentAttemptEntity.KIND_REFUND) {

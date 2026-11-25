@@ -22,7 +22,7 @@ class PaymentStateHolder @Inject constructor() : PaymentStateProvider {
      * sesión ni de comercio a media llamada, el heartbeat, un segundo pedido de devolución). La devolución NO escribe
      * [charging]: si lo soltara al terminar, podía dejar sin protección a una venta que arrancó después (auditoría del 29-sep).
      */
-    override fun isCharging(): Boolean = charging.get() || isRefundInFlight()
+    override fun isCharging(): Boolean = charging.get() || isRefundInFlight() || cobroSinPantallaEnCurso(System.nanoTime())
     fun setCharging(value: Boolean) { charging.set(value) }
 
     // Non-resolved (working) AngelPay screen state — see [PaymentStateProvider.isChargeAttemptActive].
@@ -71,6 +71,16 @@ class PaymentStateHolder @Inject constructor() : PaymentStateProvider {
     internal fun devolucionEnCurso(ahoraNanos: Long): Boolean {
         val desde = devolucionDesde.get()
         return desde != 0L && ahoraNanos - desde < java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(TOPE_DEVOLUCION_EN_CURSO_MS)
+    }
+
+    // 🔓 D26 (Codex r1 #6 y r2 #5): la pantalla de AngelPay murió con el SDK ya lanzado. La ventana del dinero no se queda arriba para
+    // siempre (frenaba el cambio de comercio hasta reiniciar): dura lo que el lector de la libreta puede seguir contando, y se apaga sola.
+    private val cobroSinPantallaDesde = AtomicLong(0L)
+    fun marcarCobroSinPantalla(ahoraNanos: Long = System.nanoTime()) { cobroSinPantallaDesde.set(if (ahoraNanos == 0L) 1L else ahoraNanos) }
+    internal fun cobroSinPantallaEnCurso(ahoraNanos: Long): Boolean {
+        val desde = cobroSinPantallaDesde.get()
+        return desde != 0L && ahoraNanos - desde < java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
+            com.jaac.avoqado_tpv.features.payment.data.ledger.TOPE_LECTOR_EN_USO_MS)
     }
 
     companion object {

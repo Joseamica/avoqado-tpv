@@ -85,27 +85,20 @@ public enum class ResultadoDelCorte { CORTADO, YA_SALIO, SIN_CONFIRMAR, SIN_INTE
 
 /**
  * El motor de la venta: cobra, espera, pide permiso al SERVIDOR y reversa, EXACTAMENTE según la tabla de decisiones (secciones
- * A-H, rediseño v3 y parada 2). A los 30 s de t0 termina la transmisión en vivo del intento (`PorConfirmar` si todavía no hay
- * final); lo que ve la pantalla lo decide quien usa el motor. La cancelación con la tarjeta (T9) entra por la MISMA puerta,
- * el mismo `Registro`, el mismo corte y las mismas salidas; sólo cambia lo de en medio, y nunca se reversa. Sólo AFIRMA con
- * evidencia concluyente; ante cualquier duda después de salir al banco, `PorConfirmar`: el motor no tiene veredicto, que no es
- * un «no se cobró».
+ * A-H, rediseño v3 y parada 2). A los 30 s de t0 termina la transmisión en vivo del intento (`PorConfirmar` si el motor todavía
+ * no decidió un final); lo que ve la pantalla lo decide quien usa el motor. La cancelación con la tarjeta (T9) entra por la
+ * MISMA puerta, el mismo `Registro`, el mismo corte y las mismas salidas; sólo cambia lo de en medio, y nunca se reversa. Sólo
+ * AFIRMA con evidencia concluyente; ante cualquier duda después de salir al banco, `PorConfirmar`: el motor no tiene veredicto,
+ * que no es un «no se cobró».
  *
- * De dónde sale cada final. Para quien lo integra: un `PorConfirmar` nunca prueba que la fila ya cerró; la verdad es
- * `Libreta.buscar`.
- * - `Aprobado`, `Rechazado`, `Cancelada`, `NoSeCobro` y `NoSalioAlBanco` salen de la fila ya guardada: se leen DESPUÉS del
- *   commit de la escritura que los decide. Única excepción: el `NoSalioAlBanco(INTERRUMPIDO)` de la salida de emergencia
- *   ([Registro.soltarDesdeMemoria]: `fondo` cancelado o una excepción antes del punto de no retorno) sale de la memoria con la
- *   fila todavía `ANOTADO`; después la pasa a `NO_SALIO` el veto o, si el proceso muere, el siguiente [recuperar].
- * - El `PorConfirmar` de los 30 s ([soltarALaCajera]) y el de la salida de emergencia se publican desde la MEMORIA, antes de
- *   tocar la libreta. En ese instante la fila suele seguir `ENVIADO`, y hasta puede traer ya un definitivo guardado que todavía
- *   no se publica (ése lo reemplaza enseguida). Los demás `PorConfirmar` dicen que la fila está en duda (`ENVIADO` o `NO_SE`)
- *   o que no se pudo leer.
- * - La fila la cierra después el propio intento, que sigue en [fondo]: lo que esté guardando (una aprobación, un rechazo o un
- *   «no salió»), el reverso al terminar o al vencer su techo (t0 + 45 s) o, en la cancelación, su respuesta. Si el proceso
- *   muere antes, la cierra el siguiente [recuperar] (`ENVIADO` ⇒ `NO_SE`, sin reversar). Un `NO_SE` todavía puede pasar a
- *   `NO_SE_COBRO` con el reverso o con un acuse del SERVIDOR que llega después; un definitivo tardío reemplaza al
- *   `PorConfirmar`, también en [resolucionesTardias].
+ * Ningún evento es prueba del estado guardado de la fila: quien lo necesita lee `Libreta.buscar`. Un final que decide una
+ * escritura se publica después del commit de esa escritura; el `PorConfirmar` de los 30 s ([soltarALaCajera]) y el de la
+ * salida de emergencia ([Registro.soltarDesdeMemoria]) se publican desde la memoria. Así, un `PorConfirmar`, o un
+ * `NoSalioAlBanco` contestado sin una escritura propia, puede salir con la fila todavía abierta (`ANOTADO`, `ENVIADO`),
+ * cerrándose, o con un final ya guardado que todavía no se publica. Una fila abierta la puede cerrar el propio intento o un
+ * [recuperar] posterior, que la app debe volver a llamar (no sólo al arrancar); [recuperar] nunca reversa, y lo que hace con
+ * cada fila lo dice `Libreta.recuperarAlArrancar`. Un definitivo que llega después reemplaza al `PorConfirmar` y sale también
+ * por [resolucionesTardias].
  *
  * Bloque R: en el instante en que una venta se queda sin un desenlace definitivo del importe completo y el motor va a intentar
  * deshacerla (los tres caminos al reverso: sin respuesta, una respuesta que no sirve, un parcial), avisa `RevisandoConElBanco`,
@@ -375,11 +368,11 @@ public class MotorDeCobro internal constructor(
      * y no sale de ahí mientras alguien admite (v3.1). Un «sin fila» viejo contra el veto de [cortar] lo arbitra `anotar`.
      *
      * Contrato de quien escucha (el de hoy: el motor NO aísla la publicación de quien escucha). Los eventos se publican de forma
-     * síncrona desde la propia corrutina del motor ([Registro.emitir]). Quien recolecta este `Flow` (o [resolucionesTardias])
-     * no debe bloquear dentro del colector ni recolectar en un despachador que no despacha (`Dispatchers.Unconfined`, o
-     * `Dispatchers.Main.immediate` si el motor publica desde el hilo principal): ahí el colector corre DENTRO de la
-     * publicación, en el hilo del motor, y lo que tarde retrasa al intento (el reverso y, con él, la hora de su final). Que
-     * quien escucha se vaya no cambia nada del intento.
+     * síncrona desde el hilo que publica (normalmente el del motor; [Registro.emitir]). Quien recolecta este `Flow` (o
+     * [resolucionesTardias]) no debe bloquear dentro del colector ni recolectar en un despachador que no despacha
+     * (`Dispatchers.Unconfined`, o `Dispatchers.Main.immediate` si se publica desde el hilo principal): ahí el colector corre
+     * DENTRO de la publicación, en ese hilo, y lo que tarde puede retrasar al intento (el reverso y, con él, la hora de su
+     * final). Que quien escucha se vaya no cambia nada del intento.
      */
     public fun cobrar(s: SolicitudDeVenta): Flow<EventoDeCobro> = entrar(s)
 
@@ -948,9 +941,9 @@ public class MotorDeCobro internal constructor(
 
     /**
      * T9: la cancelación ya salió. Un solo reloj (`peorCasoCajera`) y nada se tira ([conBuzon]); a los `peorCasoCajera` termina
-     * la transmisión en vivo, con `PorConfirmar` desde la memoria si todavía no hay final ([soltarALaCajera], que sin reverso no
-     * toca la fila); la pantalla la decide quien usa el motor. El desenlace va a la fila por CAS desde `ENVIADO`. Nunca se
-     * reversa: `NoSe` ⇒ `NO_SE` + `PorConfirmar`.
+     * la transmisión en vivo, con `PorConfirmar` desde la memoria si el motor todavía no decidió un final ([soltarALaCajera],
+     * que sin reverso no toca la fila); la pantalla la decide quien usa el motor. El desenlace va a la fila por CAS desde
+     * `ENVIADO`. Nunca se reversa: `NoSe` ⇒ `NO_SE` + `PorConfirmar`.
      */
     private suspend fun despuesDeCancelar(r: Registro, salida: Salida, t0: Long) {
         r.emitir(EventoDeCobro.Autorizando)
@@ -984,13 +977,12 @@ public class MotorDeCobro internal constructor(
     }
 
     /**
-     * G con la vara A (R4-1): a los `peorCasoCajera` desde t0 termina la transmisión en vivo. Quien escucha recibe `PorConfirmar`
-     * PRIMERO, publicado desde la MEMORIA y sin tocar Room: el motor todavía no tiene veredicto y la fila NO está cerrada (en ese
-     * instante suele seguir `ENVIADO`). Después, en [fondo] y sin que nadie la espere, la fila pasa a `NO_SE` sólo si sigue
-     * `ENVIADO` con el reverso ya comprometido (y aun así el reverso o un acuse pueden llevarla luego a `NO_SE_COBRO`); sin
-     * compromiso (reverso `NINGUNO`, como en toda cancelación) o si esa escritura falla, se queda `ENVIADO`. La cierra el propio
-     * intento, que sigue en [fondo] (ver la clase), o, si el proceso muere, el siguiente `recuperar` (`ENVIADO` ⇒ `NO_SE`);
-     * mientras, H reconstruye un `ENVIADO` como `PorConfirmar`. Qué ve la cajera lo decide quien usa el motor.
+     * G con la vara A (R4-1): a los `peorCasoCajera` desde t0 termina la transmisión en vivo. Si el motor todavía no decidió un
+     * final, quien escucha recibe `PorConfirmar` PRIMERO, publicado desde la memoria y sin tocar Room: el motor no tiene
+     * veredicto, y la fila puede no estar cerrada (suele seguir `ENVIADO`, o ya trae un final guardado que todavía no se
+     * publica). Después, en [fondo] y sin que nadie la espere, se intenta pasar la fila de `ENVIADO` a `NO_SE` si su reverso ya
+     * está comprometido; si no aplica o falla, se queda como estaba. Una fila abierta la puede cerrar el propio intento o un
+     * `recuperar` posterior (ver la clase). Qué ve la cajera lo decide quien usa el motor.
      */
     private fun soltarALaCajera(r: Registro) {
         if (r.terminado) return

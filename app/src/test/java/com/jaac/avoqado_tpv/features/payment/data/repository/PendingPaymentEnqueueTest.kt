@@ -133,6 +133,26 @@ class PendingPaymentEnqueueTest {
         assertThat(result.isFailure).isTrue()
     }
 
+    @Test
+    fun `efectivo con la MISMA llave y el mismo dinero ya SUCCESS es esta venta ya subida - devuelve exito`() = runTest {
+        // Encargo 97042c, Codex r1 #8: el worker la subió entre el release de la pantalla y este encolado.
+        val efectivo = queuedPayment(reference = "CASH-1", idempotencyKey = "de9d91c6-13fc-40e8-8044-27e129096ca8").copy(
+            merchantAccountId = "", maskedPan = null, cardBrand = null, entryMode = "MANUAL", authorizationNumber = "EFECTIVO",
+        )
+        assertThat(efectivo.toCardDetails().isCash).isTrue()
+        // La fila que ya existe es la de ESTA venta (la primera que se intentó insertar), ya SUCCESS.
+        var existente: PendingPaymentEntity? = null
+        coEvery { dao.insert(any()) } answers {
+            if (existente == null) existente = firstArg<PendingPaymentEntity>().copy(syncStatus = "SUCCESS")
+            0L
+        }
+        coEvery { dao.findByReference("CASH-1", "venue-1") } answers { existente }
+
+        assertThat(repo.enqueue(efectivo).isSuccess).isTrue()
+        // Otra llave con la misma referencia sigue siendo OTRO pago: fallo visible.
+        assertThat(repo.enqueue(efectivo.copy(idempotencyKey = "otra-llave")).isFailure).isTrue()
+    }
+
     // ------------------------------------------------------------------
     // Fix round 1, finding 1 — findByReference sin scope de venue leía la fila de
     // OTRO venue (o de OTRO pago con distinta idempotencyKey) como "el mismo pago,

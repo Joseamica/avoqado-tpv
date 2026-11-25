@@ -154,6 +154,16 @@ class ConnectionStateManager @Inject constructor() {
     }
 
     /**
+     * ¿Hay internet pero el SERVIDOR no contesta? Es la franja roja «Sin conexión al servidor» (2 latidos fallidos). Ahí una
+     * petición al servidor sólo espera su plazo: el efectivo va directo a la cola (encargo 97042c). Sin internet NO cuenta:
+     * esa petición falla al instante y conserva su camino de siempre.
+     */
+    fun servidorMudo(): Boolean {
+        val state = _connectionState.value
+        return state.hasInternet && !state.hasServer
+    }
+
+    /**
      * Check if device has internet connectivity (regardless of server reachability).
      * Used by flag-gated preflight that only requires processor connectivity, not our backend.
      */

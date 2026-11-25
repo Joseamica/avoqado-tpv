@@ -140,13 +140,15 @@ class LedgerApprovalRecovery(
         val context: PaymentContext = when {
             row.processor == PaymentAttemptEntity.PROCESSOR_ANGELPAY ->
                 gson.fromJson(row.paymentContextJson, PaymentContext.AngelPayPayment::class.java)
-                    .copy(authorizationCode = row.authCode.orEmpty(), referenceNumber = row.referenceNumber.orEmpty())
+                    .copy(authorizationCode = row.authCode.orEmpty(), referenceNumber = row.referenceNumber.orEmpty(),
+                        capturadoEnAparato = row.createdAt)
             row.recordingRoute == PaymentAttemptEntity.ROUTE_ORDER ->
                 gson.fromJson(row.paymentContextJson, PaymentContext.OrderPayment::class.java)
                     .copy(blumonOperationNumber = operation)
             row.recordingRoute == PaymentAttemptEntity.ROUTE_FAST ->
                 gson.fromJson(row.paymentContextJson, PaymentContext.FastPayment::class.java)
-                    .copy(blumonOperationNumber = operation)
+                    // D7: la hora del intento viaja para que el servidor avise si en medio se cobró en efectivo.
+                    .copy(blumonOperationNumber = operation, capturadoEnAparato = row.createdAt)
             else -> return null
         }
         // Old SHADOW rows have only RetryContext/partial JSON. Never invent the missing

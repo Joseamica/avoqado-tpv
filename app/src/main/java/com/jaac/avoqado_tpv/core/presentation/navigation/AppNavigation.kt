@@ -145,6 +145,7 @@ interface AppNavigationEntryPoint {
     fun printerManager(): com.jaac.avoqado_tpv.core.printer.PrinterManager
     fun paymentApiService(): com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
     fun modulesRepository(): com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
+    fun apiDelArranque(): com.jaac.avoqado_tpv.core.data.network.ApiDelArranque
     fun terminalConfigRepository(): com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
     fun initializationManager(): com.jaac.avoqado_tpv.features.payment.data.InitializationManager
     fun updateRequestManager(): UpdateRequestManager
@@ -464,6 +465,7 @@ fun AppNavigation(
     val kioskModeManager = remember { kioskEntryPoint.kioskModeManager() }
     val isKioskMode by kioskModeManager.isKioskMode.collectAsStateWithLifecycle()
     val modulesRepository = remember { kioskEntryPoint.modulesRepository() }
+    val apiDelArranque = remember { kioskEntryPoint.apiDelArranque() }
     val terminalConfigRepository = remember { kioskEntryPoint.terminalConfigRepository() }
     val initializationManager = remember { kioskEntryPoint.initializationManager() }
     val isBlumonSdkInitialized by initializationManager.isInitialized.collectAsStateWithLifecycle()
@@ -623,6 +625,8 @@ fun AppNavigation(
             )
                 // Parte 2 (Codex r2 #1): tampoco mientras cobra con saldo, ni sobre una cuenta con un saldo sin confirmar.
                 ?: cobroConSaldo.motivoParaNoCobrarRemoto(request.orderId)
+                // 6a2254: tampoco sobre la cuenta cuya pantalla muestra «Error registrando pago en efectivo» (PAX). Sólo esa cuenta.
+                ?: CobroRemotoDelPos.motivoPorEfectivoSinRegistro(request.orderId, paymentStateProvider)
             if (motivoParaNoIniciar != null) {
                 Timber.w("⚠️ [Remote] No se inicia el cobro (%s) - amount: ${request.amountCents}", motivoParaNoIniciar)
                 // If this came via socket, send rejection back so iOS doesn't hang
@@ -1251,6 +1255,7 @@ fun AppNavigation(
                 deviceInfoManager = deviceInfoManager,
                 secureStorage = secureStorage,
                 modulesRepository = modulesRepository,
+                apiDelArranque = apiDelArranque,
                 onNavigateToActivation = {
                     navController.navigate(NavRoute.Activation.route) {
                         popUpTo(NavRoute.Splash.route) { inclusive = true }
@@ -3407,6 +3412,7 @@ private fun SplashScreen(
     deviceInfoManager: DeviceInfoManager,
     secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
     modulesRepository: com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository,
+    apiDelArranque: com.jaac.avoqado_tpv.core.data.network.ApiDelArranque,
     onNavigateToActivation: () -> Unit,
     onNavigateToLogin: () -> Unit,
     onNavigateToHome: () -> Unit
@@ -3419,7 +3425,11 @@ private fun SplashScreen(
         // 🚀 Optimization: Run network call on IO thread to prevent freezing Splash animation
         // Previously caused ~2.6s UI freeze (160 skipped frames)
         val backendStatusResult = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            deviceInfoManager.checkActivationStatusWithBackend()
+            // 🚀 Encargo 097e01: con tope corto y fila propia (ApiDelArranque): con el SERVIDOR mudo falla en ~3 s y sigue el
+            // camino «sin red» de abajo, en vez de esperar 25 s (62 s medidos en la PAX con las dos preguntas).
+            deviceInfoManager.checkActivationStatusWithBackend { serial, environment ->
+                apiDelArranque.checkActivationStatus(serial, environment)
+            }
         }
 
         when (backendStatusResult) {
@@ -3434,7 +3444,7 @@ private fun SplashScreen(
                     // ✅ Backend confirms activation → fetch modules BEFORE navigating
                     Timber.d("✅ Backend confirms activation - fetching modules")
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        modulesRepository.fetchAndCache()
+                        modulesRepository.fetchAndCache { venueId -> apiDelArranque.getModules(venueId) }
                     }
 
                     // Now check session and navigate
@@ -3460,7 +3470,7 @@ private fun SplashScreen(
                     // Trust local venueId when offline - try to fetch modules anyway
                     Timber.d("📱 Offline mode - trusting local venueId, trying to fetch modules")
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        modulesRepository.fetchAndCache()
+                        modulesRepository.fetchAndCache { venueId -> apiDelArranque.getModules(venueId) }
                     }
 
                     val hasValidSession = secureStorage.isAuthenticated()

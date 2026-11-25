@@ -137,4 +137,53 @@ class SyncOutcomeTest {
         assertThat(classifySyncFailure(BackendHttpException(401, "")))
             .isInstanceOf(SyncOutcome.Retryable::class.java)
     }
+
+    // ── Encargo 29ef3d: un intento en el que NADIE contestó no gasta un intento de la cola ──
+
+    @Test
+    fun `plazo vencido o no poder conectar cuenta como nadie contesto`() {
+        assertThat(nadieContesto(SocketTimeoutException("timeout"))).isTrue()
+        assertThat(nadieContesto(java.io.InterruptedIOException("timeout"))).isTrue() // callTimeout de OkHttp
+        assertThat(nadieContesto(java.net.ConnectException("Failed to connect"))).isTrue()
+        assertThat(nadieContesto(java.net.UnknownHostException("api"))).isTrue()
+        assertThat(nadieContesto(java.net.NoRouteToHostException("no route"))).isTrue()
+    }
+
+    @Test
+    fun `P1 cualquier respuesta HTTP cuenta, tambien 502 503 504 (los registradores tiran el code de los 5xx)`() {
+        // Codex r1: el SERVIDOR contesta 503 propios (PAYMENT_REGISTRATION_UNRESOLVED_*) y el registrador no conserva el code.
+        assertThat(nadieContesto(BackendHttpException(502, "Bad Gateway"))).isFalse()
+        assertThat(nadieContesto(BackendHttpException(503, "Service Unavailable"))).isFalse()
+        assertThat(nadieContesto(BackendHttpException(504, "Gateway Timeout"))).isFalse()
+        assertThat(nadieContesto(BackendHttpException(500, "Internal Server Error"))).isFalse()
+        assertThat(nadieContesto(BackendHttpException(429, "Too Many Requests"))).isFalse()
+        assertThat(nadieContesto(BackendHttpException(401, "Unauthorized"))).isFalse()
+    }
+
+    @Test
+    fun `P1 otra IOException puede llegar despues de una respuesta y si cuenta`() {
+        // Codex r1: un 200 con JSON cortado (EOF), un cuerpo de 500 cortado, una conexión que se cae a media respuesta.
+        assertThat(nadieContesto(java.io.EOFException("End of input"))).isFalse()
+        assertThat(nadieContesto(IOException("unexpected end of stream"))).isFalse()
+        assertThat(nadieContesto(java.net.SocketException("Connection reset"))).isFalse()
+        assertThat(nadieContesto(IllegalStateException("boom"))).isFalse()
+        assertThat(nadieContesto(null)).isFalse()
+    }
+
+    @Test
+    fun `P1 si un intento anterior del mismo registro tuvo respuesta, el plazo final si cuenta`() {
+        val plazo = SocketTimeoutException("timeout")
+        plazo.addSuppressed(BackendHttpException(500, "Internal Server Error"))
+        assertThat(nadieContesto(plazo)).isFalse()
+
+        val soloPlazos = SocketTimeoutException("timeout")
+        soloPlazos.addSuppressed(java.net.ConnectException("Failed to connect"))
+        assertThat(nadieContesto(soloPlazos)).isTrue()
+    }
+
+    @Test
+    fun `nadie contesto no cambia la clasificacion - sigue siendo reintentable`() {
+        assertThat(classifySyncFailure(SocketTimeoutException("timeout"))).isInstanceOf(SyncOutcome.Retryable::class.java)
+        assertThat(classifySyncFailure(java.net.ConnectException("x"))).isInstanceOf(SyncOutcome.Retryable::class.java)
+    }
 }

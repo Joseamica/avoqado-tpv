@@ -54,8 +54,10 @@ class PaymentSyncWorkerTest {
         val useCase = mockk<RecordPaymentUseCase>()
         val payment = queuedPayment(reference = "ref-1")
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        // 500: el SERVIDOR contestó, así que el intento se cuenta (encargo 29ef3d: «nadie contestó» ya no se cuenta;
+        // eso lo cubren las pruebas de abajo).
         coEvery { useCase(any(), any(), any(), any(), true) } returns
-            Result.failure(IOException("red caida"))
+            Result.failure(BackendHttpException(500, "Internal Server Error"))
 
         val worker = buildWorker(repo, useCase)
         val virtualBefore = currentTime
@@ -114,6 +116,150 @@ class PaymentSyncWorkerTest {
         val result = buildWorker(repo, useCase).doWork()
 
         assertThat(result).isEqualTo(ListenableWorker.Result.success())
+    }
+
+    // ------------------------------------------------------------------
+    // Encargo 29ef3d: en un corte largo del SERVIDOR (internet bien, servidor mudo), cada venta encolada despierta
+    // una pasada. Antes cada pasada sin respuesta sumaba un intento y a los 10 la venta en efectivo quedaba FAILED,
+    // fuera de la fila. Ahora una pasada en la que NADIE contestó no gasta intento; una respuesta real (500) sí.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `P1 una pasada sin respuesta del servidor (plazo) no gasta intento`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-mudo", retryCount = 9)
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        coEvery { useCase(any(), any(), any(), any(), true) } returns
+            Result.failure(java.net.SocketTimeoutException("timeout"))
+
+        buildWorker(repo, useCase).doWork()
+
+        // Con 9 intentos, contar éste la mandaba a FAILED (MAX_RETRY_ATTEMPTS = 10).
+        coVerify(exactly = 1) { repo.release(queueId = payment.queueId, token = any(), retryCount = 9, error = any()) }
+        coVerify(exactly = 0) { repo.release(any(), any(), retryCount = 10, error = any()) }
+    }
+
+    @Test
+    fun `P1 un 503 del servidor si gasta intento (los registradores tiran su code, Codex r1)`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-503", retryCount = 4)
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        coEvery { useCase(any(), any(), any(), any(), true) } returns
+            Result.failure(BackendHttpException(503, "Service Unavailable"))
+
+        buildWorker(repo, useCase).doWork()
+
+        coVerify(exactly = 1) { repo.release(queueId = payment.queueId, token = any(), retryCount = 5, error = any()) }
+    }
+
+    @Test
+    fun `P1 un plazo final con un 500 anterior pegado si gasta intento`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-mixto", retryCount = 2)
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        val plazo = java.net.SocketTimeoutException("timeout").apply { addSuppressed(BackendHttpException(500, "boom")) }
+        coEvery { useCase(any(), any(), any(), any(), true) } returns Result.failure(plazo)
+
+        buildWorker(repo, useCase).doWork()
+
+        coVerify(exactly = 1) { repo.release(queueId = payment.queueId, token = any(), retryCount = 3, error = any()) }
+    }
+
+    @Test
+    fun `P1 un 404 de la orden y el respaldo sin respuesta si gasta intento (Codex r2)`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-404-plazo", orderId = "order-borrada", idempotencyKey = "k-1", retryCount = 3)
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        coEvery { useCase(any(), any(), any(), any(), true) } returnsMany listOf(
+            Result.failure(BackendHttpException(404, "Order not found", errorCode = "ORDER_NOT_FOUND")),
+            Result.failure(java.net.SocketTimeoutException("timeout")),
+        )
+
+        buildWorker(repo, useCase).doWork()
+
+        coVerify(exactly = 2) { useCase(any(), any(), any(), any(), true) }
+        coVerify(exactly = 1) { repo.release(queueId = payment.queueId, token = any(), retryCount = 4, error = any()) }
+    }
+
+    @Test
+    fun `P1 una venta con mas de 24 h sin respuesta vuelve a contar para llegar a revision`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val vieja = queuedPayment(reference = "ref-vieja", retryCount = 9).copy(
+            createdAt = System.currentTimeMillis() - PaymentSyncWorker.VENTANA_SIN_CONTAR_MS - 60_000,
+        )
+        coEvery { repo.claimBatch(any()) } returns listOf(vieja)
+        coEvery { useCase(any(), any(), any(), any(), true) } returns
+            Result.failure(java.net.SocketTimeoutException("timeout"))
+
+        buildWorker(repo, useCase).doWork()
+
+        // Sin esto una venta sin respuesta giraría para siempre y el gerente perdería «Efectivo: ya lo revisé».
+        coVerify(exactly = 1) { repo.release(queueId = vieja.queueId, token = any(), retryCount = 10, error = any()) }
+    }
+
+    @Test
+    fun `una respuesta real del servidor (500) si gasta intento y a los 10 la fila pasa a revision`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-500", retryCount = 9)
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        coEvery { useCase(any(), any(), any(), any(), true) } returns
+            Result.failure(BackendHttpException(500, "Internal Server Error"))
+
+        buildWorker(repo, useCase).doWork()
+
+        coVerify(exactly = 1) { repo.release(queueId = payment.queueId, token = any(), retryCount = 10, error = any()) }
+    }
+
+    @Test
+    fun `P1 la pasada de reconexion revive las ventas FAILED ANTES de reclamar la tanda`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-revivida")
+        coEvery { repo.resetAllFailed() } returns 1
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        coEvery { useCase(any(), any(), any(), any(), true) } returns Result.success(mockk(relaxed = true))
+
+        buildWorker(repo, useCase, inputData = com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.datosDeReconexion()).doWork()
+
+        io.mockk.coVerifyOrder {
+            repo.resetAllFailed()
+            repo.claimBatch(any())
+        }
+        coVerify(exactly = 0) { repo.resetAllFailedIncludingPermanent() }
+        coVerify(exactly = 1) { repo.markSynced(payment.queueId, payment.claimToken.orEmpty()) }
+    }
+
+    @Test
+    fun `una pasada normal no revive las FAILED`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        coEvery { repo.claimBatch(any()) } returns emptyList()
+
+        buildWorker(repo, useCase).doWork()
+
+        coVerify(exactly = 0) { repo.resetAllFailed() }
+        coVerify(exactly = 0) { repo.resetAllFailedIncludingPermanent() }
+    }
+
+    @Test
+    fun `si revivir falla la pasada sigue y sube lo pendiente`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-sigue")
+        coEvery { repo.resetAllFailed() } throws IllegalStateException("disco lleno")
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        coEvery { useCase(any(), any(), any(), any(), true) } returns Result.success(mockk(relaxed = true))
+
+        val result = buildWorker(repo, useCase, inputData = com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.datosDeReconexion()).doWork()
+
+        assertThat(result).isEqualTo(ListenableWorker.Result.success())
+        coVerify(exactly = 1) { repo.markSynced(payment.queueId, payment.claimToken.orEmpty()) }
     }
 
     // ------------------------------------------------------------------
@@ -567,9 +713,11 @@ class PaymentSyncWorkerTest {
             },
         ledger: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger = libretaSinFila(),
         ventaGuardada: com.jaac.avoqado_tpv.features.payment.domain.usecase.SubirVentaGuardadaUseCase = mockk(),
+        inputData: androidx.work.Data = androidx.work.Data.EMPTY,
     ): PaymentSyncWorker {
         val context = mockk<Context>(relaxed = true)
         return TestListenableWorkerBuilder<PaymentSyncWorker>(context)
+            .setInputData(inputData)
             .setWorkerFactory(object : WorkerFactory() {
                 override fun createWorker(
                     appContext: Context,

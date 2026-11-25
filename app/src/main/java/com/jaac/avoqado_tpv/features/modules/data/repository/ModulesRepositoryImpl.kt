@@ -52,7 +52,12 @@ class ModulesRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun fetchAndCache(): Result<List<VenueModule>> = withContext(Dispatchers.IO) {
+    override suspend fun fetchAndCache(): Result<List<VenueModule>> = fetchAndCache(consulta = null)
+
+    /** Encargo 097e01: el logo de arranque pide los módulos por su cliente de tope corto (ApiDelArranque). */
+    override suspend fun fetchAndCache(
+        consulta: (suspend (venueId: String) -> retrofit2.Response<com.jaac.avoqado_tpv.features.modules.data.dto.ModulesApiResponse>)?
+    ): Result<List<VenueModule>> = withContext(Dispatchers.IO) {
         try {
             // Get venueId from activation (stored in SecureStorage)
             val venueId = secureStorage.getVenueId()
@@ -64,7 +69,7 @@ class ModulesRepositoryImpl @Inject constructor(
             Timber.d("📦 Fetching modules for venue: $venueId")
 
             // Pass venueId as header for semi-public endpoint (works before login)
-            val response = apiService.getModules(venueId)
+            val response = consulta?.invoke(venueId) ?: apiService.getModules(venueId)
 
             if (response.isSuccessful && response.body() != null) {
                 val moduleDtos = response.body()!!.modules

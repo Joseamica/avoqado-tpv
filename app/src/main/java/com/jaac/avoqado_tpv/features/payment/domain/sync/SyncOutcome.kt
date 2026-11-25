@@ -89,3 +89,27 @@ fun classifySyncFailure(error: Throwable?): SyncOutcome = when {
 
     else -> SyncOutcome.Retryable                          // desconocido y null
 }
+
+/**
+ * ¿En este intento NADIE del servidor contestó? Sólo lo que lo demuestra por sí mismo: el plazo venció
+ * ([java.io.InterruptedIOException], que incluye [java.net.SocketTimeoutException] y el `callTimeout` de OkHttp) o no se
+ * pudo ni conectar ([java.net.ConnectException], [java.net.UnknownHostException], [java.net.NoRouteToHostException]).
+ *
+ * Encargo 29ef3d: en un corte largo del SERVIDOR (internet bien, servidor mudo) cada venta encolada despierta una pasada
+ * de la cola; si cada pasada contaba como intento, a las 10 una venta en efectivo quedaba FAILED y fuera de la fila. Un
+ * intento sin respuesta no dice nada de la venta, así que la cola NO lo cuenta ([com.jaac.avoqado_tpv.core.data.workers.PaymentSyncWorker]).
+ *
+ * Queda FUERA a propósito (Codex r1): cualquier respuesta HTTP, también 502/503/504 (los registradores descartan el
+ * `code` en los 5xx y el SERVIDOR contesta 503 propios, p. ej. `PAYMENT_REGISTRATION_UNRESOLVED_*`), y cualquier otra
+ * [IOException] (un JSON cortado, `unexpected end of stream`, `Connection reset`): pueden llegar DESPUÉS de una respuesta.
+ * Si un intento anterior del mismo registro sí tuvo respuesta, viaja como `suppressed` del error final y cuenta.
+ * No cambia la clasificación: lo que es [SyncOutcome.Retryable] lo sigue siendo, con la MISMA llave de idempotencia.
+ */
+fun nadieContesto(error: Throwable?): Boolean {
+    if (error == null) return false
+    if (error.suppressed.any { !nadieContesto(it) }) return false
+    return error is java.io.InterruptedIOException ||
+        error is java.net.ConnectException ||
+        error is java.net.UnknownHostException ||
+        error is java.net.NoRouteToHostException
+}

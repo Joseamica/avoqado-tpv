@@ -1045,7 +1045,8 @@ class HomeViewModel @Inject constructor(
                     checkForUpdates()
                 }
 
-                // Reset failed payments (periodic worker will retry them on next run)
+                // Reset failed payments. La pasada de reconexión (PaymentSyncScheduler.alVolverElServidor) también las
+                // revive ANTES de reclamar (encargo 29ef3d); esto queda para refrescar los conteos del aviso. Idempotente.
                 launch(Dispatchers.IO) {
                     try {
                         val resetCount = paymentQueueRepository.resetAllFailed()

@@ -349,18 +349,33 @@ fun PaymentScreen(
     )
 
     val flechaAtras: () -> Unit = {
-        // Try to go back one step in payment flow first
-        // If at first step (returns false), navigate back to home
-        if (!viewModel.goBackOneStep()) {
+        // 🔙 f84e3a (Codex r4 #1): el cobro se pudo aprobar en este mismo instante, antes de que la pantalla apague este manejador:
+        // se lee el estado AL TOCAR. Con el cobro hecho no se regresa a antes de cobrar. El kiosco no cambia (Codex r5 #1).
+        if (!isKioskPayment && viewModel.state.value is PaymentState.Success) {
+            Timber.d("🔙 [Payment] «atrás» justo al aprobarse el cobro: se ignora")
+        } else if (!viewModel.goBackOneStep()) {
             // 🔧 FIX: Reset ViewModel to Idle so next payment uses new initialAmount
             // Without this, the LaunchedEffect in Idle block won't re-run
             viewModel.resetPayment()
             navigateBack()
         }
     }
+    // 🔙 Encargo f84e3a: desde que hubo un cobro aprobado, el «atrás» del sistema ya no es el de antes de cobrar. Con el recibo a la
+    // vista lo atiende PaymentSuccessContent (hace su botón principal UNA vez; se registra después y por eso gana); en cualquier otro
+    // momento —la animación de «Aprobado», la espera tras ese botón (Mesas libera la mesa por red y mientras tanto esta pantalla
+    // vuelve a Idle), «No se pudo imprimir»— se ignora. Antes salía a la entrada anterior: desde Cobrar, el MISMO carrito lleno, y
+    // un segundo «Cobrar» creaba otra venta. El kiosco no cambia. Las flechas visibles siguen igual.
+    // rememberSaveable (Codex r4 #3): sobrevive a recrear la pantalla o a que otra pantalla se abra encima.
+    var huboExito by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(state) {
+        if (state is PaymentState.Success && !isKioskPayment) huboExito = true
+    }
+    BackHandler(enabled = !isKioskPayment && (state is PaymentState.Success || huboExito)) {
+        Timber.d("🔙 [Payment] «atrás» después del cobro sin recibo a la vista: se ignora")
+    }
     // El botón físico de atrás hace lo mismo que la flecha: salir sin `resetPayment()` dejaba al POS sin desenlace y, a los
-    // 5 min, la terminal «ocupada» sin nada en su pantalla (PAX, 3-nov).
-    BackHandler(enabled = showTopBar, onBack = flechaAtras)
+    // 5 min, la terminal «ocupada» sin nada en su pantalla (PAX, 3-nov). Después de un cobro, no (arriba).
+    BackHandler(enabled = showTopBar && !huboExito, onBack = flechaAtras)
 
     Scaffold(
         topBar = {
@@ -520,9 +535,10 @@ fun PaymentScreen(
                             },
                             // 📸 PRE-payment specific: Back button and conditional skip
                             canSkip = currentState.canSkip(),
-                            onNavigateBack = {
-                                viewModel.goBackFromPrePaymentVerification()
-                            }
+                            // 💵 D10 (Codex r1): «← Volver» hace lo mismo que la flecha y el botón físico. En un cobro que
+                            // ya trae sus datos (el del POS, con su propina) sale del cobro antes de leer la tarjeta; ir
+                            // directo a la calificación cobraba después la propina del POS en $0.
+                            onNavigateBack = flechaAtras
                         )
                     }
                 }
@@ -991,7 +1007,11 @@ fun PaymentScreen(
                                 proofVerificationId = viewModel.proofVerificationId(),
                                 isUploadingProofOfSale = isUploadingProofOfSale,
                                 onRetakeProofOfSalePhoto = viewModel::retakeProofOfSalePhoto,
-                                isPrinting = isPrinting  // 🖨️ Show "Imprimiendo..." on button
+                                isPrinting = isPrinting,  // 🖨️ Show "Imprimiendo..." on button
+                                // 🔙 f84e3a (Codex r2 #2): en un cobro del POS, el éxito se avisa al POS cuando llega el recibo
+                                // (observeSocketPaymentResult). Hasta entonces el «atrás» no sale (salir lo callaría); los botones sí.
+                                atrasEsperaAlRecibo = CobroRemotoDelPos.esCobroDelPos(paymentSource) &&
+                                    currentState.receipt?.paymentId.isNullOrBlank()
                             )
                         }
                     }
@@ -1035,8 +1055,12 @@ fun PaymentScreen(
                         },
                         onCancel = {
                             // En un cobro del POS no hay otro método que elegir, y esa pantalla lo dejaba esperando sin reloj.
-                            if (!isRefundMode && currentState.canRetry && currentState.context != null && !currentState.showOpenShiftButton &&
-                                !CobroRemotoDelPos.esCobroDelPos(paymentSource)
+                            // 🔴 1164aa: tras un error de registro del EFECTIVO tampoco: la tarjeta quedaba a un toque (cobro doble).
+                            if (cancelarDesdeElErrorVuelveAMetodos(
+                                    currentState,
+                                    esReembolso = isRefundMode,
+                                    esCobroDelPos = CobroRemotoDelPos.esCobroDelPos(paymentSource),
+                                )
                             ) {
                                 viewModel.returnToSelectingMerchantFromError(currentState.context)
                             } else {
@@ -1722,7 +1746,9 @@ private fun PaymentSuccessContent(
     proofNumber: (ProofSlot) -> String? = { null },  // 📸 C7: el número ya confirmado de la ranura (al retomar)
     proofVerificationId: String? = null,  // 📸 C7: para que number-check no choque con esta misma venta
     // 🖨️ RECEIPT PRINTING
-    isPrinting: Boolean = false  // Show "Imprimiendo..." on print button
+    isPrinting: Boolean = false,  // Show "Imprimiendo..." on print button
+    /** 🔙 f84e3a: true = un cobro del POS que todavía espera su recibo; el «atrás» se ignora para no callar el aviso al POS. */
+    atrasEsperaAlRecibo: Boolean = false
 ) {
     val displayOrderNumber = OrderNumberFormatter.display(orderNumber)
 
@@ -1735,6 +1761,25 @@ private fun PaymentSuccessContent(
 
     // ⭐ Check if there's remaining balance (split payment scenario)
     val hasRemainingBalance = remainingBalance != null && remainingBalance > java.math.BigDecimal.ZERO
+
+    // 🔙 Encargo f84e3a: la acción del botón principal se calcula UNA vez; el «atrás» del sistema hace lo mismo (abajo).
+    val successRouting = resolveSuccessRouting(
+        flowOrigin = flowOrigin,
+        wasPayLaterOrder = wasPayLaterOrder,
+        payLaterOrdersCount = payLaterOrdersCount,
+        tableId = tableId,
+        onNavigateToPayLaterOrders = onNavigateToPayLaterOrders,
+        onClearTableAndReturnToFloorPlan = onClearTableAndReturnToFloorPlan,
+        onNavigateToSerializedSale = onNavigateToSerializedSale,
+        onNewOrder = onNewOrder,
+        onNewFastPayment = onNewFastPayment,
+        newOrderLabel = newOrderLabel
+    )
+    val accionPrincipal: () -> Unit = when {
+        isRefund -> onRefundComplete
+        hasRemainingBalance -> onContinuePayment
+        else -> successRouting.onClick
+    }
 
     // State for order details modal
     var showOrderDetailsModal by remember { mutableStateOf(false) }
@@ -1752,6 +1797,25 @@ private fun PaymentSuccessContent(
     var currentPhotoLabel by remember { mutableStateOf(ProofSlot.VINCULACION) }  // which photo camera is capturing
     var viewingPhotoLabel by remember { mutableStateOf<ProofSlot?>(null) }  // photo being previewed for retake
     val numberDrafts = remember { LinkingNumberDrafts() }  // 📸 C7: lo escrito sobrevive «Retomar»
+
+    // 🔙 Encargo f84e3a: con el cobro YA aprobado, el «atrás» FÍSICO no tenía quién lo atendiera (el de la pantalla se apaga en
+    // Success) y el sistema regresaba a la entrada anterior: desde Cobrar, el MISMO carrito lleno, y un segundo «Cobrar» creaba otra
+    // venta con la misma mercancía. Ahora hace lo mismo que el botón principal («Nueva Orden», «Nuevo Pago», «Listo», «Continuar
+    // pagando»), que ya lleva a un lugar NUEVO; con la cámara de la prueba de venta abierta, sólo la cierra. El kiosco no cambia.
+    // `yaSalioPorAtras` (Codex r3 y r4 #5): dos «atrás» seguidos, o el botón y luego «atrás», llegan aquí antes de que el recibo se
+    // retire; la acción sale UNA vez (en Mesas cada una pediría liberar la mesa). Los botones de salida también lo encienden.
+    var yaSalioPorAtras by remember { mutableStateOf(false) }
+    BackHandler(enabled = !isKioskPayment) {
+        when {
+            showProofOfSaleCamera -> showProofOfSaleCamera = false
+            atrasEsperaAlRecibo -> Timber.d("🔙 [PaymentSuccess] «atrás» con el cobro del POS esperando su recibo: se ignora")
+            yaSalioPorAtras -> Timber.d("🔙 [PaymentSuccess] «atrás» repetido: ya va de salida")
+            else -> {
+                yaSalioPorAtras = true
+                accionPrincipal()
+            }
+        }
+    }
 
     // 🥝 KIOSK MODE: Auto-dismiss countdown
     var kioskSecondsRemaining by remember { mutableIntStateOf(kioskCountdownSeconds) }
@@ -1812,7 +1876,7 @@ private fun PaymentSuccessContent(
                     // Hidden in SERIALIZED_INVENTORY mode (staff must use "Nueva Venta" flow)
                     if (flowOrigin != PaymentFlowOrigin.SERIALIZED) {
                         IconButton(
-                            onClick = onNavigateHome,
+                            onClick = { yaSalioPorAtras = true; onNavigateHome() },
                             modifier = Modifier
                                 .size(48.dp)
                                 .border(
@@ -1841,7 +1905,7 @@ private fun PaymentSuccessContent(
                             // 💸 Refund: Show "Listo" button that navigates back to payments list
                             isRefund -> {
                                 Button(
-                                    onClick = onRefundComplete,
+                                    onClick = { yaSalioPorAtras = true; onRefundComplete() },
                                     shape = RoundedCornerShape(12.dp),
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = MaterialTheme.colorScheme.primary,
@@ -1855,7 +1919,7 @@ private fun PaymentSuccessContent(
                             // ⭐ Split payment: Show "Continuar pagando" button with remaining amount
                             hasRemainingBalance -> {
                                 Button(
-                                    onClick = onContinuePayment,
+                                    onClick = { yaSalioPorAtras = true; onContinuePayment() },
                                     shape = RoundedCornerShape(12.dp),
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = MaterialTheme.colorScheme.primary,  // Highlighted color
@@ -1870,24 +1934,12 @@ private fun PaymentSuccessContent(
                             }
                             // Normal flow: "Pagar cuenta (X)", "Nueva Orden", or "Nuevo Pago"
                             else -> {
-                                val successRouting = resolveSuccessRouting(
-                                    flowOrigin = flowOrigin,
-                                    wasPayLaterOrder = wasPayLaterOrder,
-                                    payLaterOrdersCount = payLaterOrdersCount,
-                                    tableId = tableId,
-                                    onNavigateToPayLaterOrders = onNavigateToPayLaterOrders,
-                                    onClearTableAndReturnToFloorPlan = onClearTableAndReturnToFloorPlan,
-                                    onNavigateToSerializedSale = onNavigateToSerializedSale,
-                                    onNewOrder = onNewOrder,
-                                    onNewFastPayment = onNewFastPayment,
-                                    newOrderLabel = newOrderLabel
-                                )
                                 val buttonText = successRouting.text
 
                                 Timber.d("💳 [PaymentSuccess] Button: $buttonText | wasPayLater=$wasPayLaterOrder | count=$payLaterOrdersCount | orderId=$orderId")
 
                                 Button(
-                                    onClick = successRouting.onClick,
+                                    onClick = { yaSalioPorAtras = true; successRouting.onClick() },
                                     enabled = true, // Non-blocking: staff can start new sale immediately, upload photos later
                                     shape = RoundedCornerShape(12.dp),
                                     colors = ButtonDefaults.buttonColors(

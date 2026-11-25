@@ -206,6 +206,21 @@ class CobroDeVentaLocalNexgoTest {
         assertThat(fila()!!.exitoMostrado).isFalse()
     }
 
+    @Test fun `P1 con la franja de sin servidor la venta local se guarda y no espera al servidor`() = runTest {
+        conexion.setInternetConnected(true); conexion.setServerConnected(false) // hay internet, el servidor no contesta
+
+        cobrar(tip = 500)
+
+        val s = vm.state.value as AngelPayPaymentState.Success
+        assertThat(s.pendingSyncMessage).isEqualTo("Venta guardada sin conexión: se manda sola al volver el internet")
+        assertThat(fila()!!.syncStatus).isEqualTo("PENDING")
+        assertThat(fila()!!.claimToken).isNull()
+        assertThat(fila()!!.retryCount).isEqualTo(0) // sin intento no se suma intento
+        coVerify(exactly = 0) { api.crearOrden(any(), any()) }
+        coVerify(exactly = 0) { registrar(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any()) }
+        io.mockk.verify(exactly = 1) { PaymentSyncScheduler.runNow(any()) } // la cola la manda al volver
+    }
+
     @Test fun `dos toques guardan y suben una sola fila`() = runTest {
         val espera = CompletableDeferred<Response<com.google.gson.JsonObject>>()
         coEvery { api.crearOrden(any(), any()) } coAnswers { espera.await() }

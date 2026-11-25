@@ -15,6 +15,7 @@ import com.jaac.avoqado_tpv.features.payment.data.repository.toQueuedPayment
 import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment
 import com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome
 import com.jaac.avoqado_tpv.features.payment.domain.sync.classifySyncFailure
+import com.jaac.avoqado_tpv.features.payment.domain.sync.nadieContesto
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import okhttp3.MediaType.Companion.toMediaType
@@ -32,8 +33,23 @@ class SubirVentaGuardadaUseCase @Inject constructor(
 ) {
     private val gson = Gson()
 
+    /**
+     * Desenlace de una subida y si el SERVIDOR contestó (encargo 29ef3d). [sinRespuesta] sólo es `true` con
+     * [SyncOutcome.Retryable] y cuando el último intento no tuvo respuesta ([nadieContesto]): la cola no cuenta ese intento.
+     */
+    data class Subida(val desenlace: SyncOutcome, val sinRespuesta: Boolean)
+
     /** No cierra/suelta el claim: la pantalla y el worker conservan esa responsabilidad. Nunca registra por /fast. */
-    suspend operator fun invoke(fila: QueuedPayment): SyncOutcome {
+    suspend operator fun invoke(fila: QueuedPayment): SyncOutcome = subirConPista(fila) {}
+
+    /** Igual que [invoke], y además dice si el servidor no contestó (lo usa la cola para no gastar el intento). */
+    suspend fun subir(fila: QueuedPayment): Subida {
+        var sinRespuesta = false
+        val desenlace = subirConPista(fila) { sinRespuesta = true }
+        return Subida(desenlace, sinRespuesta && desenlace is SyncOutcome.Retryable)
+    }
+
+    private suspend fun subirConPista(fila: QueuedPayment, alNoContestar: () -> Unit): SyncOutcome {
         val token = fila.claimToken?.takeIf { it.isNotBlank() } ?: return SyncOutcome.Retryable
         try {
             val guardada = dao.findByReference(fila.referenceNumber, fila.venueId)
@@ -120,6 +136,7 @@ class SubirVentaGuardadaUseCase @Inject constructor(
         } catch (e: ArithmeticException) {
             return SyncOutcome.Permanent("El importe guardado no se puede expresar en centavos")
         } catch (e: Exception) {
+            if (nadieContesto(e)) alNoContestar()
             return classifySyncFailure(e)
         }
     }

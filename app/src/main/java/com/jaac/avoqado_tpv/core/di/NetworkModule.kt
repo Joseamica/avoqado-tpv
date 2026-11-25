@@ -178,6 +178,24 @@ object NetworkModule {
             .build()
     }
 
+    /** Las dos preguntas del logo de arranque, con tope corto y su propia fila (encargo 097e01; ver [ConsultasDelArranque]). */
+    @Provides
+    @Singleton
+    @ArranqueClient
+    fun provideArranqueOkHttpClient(okHttpClient: OkHttpClient): OkHttpClient = ConsultasDelArranque.cliente(okHttpClient)
+
+    @Provides
+    @Singleton
+    fun provideApiDelArranque(
+        @ArranqueClient okHttpClient: OkHttpClient,
+        baseUrl: String
+    ): com.jaac.avoqado_tpv.core.data.network.ApiDelArranque = Retrofit.Builder()
+        .baseUrl(baseUrl)
+        .client(okHttpClient)
+        .addConverterFactory(GsonConverterFactory.create())
+        .build()
+        .create(com.jaac.avoqado_tpv.core.data.network.ApiDelArranque::class.java)
+
     /**
      * Retrofit instance with Gson converter
      */

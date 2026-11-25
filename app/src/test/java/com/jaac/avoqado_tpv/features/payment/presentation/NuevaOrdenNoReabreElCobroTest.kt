@@ -41,4 +41,16 @@ class NuevaOrdenNoReabreElCobroTest {
         assertThat(idle).contains("if (huboCobroEnEstaPantalla || initialAmount != null || isRefundMode)")
         assertThat(idle).contains("huboCobroEnEstaPantalla -> \"Un momento...\"")
     }
+
+    /**
+     * 🪑 hz:1450a1e9:D4: en la Nexgo el arranque automático vive fuera de los estados, pero si la pantalla se vuelve a montar (el POS
+     * abrió una devolución encima mientras se liberaba la mesa y luego «atrás») corría otra vez y ofrecía la cuenta pagada. Con un cobro
+     * hecho (también el recibo en cola) ya no arranca.
+     */
+    @Test
+    fun `en la Nexgo el arranque automatico no corre tras un cobro hecho`() {
+        val nexgo = File("src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/angelpay/AngelPayPaymentScreen.kt").readText()
+        assertThat(nexgo).contains("if (state is AngelPayPaymentState.Success || state is AngelPayPaymentState.Queued) propinaDeMesaCobrada = true")
+        assertThat(nexgo).contains("if (initialAmount != null && state is AngelPayPaymentState.Idle && !propinaDeMesaCobrada) {")
+    }
 }

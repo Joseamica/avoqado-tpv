@@ -52,6 +52,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.activity.ComponentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.EntryPointAccessors
@@ -2187,18 +2188,26 @@ fun AppNavigation(
                         // CASH (clearTable — server rejects if something's still
                         // unpaid) and return to the Mesas floor plan, never the
                         // legacy FloorPlan/unified Cart.
-                        coroutineScope.launch {
-                            val venueId = secureStorage.getVenueId()
-                            val session = tableSession.current()
-                            if (venueId != null && session != null) {
-                                tablesRepository.clearTable(venueId, session.tableId, session.orderId, session.isProvisional)
-                                    .onFailure { Timber.w(it, "⚠️ [Mesas] clearTable no liberó la mesa tras el cobro con tarjeta") }
-                            }
-                            tableSession.clear()
-                            navController.navigate(NavRoute.Tables.route) {
-                                popUpTo(NavRoute.Home.route) { inclusive = false }
-                            }
-                        }
+                        // 🪑 hz:1450a1e9:D4: en el alcance del ViewModel, no de la composición: si otra pantalla se abre encima a media
+                        // espera, la mesa se libera igual y se vuelve al plano al regresar (ver salirDeMesaTrasCobrar).
+                        salirDeMesaTrasCobrar(
+                            alcance = pagoVm.viewModelScope,
+                            entrada = backStackEntry,
+                            liberar = {
+                                val venueId = secureStorage.getVenueId()
+                                val session = tableSession.current()
+                                if (venueId != null && session != null) {
+                                    tablesRepository.clearTable(venueId, session.tableId, session.orderId, session.isProvisional)
+                                        .onFailure { Timber.w(it, "⚠️ [Mesas] clearTable no liberó la mesa tras el cobro con tarjeta") }
+                                }
+                                tableSession.clear()
+                            },
+                            alPlano = {
+                                navController.navigate(NavRoute.Tables.route) {
+                                    popUpTo(NavRoute.Home.route) { inclusive = false }
+                                }
+                            },
+                        )
                         Timber.d("🪑 [Navigation] Mesas: cobro con tarjeta completo — liberando mesa y volviendo al plano")
                     } else if (cameFromCheckout) {
                         // 🛒 Came from unified Cart → return there with a fresh
@@ -3124,7 +3133,6 @@ fun AppNavigation(
             // balance and "start new payment" always means "release the table".
             val cameFromTables = entryPoint == "tables"
             val angelPayContext = LocalContext.current
-            val angelPayCoroutineScope = rememberCoroutineScope()
 
             // 📸 Serialized inventory (SIM) sale — set by SerializedSaleScreen's
             // onNavigateToPayment. Null/false for a normal AngelPay charge.
@@ -3230,24 +3238,31 @@ fun AppNavigation(
                         // split params, so a card charge here is always the whole
                         // balance). Same clearTable-then-navigate-to-Tables as the
                         // Blumon Payment branch above.
-                        angelPayCoroutineScope.launch {
-                            val entry = EntryPointAccessors.fromApplication(
-                                angelPayContext.applicationContext,
-                                AppNavigationEntryPoint::class.java,
-                            )
-                            val tablesRepository = entry.tablesRepository()
-                            val tableSession = entry.tableSession()
-                            val venueId = secureStorage.getVenueId()
-                            val session = tableSession.current()
-                            if (venueId != null && session != null) {
-                                tablesRepository.clearTable(venueId, session.tableId, session.orderId, session.isProvisional)
-                                    .onFailure { Timber.w(it, "⚠️ [Mesas] clearTable no liberó la mesa tras el cobro AngelPay") }
-                            }
-                            tableSession.clear()
-                            navController.navigate(NavRoute.Tables.route) {
-                                popUpTo(NavRoute.Home.route) { inclusive = false }
-                            }
-                        }
+                        // 🪑 hz:1450a1e9:D4: en el alcance del ViewModel, no de la composición (ver salirDeMesaTrasCobrar).
+                        salirDeMesaTrasCobrar(
+                            alcance = angelVm.viewModelScope,
+                            entrada = backStackEntry,
+                            liberar = {
+                                val entry = EntryPointAccessors.fromApplication(
+                                    angelPayContext.applicationContext,
+                                    AppNavigationEntryPoint::class.java,
+                                )
+                                val tablesRepository = entry.tablesRepository()
+                                val tableSession = entry.tableSession()
+                                val venueId = secureStorage.getVenueId()
+                                val session = tableSession.current()
+                                if (venueId != null && session != null) {
+                                    tablesRepository.clearTable(venueId, session.tableId, session.orderId, session.isProvisional)
+                                        .onFailure { Timber.w(it, "⚠️ [Mesas] clearTable no liberó la mesa tras el cobro AngelPay") }
+                                }
+                                tableSession.clear()
+                            },
+                            alPlano = {
+                                navController.navigate(NavRoute.Tables.route) {
+                                    popUpTo(NavRoute.Home.route) { inclusive = false }
+                                }
+                            },
+                        )
                         Timber.d("🪑 [AngelPay] Mesas: cobro con tarjeta completo — liberando mesa y volviendo al plano")
                     }
                 } else if (cameFromCheckout) {

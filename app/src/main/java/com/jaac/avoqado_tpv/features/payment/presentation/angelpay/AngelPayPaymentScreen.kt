@@ -247,7 +247,7 @@ fun AngelPayPaymentScreen(
     // recrea después de un cobro exitoso y el auto-arranque vuelve a correr, ya no se reaplica.
     var propinaDeMesaCobrada by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(state) {
-        if (state is AngelPayPaymentState.Success) propinaDeMesaCobrada = true
+        if (state is AngelPayPaymentState.Success || state is AngelPayPaymentState.Queued) propinaDeMesaCobrada = true
     }
 
     // Auto-start payment when screen opens with amount
@@ -263,7 +263,10 @@ fun AngelPayPaymentScreen(
         soloEfectivo,
         ventaLocalJson,
     ) {
-        if (initialAmount != null && state is AngelPayPaymentState.Idle) {
+        // 🪑 hz:1450a1e9:D4: la misma marca dice que esta pantalla ya cobró (también el recibo en cola). Si la pantalla se vuelve a
+        // montar tras el cobro (otra pantalla encima a media salida de Mesas y luego «atrás»), este arranque corría otra vez y ofrecía
+        // la cuenta pagada. Con un cobro hecho, Idle sólo espera la salida.
+        if (initialAmount != null && state is AngelPayPaymentState.Idle && !propinaDeMesaCobrada) {
             // 📸 Serialized inventory (SIM) proof-of-sale — no-op for a normal payment
             // (all args default off), so this doesn't change the normal charge flow.
             viewModel.setSerializedSaleInfo(

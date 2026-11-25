@@ -188,6 +188,11 @@ fun PaymentScreen(
     LaunchedEffect(state) {
         if (state is PaymentState.Success) propinaDeMesaCobrada = true
     }
+    // 🧾 hz:nube0000:nac244bc (25-nov): la misma marca dice que esta pantalla ya cobró. Todos los botones del recibo hacen
+    // resetPayment() y luego salen a otra pantalla; «Nueva Orden» de Mesas y liberar la mesa esperan antes a la red, y mientras tanto
+    // el arranque automático de Idle (abajo) volvía a abrir el cobro de la cuenta YA pagada. El kiosco arranca el siguiente cobro con
+    // este mismo ViewModel: no cambia.
+    val huboCobroEnEstaPantalla = propinaDeMesaCobrada && !isKioskPayment
     val merchants by viewModel.merchants.collectAsStateWithLifecycle()
     // 🧭 MERCHANT_ROUTING_RULES: eligibility for the charge in progress (drives filter + banner)
     val merchantRouting by viewModel.merchantRouting.collectAsStateWithLifecycle()
@@ -608,6 +613,8 @@ fun PaymentScreen(
                 // LEGACY: Old idle state (redirect to new flow)
                 is PaymentState.Idle -> {
                     LaunchedEffect(initialAmount, skipReview, orderId, orderNumber, splitType, isRefundMode, externalTipCents, externalRating, externalSkipReview, propinaYaElegidaCents, ventaLocalJson) {
+                        // 🧾 hz:nube0000:nac244bc: con un cobro ya hecho en esta pantalla, Idle es la salida: no se vuelve a arrancar.
+                        if (huboCobroEnEstaPantalla) return@LaunchedEffect
                         // 🧾 P4: antes de CADA arranque (también tras un resetPayment() que vuelve aquí), el ViewModel sabe si cobra un folio.
                         viewModel.setFolio(folio)
                         if (!viewModel.setVentaLocalJson(ventaLocalJson)) return@LaunchedEffect
@@ -713,9 +720,10 @@ fun PaymentScreen(
                     }
 
                     // Show loading while processing
-                    if (initialAmount != null || isRefundMode) {
+                    if (huboCobroEnEstaPantalla || initialAmount != null || isRefundMode) {
                         AvoqadoLoadingOverlay(
                             message = when {
+                                huboCobroEnEstaPantalla -> "Un momento..."
                                 isRefundMode -> "Preparando reembolso..."
                                 skipReview -> "Preparando pago de prueba..."
                                 else -> "Preparando pago..."

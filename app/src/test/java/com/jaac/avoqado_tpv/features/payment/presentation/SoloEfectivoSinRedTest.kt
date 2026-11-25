@@ -12,6 +12,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
 import com.jaac.avoqado_tpv.features.payment.domain.cobrarSaltaElLector
 import com.jaac.avoqado_tpv.features.payment.domain.decidirMotivoSinTarjeta
 import com.jaac.avoqado_tpv.features.payment.domain.rutaDePagoEsperaAlLector
+import com.jaac.avoqado_tpv.features.payment.domain.yaCobro
 import com.jaac.avoqado_tpv.features.payment.domain.tarjetaSinRed
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility
@@ -724,5 +725,26 @@ class SoloEfectivoSinRedTest {
         assertThat(rutaDePagoEsperaAlLector(hayLectorBlumon = true, lectorListo = false, soloEfectivo = false)).isTrue()
         assertThat(rutaDePagoEsperaAlLector(hayLectorBlumon = true, lectorListo = true, soloEfectivo = false)).isFalse()
         assertThat(rutaDePagoEsperaAlLector(hayLectorBlumon = false, lectorListo = false, soloEfectivo = false)).isFalse()
+    }
+
+    // 🧾 hz:nube0000:na572d47 (24-nov): la renovación diaria del SDK apaga «lector listo» con el recibo «Total pagado» a la vista; la
+    // espera lo tapaba y, si la preparación fallaba, regresaba sola al carrito de la venta ya cobrada. Antes de cobrar, como siempre.
+    @Test
+    fun `rutaDePagoEsperaAlLector - nunca encima de una pantalla que ya cobró`() {
+        assertThat(rutaDePagoEsperaAlLector(hayLectorBlumon = true, lectorListo = false, soloEfectivo = false, yaCobro = true)).isFalse()
+        assertThat(rutaDePagoEsperaAlLector(hayLectorBlumon = true, lectorListo = false, soloEfectivo = false, yaCobro = false)).isTrue()
+    }
+
+    @Test
+    fun `yaCobro - el recibo, su impresión y la verificación ya cobraron, lo de antes y los finales sin dinero no`() {
+        val exito = PaymentState.Success(authCode = "A1", amount = "10.00")
+        assertThat(exito.yaCobro()).isTrue()
+        assertThat(PaymentState.Printing.yaCobro()).isTrue()
+        assertThat(PaymentState.PrintError(message = "sin papel", previousState = exito).yaCobro()).isTrue()
+        assertThat(PaymentState.Verifying(paymentId = "p1", amount = "10.00").yaCobro()).isTrue()
+
+        assertThat(PaymentState.DetectingCard(amount = "10.00").yaCobro()).isFalse()
+        assertThat(PaymentState.Error(message = "rechazada").yaCobro()).isFalse()
+        assertThat(PaymentState.Cancelled.yaCobro()).isFalse()
     }
 }

@@ -535,15 +535,21 @@ class MotorDeCobroVentaTest {
         assertEquals(EstadoDelReverso.CONFIRMADO, fila(s).reverso)
     }
 
-    /** Si al llegar al camino del reverso el techo ya venció, ni se compromete ni sale un reverso: lo cierra `alPlazo`. */
+    /**
+     * Si al llegar al camino del reverso el techo ya venció, ni se compromete ni sale un reverso: lo cierra `alPlazo`. La
+     * aprobación que llega después (a los 18 s) sólo queda como evidencia: nunca se vuelve `Aprobado` ni se pierde.
+     */
     @Test fun `con el techo ya vencido no se compromete ni sale un reverso`() = prueba(Relojes(techoDelReverso = 15_000)) {
-        blumon.venta = SILENCIO // el camino del reverso empieza a los t0 + 15 s: justo en el techo
+        blumon.venta = { delay(18_000); http(200, APROBADA) } // el camino del reverso empieza a los t0 + 15 s: justo en el techo
         val s = solicitud()
-        assertEquals(PorConfirmar(s.importeCentavos), terminal(s))
+        assertEquals(PorConfirmar(s.importeCentavos) to T0 + 15_000, cobrar(s).last())
+        esperarTodo()
         val f = fila(s)
         assertTrue(blumon.reversos.isEmpty())
         assertEquals(EstadoDelIntento.NO_SE, f.estado)
-        assertNotEquals(EstadoDelReverso.COMPROMETIDO, f.reverso)
+        assertEquals(EstadoDelReverso.NINGUNO, f.reverso)
+        assertEquals(12345L, f.evidenciaTardiaOperacion)
+        assertFalse(tardiasDe(s).any { it is Aprobado })
     }
 
     /** La gemela: un milisegundo antes del techo sí se compromete y reclama una vuelta. */

@@ -3793,10 +3793,26 @@ class PaymentViewModelTest {
         }
     }
 
+    // 6a2254 + a1ff27 juntos: «Reintentar» ya no abre la tarjeta, vuelve a REGISTRAR ese efectivo. Si el registro y la cola vuelven
+    // a fallar, el efectivo sigue sin registro: la pantalla queda en el mismo error y la marca sigue puesta (la tablet no cobra esa
+    // cuenta). Si el registro entra, la pantalla deja el error y la marca se quita.
     @Test
-    fun `P1 6a2254 el boton Reintentar del error quita la marca`() = conElErrorDelEfectivoDeLaCuenta1 { viewModel, error ->
+    fun `P1 6a2254 el boton Reintentar que vuelve a fallar deja el error y la marca`() = conElErrorDelEfectivoDeLaCuenta1 { viewModel, error ->
         viewModel.retryPayment(error.context)
-        esperarEstado(viewModel) { it != error }
+        coVerify(timeout = 5000, exactly = 2) {
+            mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+        }
+        esperarEstado(viewModel) {
+            (it as? PaymentState.Error)?.message?.startsWith("Error registrando pago en efectivo") == true &&
+                paymentStateHolder.hayEfectivoSinRegistro("order-1")
+        }
+    }
+
+    @Test
+    fun `P1 6a2254 el boton Reintentar que registra el efectivo quita la marca`() = conElErrorDelEfectivoDeLaCuenta1 { viewModel, error ->
+        coEvery { mockRecordPaymentUseCase(any(), any(), any(), any(), any()) } returns Result.success(reciboRegistrado)
+        viewModel.retryPayment(error.context)
+        esperarEstado(viewModel) { it !is PaymentState.Error }
         esperarEstado(viewModel) { !paymentStateHolder.hayAlgunEfectivoSinRegistro() }
     }
 

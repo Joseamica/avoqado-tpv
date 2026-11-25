@@ -2747,6 +2747,283 @@ class PaymentViewModelTest {
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔴 Encargo a1ff27 (hz:nube0000:na278abe, Codex r1 de D7): si el registro del EFECTIVO falla y
+    // la cola tampoco lo acepta, la pantalla ofrece «Reintentar». El cliente YA pagó en efectivo:
+    // reintentar es volver a REGISTRAR ese efectivo con la misma llave y la misma referencia. Antes
+    // el contexto llevaba `merchantAccountId = ""`, `retryPayment` lo tomaba por un comercio que no
+    // encontró, elegía el primero y abría el cobro con TARJETA por el mismo importe: si el cliente la
+    // pasaba, cobro doble.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private fun prepararEfectivoQueNoSeRegistra(
+        contextos: MutableList<PaymentContext>,
+        tarjetas: MutableList<com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails>,
+        referencias: MutableList<String>,
+        fallasAntesDeRegistrar: Int = 1,
+    ) {
+        var llamadas = 0
+        coEvery {
+            mockRecordPaymentUseCase(
+                context = capture(contextos),
+                cardDetails = capture(tarjetas),
+                authorizationNumber = any(),
+                referenceNumber = capture(referencias),
+            )
+        } answers {
+            llamadas++
+            if (llamadas <= fallasAntesDeRegistrar) Result.failure(RuntimeException("timeout"))
+            else Result.success(
+                PaymentReceipt(
+                    paymentId = "pay-efectivo", receiptUrl = "https://receipt.avoqado.io/pay-efectivo", accessKey = "k",
+                    amount = BigDecimal("100.00"), tipAmount = BigDecimal("10.00"),
+                )
+            )
+        }
+        coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.failure(RuntimeException("disco lleno"))
+    }
+
+    /** $100 + $10 de propina en la pantalla de métodos, como la deja el flujo de propina. */
+    private fun abrirMetodosConPropina(viewModel: PaymentViewModel) {
+        viewModel.submitAmountDirectToMerchant("100.00")
+        esperarSelectingMerchant(viewModel)
+        viewModel.submitTip("100.00", "10.00", null)
+        esperarEstado(viewModel) { it is PaymentState.SelectingMerchant && it.tipAmount == "10.00" }
+    }
+
+    @Test
+    fun `a1ff27 Reintentar tras un error de registro del efectivo vuelve a registrar el efectivo y nunca abre la tarjeta`() = runTest {
+        val detect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>(relaxed = true)
+        val viewModel = createViewModel(startDetectCardUseCase = detect)
+        try {
+            val contextos = mutableListOf<PaymentContext>()
+            val tarjetas = mutableListOf<com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails>()
+            val referencias = mutableListOf<String>()
+            prepararEfectivoQueNoSeRegistra(contextos, tarjetas, referencias)
+            abrirMetodosConPropina(viewModel)
+
+            viewModel.processCashPayment("110.00")
+            esperarEstado(viewModel) { it is PaymentState.Error }
+            val error = viewModel.state.value as PaymentState.Error
+            assertThat(error.canRetry).isTrue()
+
+            viewModel.retryPayment(error.context)
+            esperarEstado(viewModel) { it is PaymentState.Success }
+
+            val exito = viewModel.state.value as PaymentState.Success
+            assertThat(exito.authCode).isEqualTo("EFECTIVO")
+            assertThat(exito.receipt?.paymentId).isEqualTo("pay-efectivo")
+            assertThat(exito.amount).isEqualTo("110.00")
+            // Dos intentos de REGISTRO, los dos en efectivo, con la MISMA referencia y la MISMA llave.
+            assertThat(tarjetas).containsExactly(
+                com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails.CASH,
+                com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails.CASH,
+            )
+            assertThat(referencias.distinct()).hasSize(1)
+            assertThat(contextos.map { it.idempotencyKey }.distinct()).hasSize(1)
+            assertThat(contextos.map { it.amount.toPlainString() }).containsExactly("100.00", "100.00")
+            assertThat(contextos.map { it.tip.toPlainString() }).containsExactly("10.00", "10.00")
+            assertThat(contextos.map { it.merchantAccountId }).containsExactly(null, null)
+            // Y la tarjeta nunca se abrió.
+            coVerify(exactly = 0) { detect.run(any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `a1ff27 si el reintento del efectivo vuelve a fallar sigue ofreciendo reintentar el efectivo, no la tarjeta`() = runTest {
+        val detect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>(relaxed = true)
+        val viewModel = createViewModel(startDetectCardUseCase = detect)
+        try {
+            val contextos = mutableListOf<PaymentContext>()
+            val tarjetas = mutableListOf<com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails>()
+            val referencias = mutableListOf<String>()
+            prepararEfectivoQueNoSeRegistra(contextos, tarjetas, referencias, fallasAntesDeRegistrar = 2)
+            abrirMetodosConPropina(viewModel)
+
+            viewModel.processCashPayment("110.00")
+            esperarEstado(viewModel) { it is PaymentState.Error }
+            viewModel.retryPayment((viewModel.state.value as PaymentState.Error).context)
+            esperarEstado(viewModel) { it is PaymentState.Error && tarjetas.size == 2 }
+            viewModel.retryPayment((viewModel.state.value as PaymentState.Error).context)
+            esperarEstado(viewModel) { it is PaymentState.Success }
+
+            assertThat(tarjetas).hasSize(3)
+            assertThat(tarjetas.distinct()).containsExactly(com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails.CASH)
+            assertThat(referencias.distinct()).hasSize(1)
+            assertThat(contextos.map { it.amount.toPlainString() }.distinct()).containsExactly("100.00")
+            coVerify(exactly = 0) { detect.run(any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `a1ff27 Cancelar tras un error de registro del efectivo regresa a metodos con la propina una sola vez`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            prepararEfectivoQueNoSeRegistra(mutableListOf(), mutableListOf(), mutableListOf())
+            abrirMetodosConPropina(viewModel)
+
+            viewModel.processCashPayment("110.00")
+            esperarEstado(viewModel) { it is PaymentState.Error }
+            viewModel.returnToSelectingMerchantFromError((viewModel.state.value as PaymentState.Error).context)
+
+            val metodos = viewModel.state.value as PaymentState.SelectingMerchant
+            assertThat(metodos.subtotal).isEqualTo("100.00")
+            assertThat(metodos.tipAmount).isEqualTo("10.00")
+            assertThat(metodos.totalAmount).isEqualTo("110.00")
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `a1ff27 un segundo toque en Reintentar mientras el primero registra no repinta los metodos`() = runTest {
+        val detect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>(relaxed = true)
+        val viewModel = createViewModel(startDetectCardUseCase = detect)
+        try {
+            val compuerta = CompletableDeferred<Unit>()
+            var llamadas = 0
+            coEvery {
+                mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+            } coAnswers {
+                llamadas++
+                if (llamadas == 1) Result.failure(RuntimeException("timeout"))
+                else {
+                    compuerta.await()  // el reintento se queda registrando
+                    Result.success(
+                        PaymentReceipt(
+                            paymentId = "pay-efectivo", receiptUrl = "https://receipt.avoqado.io/pay-efectivo", accessKey = "k",
+                            amount = BigDecimal("100.00"), tipAmount = BigDecimal("10.00"),
+                        )
+                    )
+                }
+            }
+            coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.failure(RuntimeException("disco lleno"))
+            abrirMetodosConPropina(viewModel)
+
+            viewModel.processCashPayment("110.00")
+            esperarEstado(viewModel) { it is PaymentState.Error }
+            val contexto = (viewModel.state.value as PaymentState.Error).context
+
+            viewModel.retryPayment(contexto)
+            esperarEstado(viewModel) { llamadas == 2 }
+            viewModel.retryPayment(contexto)  // el segundo toque, con el botón todavía en pantalla
+
+            assertThat(viewModel.state.value).isInstanceOf(PaymentState.Processing::class.java)
+            assertThat(viewModel.state.value).isNotInstanceOf(PaymentState.SelectingMerchant::class.java)
+
+            compuerta.complete(Unit)
+            esperarEstado(viewModel) { it is PaymentState.Success }
+            assertThat(llamadas).isEqualTo(2)
+            coVerify(exactly = 0) { detect.run(any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `a1ff27 si la venta ya quedo guardada en la terminal Reintentar lo dice y no deja cobrar otra vez`() = runTest {
+        val detect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>(relaxed = true)
+        val viewModel = createViewModel(startDetectCardUseCase = detect)
+        try {
+            // Así lo hace el registro de verdad: la fila del efectivo se guarda ANTES de enviar; al reintentar, la encuentra.
+            var llamadas = 0
+            coEvery {
+                mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+            } answers {
+                llamadas++
+                if (llamadas == 1) Result.failure(RuntimeException("timeout"))
+                else Result.failure(
+                    com.jaac.avoqado_tpv.features.payment.domain.usecase.CashOwnerReviewRequiredException(
+                        "La venta ya está guardada; no vuelvas a cobrarla."
+                    )
+                )
+            }
+            coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.failure(RuntimeException("disco lleno"))
+            abrirMetodosConPropina(viewModel)
+
+            viewModel.processCashPayment("110.00")
+            esperarEstado(viewModel) { it is PaymentState.Error }
+            viewModel.retryPayment((viewModel.state.value as PaymentState.Error).context)
+            esperarEstado(viewModel) { it is PaymentState.Error && llamadas == 2 }
+
+            val guardada = viewModel.state.value as PaymentState.Error
+            assertThat(guardada.message).contains("ya está guardada")
+            assertThat(guardada.canRetry).isFalse()
+            coVerify(exactly = 0) { detect.run(any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `a1ff27 un efectivo de 0 pesos (regalar una SIM) tambien se vuelve a registrar con la misma referencia`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            val contextos = mutableListOf<PaymentContext>()
+            val tarjetas = mutableListOf<com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails>()
+            val referencias = mutableListOf<String>()
+            prepararEfectivoQueNoSeRegistra(contextos, tarjetas, referencias)
+            viewModel.submitAmountDirectToMerchant("0.00")
+            esperarSelectingMerchant(viewModel)
+
+            viewModel.processCashPayment("0.00")
+            esperarEstado(viewModel) { it is PaymentState.Error }
+            viewModel.retryPayment((viewModel.state.value as PaymentState.Error).context)
+            esperarEstado(viewModel) { it is PaymentState.Success }
+
+            assertThat(tarjetas).hasSize(2)
+            assertThat(referencias.distinct()).hasSize(1)
+            assertThat(contextos.map { it.idempotencyKey }.distinct()).hasSize(1)
+            assertThat(contextos.map { it.amount.signum() }.distinct()).containsExactly(0)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `a1ff27 kiosco - Reintentar tras un error de registro del efectivo confirmado no abre la tarjeta`() = runTest {
+        val detect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>(relaxed = true)
+        val viewModel = createViewModel(startDetectCardUseCase = detect)
+        try {
+            val tarjetas = mutableListOf<com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails>()
+            val referencias = mutableListOf<String>()
+            prepararEfectivoQueNoSeRegistra(mutableListOf(), tarjetas, referencias)
+            viewModel.submitAmountDirectToMerchant("100.00")
+            esperarSelectingMerchant(viewModel)
+            forzarEstado(
+                viewModel,
+                PaymentState.AwaitingCashConfirmation(
+                    subtotal = "100.00", tipAmount = "0.00", totalAmount = "100.00", rating = null, orderId = null, orderNumber = null,
+                ),
+            )
+
+            viewModel.confirmCashPayment(confirmedByStaffId = testStaffId)
+            esperarEstado(viewModel) { it is PaymentState.Error }
+            viewModel.retryPayment((viewModel.state.value as PaymentState.Error).context)
+
+            // El empleado ya recibió el dinero: vuelve a confirmar el MISMO efectivo, sin registrar nada todavía.
+            val confirmar = viewModel.state.value as PaymentState.AwaitingCashConfirmation
+            assertThat(confirmar.subtotal).isEqualTo("100.00")
+            assertThat(confirmar.totalAmount).isEqualTo("100.00")
+            assertThat(tarjetas).hasSize(1)
+
+            viewModel.confirmCashPayment(confirmedByStaffId = testStaffId)
+            esperarEstado(viewModel) { it is PaymentState.Success }
+
+            assertThat(tarjetas).hasSize(2)
+            assertThat(tarjetas.distinct()).containsExactly(com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails.CASH)
+            assertThat(referencias.distinct()).hasSize(1)
+            assertThat(referencias.first()).startsWith("CASH-KIOSK-")
+            coVerify(exactly = 0) { detect.run(any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
     private fun queuedPaymentDeHueco2() = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment(
         queueId = 0,
         referenceNumber = "873257481453",

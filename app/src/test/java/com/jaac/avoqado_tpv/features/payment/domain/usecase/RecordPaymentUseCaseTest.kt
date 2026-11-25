@@ -51,6 +51,42 @@ class RecordPaymentUseCaseTest {
         orderPaymentRecorder = orderRecorder,
         paymentQueueRepository = queue, shiftRepository = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture())
 
+    // --- a1ff27: la venta de efectivo ya guardada que la cola ya no sube -------------------
+
+    private fun casoDeVentaGuardada(necesitaRevision: Boolean): RecordPaymentUseCase {
+        val shift = com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture()
+        coEvery { shift.pagoTieneDueno(any(), any(), any()) } returns true
+        coEvery { shift.contratoDelPagoGuardadoCoincide(any(), any()) } returns true
+        coEvery { shift.pagoGuardadoNecesitaRevision(any(), any()) } returns necesitaRevision
+        return RecordPaymentUseCase(
+            fastPaymentRecorder = fastRecorder, orderPaymentRecorder = orderRecorder,
+            paymentQueueRepository = queue, shiftRepository = shift,
+        )
+    }
+
+    private val efectivoGuardado = PaymentContext.FastPayment(
+        venueId = "venue-a1ff27", staffId = "staff-1", amount = BigDecimal("100.00"), merchantAccountId = null,
+        idempotencyKey = "llave-a1ff27",
+    )
+
+    @Test
+    fun `a1ff27 la venta guardada que la cola ya no sube dice que necesita revision y no deja cobrar otra vez`() = runTest {
+        val resultado = casoDeVentaGuardada(necesitaRevision = true)(efectivoGuardado, CardDetails.CASH, "EFECTIVO", "CASH-a1ff27")
+
+        val error = resultado.exceptionOrNull()
+        assertThat(error).isInstanceOf(CashOwnerReviewRequiredException::class.java)
+        assertThat(error?.message).contains("necesita revisión")
+        assertThat(error?.message).contains("no vuelvas a cobrarla")
+        coVerify(exactly = 0) { fastRecorder.recordPayment(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `a1ff27 la venta guardada que la cola todavia sube sigue diciendo que ya esta guardada`() = runTest {
+        val resultado = casoDeVentaGuardada(necesitaRevision = false)(efectivoGuardado, CardDetails.CASH, "EFECTIVO", "CASH-a1ff27")
+
+        assertThat(resultado.exceptionOrNull()?.message).isEqualTo("La venta ya está guardada; no vuelvas a cobrarla.")
+    }
+
     // --- Delegación correcta a classifySyncFailure -------------------------------------
 
     @Test

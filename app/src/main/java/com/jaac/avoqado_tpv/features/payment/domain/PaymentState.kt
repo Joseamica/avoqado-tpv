@@ -56,7 +56,12 @@ data class RetryContext(
     val equalPartsPartySize: Int? = null,
     val equalPartsPayedFor: Int? = null,
     val paidProductIds: List<String>? = null,
-    val selectedMsiMonths: Int? = null
+    val selectedMsiMonths: Int? = null,
+    /**
+     * 🔴 a1ff27: no nulo ⇒ el error vino de REGISTRAR un cobro en efectivo (el dinero ya está en el cajón).
+     * «Reintentar» vuelve a registrar ese efectivo con la misma llave; nunca abre el cobro con tarjeta.
+     */
+    val reintentoDeEfectivo: ReintentoDeEfectivo? = null,
 ) {
     /**
      * Calculate total amount (amount + tip).
@@ -74,7 +79,9 @@ data class RetryContext(
      * @return true if amount > 0 (merchant can be null for cash)
      */
     fun isValid(): Boolean {
-        return amount.toBigDecimalOrNull()?.let { it > java.math.BigDecimal.ZERO } == true
+        val importe = amount.toBigDecimalOrNull() ?: return false
+        // 🔴 a1ff27: un efectivo de $0 (regalar una SIM) también se vuelve a registrar; una tarjeta exige importe.
+        return importe > java.math.BigDecimal.ZERO || (reintentoDeEfectivo != null && importe.signum() == 0)
         // ✅ Removed: merchantAccountId.isNotBlank() check (cash has null merchant)
     }
 
@@ -83,6 +90,13 @@ data class RetryContext(
      */
     fun isOrderPayment(): Boolean = orderId != null
 }
+
+/**
+ * 🔴 a1ff27: de qué registro de efectivo vino el error que ofrece «Reintentar».
+ * - [EFECTIVO]: «Cobrar en efectivo»; se reintenta por el mismo camino (misma llave y referencia).
+ * - [KIOSCO]: el efectivo confirmado del kiosco (legacy); se regresa a la confirmación, sin volver a imprimir.
+ */
+enum class ReintentoDeEfectivo { EFECTIVO, KIOSCO }
 
 /**
  * Payment flow states

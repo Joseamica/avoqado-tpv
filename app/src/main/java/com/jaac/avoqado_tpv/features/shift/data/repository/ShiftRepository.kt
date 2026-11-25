@@ -898,6 +898,15 @@ class ShiftRepository(
             (key?.let { database.paymentAttemptDao().getById(it) }?.venueId == venueId)
     }
 
+    /**
+     * 🔴 a1ff27: la fila guardada de ESTA venta ya no se sube sola (la cola la dejó FAILED o la marcó para revisión): el
+     * dinero está en el cajón y el servidor no lo tiene, así que alguien debe revisarla.
+     */
+    suspend fun pagoGuardadoNecesitaRevision(venueId: String, reference: String): Boolean {
+        val row = database.pendingPaymentDao().findByReference(reference, venueId) ?: return false
+        return row.syncStatus == com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity.SYNC_STATUS_FAILED || row.requiereRevision
+    }
+
     /** Compara el contrato original sin tocar el dueño ni tomar referencias de la sesión actual. */
     suspend fun contratoDelPagoGuardadoCoincide(context: com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext,
         reference: String): Boolean = database.withTransaction {

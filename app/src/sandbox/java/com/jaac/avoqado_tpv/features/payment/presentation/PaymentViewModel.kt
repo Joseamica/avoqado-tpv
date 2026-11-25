@@ -7131,12 +7131,15 @@ class PaymentViewModel @Inject constructor(
                         )
                         _state.value = PaymentState.Error(
                             message = "Error registrando pago en efectivo:\n\n${error.message ?: "Error desconocido"}",
+                            // 🔴 a1ff27: «Reintentar» vuelve a REGISTRAR este efectivo (misma llave), nunca abre la
+                            // tarjeta. `amount` es el SUBTOTAL: la propina va aparte, como en cualquier RetryContext.
                             context = RetryContext(
-                                amount = currentState.totalAmount,  // ✅ FIX: Use totalAmount for consistency
+                                amount = currentState.subtotal,
                                 tipAmount = currentState.tipAmount,
                                 rating = currentState.rating,
-                                merchantAccountId = "",  // No merchant for cash
-                                flowOrigin = sessionSnapshot.flowOrigin
+                                merchantAccountId = null,  // null = efectivo (no hay comercio)
+                                flowOrigin = sessionSnapshot.flowOrigin,
+                                reintentoDeEfectivo = com.jaac.avoqado_tpv.features.payment.domain.ReintentoDeEfectivo.EFECTIVO,
                             ),
                             canRetry = true
                         )
@@ -7648,12 +7651,16 @@ class PaymentViewModel @Inject constructor(
                         )
                         _state.value = PaymentState.Error(
                             message = "Error registrando pago confirmado:\n\n${error.message ?: "Error desconocido"}",
+                            // 🔴 a1ff27: igual que el efectivo de arriba: reintentar es registrar, nunca la tarjeta.
                             context = RetryContext(
-                                amount = currentState.totalAmount,
+                                amount = currentState.subtotal,
                                 tipAmount = currentState.tipAmount,
                                 rating = currentState.rating,
-                                merchantAccountId = "",
-                                flowOrigin = sessionSnapshot.flowOrigin
+                                merchantAccountId = null,
+                                flowOrigin = sessionSnapshot.flowOrigin,
+                                orderId = currentState.orderId,
+                                orderNumber = currentState.orderNumber,
+                                reintentoDeEfectivo = com.jaac.avoqado_tpv.features.payment.domain.ReintentoDeEfectivo.KIOSCO,
                             ),
                             canRetry = true
                         )
@@ -8032,6 +8039,41 @@ class PaymentViewModel @Inject constructor(
             Timber.w("⚠️ [Retry] Context is NULL, resetting to idle")
             resetPayment()
             return
+        }
+
+        // 🔴 a1ff27: el cliente YA pagó en efectivo y lo que falló fue el REGISTRO. Reintentar es volver a
+        // registrar ese efectivo por el mismo camino de «Cobrar en efectivo» (misma llave del intento, misma
+        // referencia), nunca `startPayment`, que abre la TARJETA por el mismo importe: cobro doble.
+        // Si la venta ya quedó guardada en la terminal (el registro guarda la fila ANTES de enviar), el registro lo dice
+        // («La venta ya está guardada; no vuelvas a cobrarla») y no deja reintentar: la cola es la dueña de esa fila.
+        // Un segundo toque (o uno tardío) no puede repintar los métodos mientras el primero registra: sólo se reintenta desde
+        // el error y sin otro efectivo en camino (Codex r2). Sin esto, la tarjeta quedaba a un toque durante el registro.
+        if (context.reintentoDeEfectivo != null &&
+            (_state.value !is PaymentState.Error || cobroEnEfectivoEnVuelo.get())) {
+            Timber.w("🔄 [Smart Retry] Efectivo: toque ignorado, ya se está registrando | estado=${_state.value::class.simpleName}")
+            return
+        }
+        when (context.reintentoDeEfectivo) {
+            com.jaac.avoqado_tpv.features.payment.domain.ReintentoDeEfectivo.EFECTIVO -> {
+                Timber.i("🔄 [Smart Retry] Efectivo: se reintenta el REGISTRO, no se abre la tarjeta | attempt=${sessionSnapshot.paymentAttemptId}")
+                processCashPaymentFromError(context)
+                return
+            }
+            com.jaac.avoqado_tpv.features.payment.domain.ReintentoDeEfectivo.KIOSCO -> {
+                // El empleado ya recibió el dinero: vuelve a la confirmación (misma llave del intento), sin imprimir otra vez.
+                Timber.i("🔄 [Smart Retry] Kiosco: de vuelta a confirmar el efectivo | attempt=${sessionSnapshot.paymentAttemptId}")
+                if (!context.isValid()) { resetPayment(); return }
+                _state.value = PaymentState.AwaitingCashConfirmation(
+                    subtotal = context.amount,
+                    tipAmount = context.tipAmount,
+                    totalAmount = calculateTotal(context.amount, context.tipAmount),
+                    rating = context.rating,
+                    orderId = context.orderId,
+                    orderNumber = context.orderNumber,
+                )
+                return
+            }
+            null -> Unit
         }
 
         if (!context.isValid()) {

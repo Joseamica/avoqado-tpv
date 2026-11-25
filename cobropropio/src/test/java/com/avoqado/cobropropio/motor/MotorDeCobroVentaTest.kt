@@ -450,7 +450,8 @@ class MotorDeCobroVentaTest {
         ganchos["transicionar"] = {
             if (enLaTransaccion == null) enLaTransaccion = motor.intentos.getValue(s.id).historia.value to ahora()
         }
-        assertEquals(NoSeCobro, terminal(s))
+        // El final y su hora, como hoy: la venta (1 s), el permiso, una vuelta REVERSADA y el acuse (1 s cada uno).
+        assertEquals(NoSeCobro to T0 + 4_000, cobrar(s).last())
         assertEquals(777L, fila(s).parcialOperacion)
         assertEquals(50L, fila(s).parcialImporteCentavos)
         val (publicado, cuando) = requireNotNull(enLaTransaccion)
@@ -538,6 +539,7 @@ class MotorDeCobroVentaTest {
         val r = motor.intentos.getValue(s.id)
         assertFalse("el intento sigue vivo", r.terminado)
         val avisoYaSalio = RevisandoConElBanco in r.historia.value
+        assertEquals("el segundo se engancha a T0 + 1.5 s", T0 + 1_500, ahora())
         val segundo = cobrar(s)
         val uno = primero.await()
         // El final, como hoy, y una sola vez a cada colector.

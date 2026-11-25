@@ -44,9 +44,17 @@ fun decidirMotivoSinTarjeta(
 fun cobrarSaltaElLector(hayLectorBlumon: Boolean, lectorListo: Boolean, tarjetaSinRed: Boolean): Boolean =
     hayLectorBlumon && !lectorListo && tarjetaSinRed
 
-/** ¿La ruta de pago Blumon espera al lector antes de mostrarse? No con un cobro en sólo efectivo. */
-fun rutaDePagoEsperaAlLector(hayLectorBlumon: Boolean, lectorListo: Boolean, soloEfectivo: Boolean): Boolean =
-    hayLectorBlumon && !lectorListo && !soloEfectivo
+/**
+ * ¿La ruta de pago Blumon espera al lector antes de mostrarse? No con un cobro en sólo efectivo, y nunca encima de una pantalla que
+ * [yaCobro] (hz:nube0000:na572d47, 24-nov): la renovación diaria del SDK apaga «lector listo» con el recibo «Total pagado» a la vista,
+ * y la espera lo tapaba y, si la preparación fallaba, regresaba sola al carrito de la venta ya cobrada. Antes de cobrar, como siempre.
+ */
+fun rutaDePagoEsperaAlLector(hayLectorBlumon: Boolean, lectorListo: Boolean, soloEfectivo: Boolean, yaCobro: Boolean = false): Boolean =
+    hayLectorBlumon && !lectorListo && !soloEfectivo && !yaCobro
+
+/** ¿La pantalla de cobro ya cobró? Su recibo, su impresión o la verificación de la venta: el dinero ya entró. */
+fun PaymentState.yaCobro(): Boolean =
+    this is PaymentState.Success || this is PaymentState.Printing || this is PaymentState.PrintError || this is PaymentState.Verifying
 
 /** El lector no debe impedir entrar a las funciones locales del Inicio. */
 internal fun inicioEsperaAlLector(hayLectorBlumon: Boolean, lectorPendiente: Boolean, sinConexion: Boolean): Boolean =

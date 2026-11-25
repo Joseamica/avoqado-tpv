@@ -90,6 +90,30 @@ class ArgumentosDelCobroSeLeenUnaVezTest {
         )
     }
 
+    /**
+     * 🧾 hz:nube0000:na572d47 (24-nov): la compuerta se revisa en cada dibujo y la renovación diaria del SDK puede apagar «lector
+     * listo» con el recibo «Total pagado» a la vista. Antes de cobrar sigue igual; con un cobro hecho en la entrada ya no vuelve: el
+     * estado se lee del ViewModel de la pantalla antes de la compuerta (sólo si ya se mostró, para no crearlo antes) y queda guardado
+     * por entrada.
+     */
+    @Test
+    fun `la compuerta del lector de la ruta Blumon nunca tapa una pantalla que ya cobro`() {
+        val cuerpo = cuerpoDe("NavRoute.Payment.route")
+        val mostrada = cuerpo.indexOf("var pantallaYaMostrada by remember { mutableStateOf(false) }")
+        val guardado = cuerpo.indexOf("var cobroHechoEnEstaEntrada by remember { mutableStateOf(false) }")
+        val lee = cuerpo.indexOf("val cobroHechoAhora = if (pantallaYaMostrada) {")
+        val actual = cuerpo.indexOf("vmDeLaPantalla.state.value.yaCobro() || entregado.yaCobro()")
+        val fija = cuerpo.indexOf("SideEffect { if (cobroHechoAhora) cobroHechoEnEstaEntrada = true }")
+        assertTrue("El estado del cobro debe leerse en su valor actual además de la suscripción", actual in lee until fija)
+        val pasa = cuerpo.indexOf("yaCobro = cobroHechoEnEstaEntrada || cobroHechoAhora,")
+        val espera = cuerpo.indexOf("awaitPaxPaymentReady(")
+        val marca = cuerpo.indexOf("SideEffect { pantallaYaMostrada = true }")
+        assertTrue("Faltan las marcas guardadas por entrada antes de la compuerta", mostrada >= 0 && guardado >= 0 && maxOf(mostrada, guardado) < lee)
+        assertTrue("El estado del cobro debe leerse y fijarse antes de la compuerta", lee in 0 until fija && fija < pasa)
+        assertTrue("La compuerta debe recibir yaCobro antes de esperar al lector", pasa in 0 until espera)
+        assertTrue("La pantalla mostrada se marca al dibujarla, después de la compuerta", marca > espera)
+    }
+
     @Test
     fun `D2 Cobrar usa las reglas puras para no esperar al lector en solo efectivo`() {
         val cuerpo = cuerpoDe("NavRoute.Checkout.route")

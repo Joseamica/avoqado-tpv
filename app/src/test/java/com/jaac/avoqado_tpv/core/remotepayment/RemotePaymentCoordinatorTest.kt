@@ -52,4 +52,15 @@ class RemotePaymentCoordinatorTest {
         assertThat(result.await()).isEqualTo(RemotePaymentAdmission.VENUE_CHANGED)
     }
 
+    // D669 (Codex r2 #2): `SocketManager.events` reentrega el ÚLTIMO evento a cada `HomeViewModel` nuevo (replay = 1). Una devolución
+    // ya contestada (`rejected` con la terminal bloqueada, u `opened`) no se vuelve a contestar ni a abrir.
+    @Test fun `P2 D669 una devolucion del POS se contesta una sola vez aunque el evento se reentregue`() {
+        val coordinator = RemotePaymentCoordinator(mockk(relaxed = true))
+        assertThat(coordinator.esDevolucionNueva("refund-1")).isTrue()
+        assertThat(coordinator.esDevolucionNueva("refund-1")).isFalse()
+        assertThat(coordinator.esDevolucionNueva("refund-2")).isTrue()
+        // Sin id no hay con qué reconocerla: se atiende como siempre.
+        assertThat(coordinator.esDevolucionNueva("")).isTrue()
+        assertThat(coordinator.esDevolucionNueva("")).isTrue()
+    }
 }

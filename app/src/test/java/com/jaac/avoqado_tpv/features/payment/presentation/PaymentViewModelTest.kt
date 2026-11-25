@@ -3338,12 +3338,12 @@ class PaymentViewModelTest {
                 "100.00", orderId = "order-1", orderNumber = "0007", skipLocalOrderValidation = true
             )
             esperarSelectingMerchant(viewModel)
-            assertThat(paymentStateHolder.cuentaConEfectivoSinRegistro()).isNull()
+            assertThat(paymentStateHolder.hayAlgunEfectivoSinRegistro()).isFalse()
 
             viewModel.processCashPayment("100.00")
             esperarEstado(viewModel) { it is PaymentState.Error }
             assertThat((viewModel.state.value as PaymentState.Error).message).startsWith("Error registrando pago en efectivo")
-            esperarEstado(viewModel) { paymentStateHolder.cuentaConEfectivoSinRegistro() == "order-1" }
+            esperarEstado(viewModel) { paymentStateHolder.hayEfectivoSinRegistro("order-1") }
             assertThat(CobroRemotoDelPos.motivoPorEfectivoSinRegistro("order-1", paymentStateHolder))
                 .isEqualTo(CobroRemotoDelPos.NO_INICIADO_POR_EFECTIVO_SIN_REGISTRO)
             assertThat(CobroRemotoDelPos.motivoPorEfectivoSinRegistro("order-2", paymentStateHolder)).isNull()
@@ -3351,15 +3351,15 @@ class PaymentViewModelTest {
             assertThat(paymentStateHolder.isChargeAttemptActive()).isFalse()
 
             viewModel.resetPayment()   // salir del error (Cancelar / Inicio)
-            esperarEstado(viewModel) { paymentStateHolder.cuentaConEfectivoSinRegistro() == null }
+            esperarEstado(viewModel) { !paymentStateHolder.hayAlgunEfectivoSinRegistro() }
         } finally {
             viewModel.viewModelScope.cancel()
         }
     }
 
-    // Codex r1 #2: la marca se quita porque la pantalla deja de mostrar ESE error, no sólo con resetPayment().
-    @Test
-    fun `P1 6a2254 Reintentar desde el error quita la marca sin pasar por resetPayment`() = runTest {
+    // Codex r1 #2 y r2 #2: la marca se quita porque la pantalla deja el error, con los MISMOS métodos que llaman los botones
+    // de PaymentErrorContent: «Reintentar» = retryPayment(context) y «Cancelar» = returnToSelectingMerchantFromError(context).
+    private fun conElErrorDelEfectivoDeLaCuenta1(prueba: (PaymentViewModel, PaymentState.Error) -> Unit) = runTest {
         coEvery {
             mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
         } returns Result.failure(RuntimeException("HTTP 500"))
@@ -3372,28 +3372,27 @@ class PaymentViewModelTest {
             )
             esperarSelectingMerchant(viewModel)
             viewModel.processCashPayment("100.00")
-            esperarEstado(viewModel) { paymentStateHolder.cuentaConEfectivoSinRegistro() == "order-1" }
+            esperarEstado(viewModel) { paymentStateHolder.hayEfectivoSinRegistro("order-1") }
             val error = viewModel.state.value as PaymentState.Error
-
-            // Reintentar: ahora el registro sí pasa.
-            coEvery {
-                mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
-            } returns Result.success(
-                PaymentReceipt(
-                    paymentId = "pay-1",
-                    receiptUrl = "https://receipt.avoqado.io/pay-1",
-                    accessKey = "k",
-                    amount = BigDecimal("100.00"),
-                    tipAmount = BigDecimal.ZERO,
-                )
-            )
-            viewModel.processCashPaymentFromError(error.context)
-
-            esperarEstado(viewModel) { it != error }
-            esperarEstado(viewModel) { paymentStateHolder.cuentaConEfectivoSinRegistro() == null }
+            assertThat(error.message).startsWith("Error registrando pago en efectivo")
+            prueba(viewModel, error)
         } finally {
             viewModel.viewModelScope.cancel()
         }
+    }
+
+    @Test
+    fun `P1 6a2254 el boton Reintentar del error quita la marca`() = conElErrorDelEfectivoDeLaCuenta1 { viewModel, error ->
+        viewModel.retryPayment(error.context)
+        esperarEstado(viewModel) { it != error }
+        esperarEstado(viewModel) { !paymentStateHolder.hayAlgunEfectivoSinRegistro() }
+    }
+
+    @Test
+    fun `P1 6a2254 el boton Cancelar del error quita la marca`() = conElErrorDelEfectivoDeLaCuenta1 { viewModel, error ->
+        viewModel.returnToSelectingMerchantFromError(error.context)
+        esperarEstado(viewModel) { it != error }
+        esperarEstado(viewModel) { !paymentStateHolder.hayAlgunEfectivoSinRegistro() }
     }
 
     @Test
@@ -3411,7 +3410,7 @@ class PaymentViewModelTest {
             // Codex r1 #2: ESTE error (el del registro del efectivo), no cualquier error anterior al POST.
             esperarEstado(viewModel) { (it as? PaymentState.Error)?.message?.startsWith("Error registrando pago en efectivo") == true }
             coVerify(exactly = 1) { mockPaymentQueueRepository.enqueue(any()) }
-            assertThat(paymentStateHolder.cuentaConEfectivoSinRegistro()).isNull()
+            assertThat(paymentStateHolder.hayAlgunEfectivoSinRegistro()).isFalse()
         } finally {
             viewModel.viewModelScope.cancel()
         }

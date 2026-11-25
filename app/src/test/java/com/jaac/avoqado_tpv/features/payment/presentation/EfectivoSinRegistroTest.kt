@@ -44,7 +44,7 @@ class EfectivoSinRegistroTest {
 
         estado.quitarEfectivoSinRegistro(pantalla)
 
-        assertThat(estado.cuentaConEfectivoSinRegistro()).isNull()
+        assertThat(estado.hayAlgunEfectivoSinRegistro()).isFalse()
         assertThat(CobroRemotoDelPos.motivoPorEfectivoSinRegistro("cuenta-X", estado)).isNull()
     }
 
@@ -57,7 +57,24 @@ class EfectivoSinRegistroTest {
 
         estado.quitarEfectivoSinRegistro(vieja)
 
-        assertThat(estado.cuentaConEfectivoSinRegistro()).isEqualTo("cuenta-X")
+        assertThat(estado.hayEfectivoSinRegistro("cuenta-X")).isTrue()
+    }
+
+    // Codex r2 #1: el error de X tapado por otra pantalla que llega a su propio error de Y. Las dos cuentas siguen frenadas, y
+    // al salir la de arriba la de abajo sigue.
+    @Test fun `P1 dos errores apilados frenan las dos cuentas y salir del de arriba no suelta el de abajo`() {
+        val estado = PaymentStateHolder()
+        val deX = estado.entraPantallaDeCobro()
+        val deY = estado.entraPantallaDeCobro()
+        estado.marcarEfectivoSinRegistro(deX, "cuenta-X")
+        estado.marcarEfectivoSinRegistro(deY, "cuenta-Y")
+
+        assertThat(CobroRemotoDelPos.motivoPorEfectivoSinRegistro("cuenta-X", estado)).isNotNull()
+        assertThat(CobroRemotoDelPos.motivoPorEfectivoSinRegistro("cuenta-Y", estado)).isNotNull()
+
+        estado.quitarEfectivoSinRegistro(deY)
+        assertThat(CobroRemotoDelPos.motivoPorEfectivoSinRegistro("cuenta-X", estado)).isNotNull()
+        assertThat(CobroRemotoDelPos.motivoPorEfectivoSinRegistro("cuenta-Y", estado)).isNull()
     }
 
     @Test fun `la marca no aparta la terminal - no es un cobro en curso`() {

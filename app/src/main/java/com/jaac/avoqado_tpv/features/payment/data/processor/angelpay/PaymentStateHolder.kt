@@ -63,19 +63,25 @@ class PaymentStateHolder @Inject constructor() : PaymentStateProvider {
 
     // 6a2254 (founder, 24-nov: el freno mínimo, «que no sea overengineer»): la cuenta cuya pantalla muestra «Error registrando
     // pago en efectivo», con el número de esa pantalla. Sólo la pantalla que la puso la quita (D666: la vieja que muere ~700 ms
-    // después no le quita la marca a una más nueva). En memoria a propósito: no cubre un proceso muerto ni lee las colas.
-    private var efectivoSinRegistro: Pair<Long, String>? = null
+    // después no le quita la marca a una más nueva). Una marca POR pantalla (Codex r2): con el error de X tapado por otra pantalla
+    // de cobro que llega a su propio error de Y, las dos cuentas siguen frenadas. En memoria a propósito: no cubre un proceso
+    // muerto ni lee las colas.
+    private val efectivoSinRegistro = HashMap<Long, String>()
 
-    /** La pantalla [pantalla] muestra el error de registro del efectivo de [orderId]. */
+    /** La pantalla [pantalla] tiene abierto el error de registro del efectivo de [orderId]. */
     @Synchronized
-    fun marcarEfectivoSinRegistro(pantalla: Long, orderId: String) { efectivoSinRegistro = pantalla to orderId }
+    fun marcarEfectivoSinRegistro(pantalla: Long, orderId: String) { efectivoSinRegistro[pantalla] = orderId }
 
-    /** La pantalla [pantalla] ya no muestra ese error (Reintentar, Cancelar, otro estado o al morir). Sólo quita la suya. */
+    /** La pantalla [pantalla] ya no está en ese error (Reintentar, Cancelar, otro estado o al morir). Sólo quita la suya. */
     @Synchronized
-    fun quitarEfectivoSinRegistro(pantalla: Long) { if (efectivoSinRegistro?.first == pantalla) efectivoSinRegistro = null }
+    fun quitarEfectivoSinRegistro(pantalla: Long) { efectivoSinRegistro.remove(pantalla) }
 
     @Synchronized
-    override fun cuentaConEfectivoSinRegistro(): String? = efectivoSinRegistro?.second
+    override fun hayEfectivoSinRegistro(orderId: String): Boolean = efectivoSinRegistro.containsValue(orderId)
+
+    /** Para las pruebas: ¿hay alguna marca? */
+    @Synchronized
+    internal fun hayAlgunEfectivoSinRegistro(): Boolean = efectivoSinRegistro.isNotEmpty()
 
     // 🔴 Founder, 29-sep-2026: «nada puede detener las ventas». Una devolución de AngelPay marca aquí el rato en que habla con
     // el procesador (segundos) para que un cobro del POS no le arranque la pantalla. Reloj MONOTÓNICO y tope de 2 min: aunque

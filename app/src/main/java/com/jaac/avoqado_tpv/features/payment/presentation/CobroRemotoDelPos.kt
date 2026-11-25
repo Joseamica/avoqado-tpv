@@ -50,7 +50,7 @@ internal object CobroRemotoDelPos {
      * dejaría cobrar X con tarjeta con su efectivo sin registrar). Se suelta al salir del error o al cerrarse la pantalla.
      */
     fun motivoPorEfectivoSinRegistro(orderId: String?, estado: PaymentStateProvider): String? =
-        if (orderId != null && orderId == estado.cuentaConEfectivoSinRegistro()) NO_INICIADO_POR_EFECTIVO_SIN_REGISTRO else null
+        if (orderId != null && estado.hayEfectivoSinRegistro(orderId)) NO_INICIADO_POR_EFECTIVO_SIN_REGISTRO else null
 
     /**
      * ¿Por qué la terminal NO inicia AHORA un cobro que mandó el POS? `null` = puede iniciarlo. Una sola regla para las dos

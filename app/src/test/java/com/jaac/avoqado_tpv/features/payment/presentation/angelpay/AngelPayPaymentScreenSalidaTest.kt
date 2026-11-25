@@ -88,11 +88,12 @@ class AngelPayPaymentScreenSalidaTest {
     @Test
     fun `regresion - el auto-arranque desde Idle con monto sigue intacto y llama initPayment UNA vez`() {
         val arranque = Regex(
-            """LaunchedEffect\(\s*initialAmount,\s*orderId,\s*orderNumber,\s*skipReview,\s*externalTipCents,\s*externalRating,\s*externalSkipReview,\s*propinaYaElegidaCents,\s*soloEfectivo,\s*ventaLocalJson,\s*\)\s*\{\s*if \(initialAmount != null && state is AngelPayPaymentState\.Idle\) \{""",
+            """LaunchedEffect\(\s*initialAmount,\s*orderId,\s*orderNumber,\s*skipReview,\s*externalTipCents,\s*externalRating,\s*externalSkipReview,\s*propinaYaElegidaCents,\s*soloEfectivo,\s*ventaLocalJson,\s*\)\s*\{(?:\s*//[^\n]*)*\s*if \(initialAmount != null && state is AngelPayPaymentState\.Idle && !propinaDeMesaCobrada\) \{""",
         )
         assertTrue(
             "El auto-arranque de AngelPayPaymentScreen cambió de llaves o de guarda: `Idle` es el estado inicial legítimo y debe " +
-                "seguir arrancando el cobro, UNA vez, cuando la pantalla abre con monto.",
+                "seguir arrancando el cobro, UNA vez, cuando la pantalla abre con monto; tras un cobro hecho (Success o Queued) ya no " +
+                "(hz:1450a1e9:D4: al volver a montarse la pantalla ofrecía la cuenta pagada).",
             arranque.containsMatchIn(cuerpoSiempreCompuesto),
         )
         assertEquals(

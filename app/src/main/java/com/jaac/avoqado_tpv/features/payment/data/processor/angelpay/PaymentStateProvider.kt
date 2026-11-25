@@ -34,4 +34,11 @@ interface PaymentStateProvider {
      * ([PaymentStateHolder.TOPE_DEVOLUCION_EN_CURSO_MS]): aunque algo no la soltara, nunca puede trabar las ventas.
      */
     fun isRefundInFlight(): Boolean = false
+
+    /**
+     * 6a2254 (founder, 24-nov): la cuenta cuya pantalla de cobro de la PAX muestra AHORA «Error registrando pago en efectivo»
+     * (el efectivo pudo entrar al cajón sin registro). Sólo en memoria y sólo mientras esa pantalla lo muestra. `null` = ninguna.
+     * La admisión del cobro del POS no inicia un cobro de ESA cuenta; las demás pasan. No aparta la terminal.
+     */
+    fun cuentaConEfectivoSinRegistro(): String? = null
 }

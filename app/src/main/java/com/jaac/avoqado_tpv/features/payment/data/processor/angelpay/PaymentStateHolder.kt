@@ -61,6 +61,22 @@ class PaymentStateHolder @Inject constructor() : PaymentStateProvider {
         return true
     }
 
+    // 6a2254 (founder, 24-nov: el freno mínimo, «que no sea overengineer»): la cuenta cuya pantalla muestra «Error registrando
+    // pago en efectivo», con el número de esa pantalla. Sólo la pantalla que la puso la quita (D666: la vieja que muere ~700 ms
+    // después no le quita la marca a una más nueva). En memoria a propósito: no cubre un proceso muerto ni lee las colas.
+    private var efectivoSinRegistro: Pair<Long, String>? = null
+
+    /** La pantalla [pantalla] muestra el error de registro del efectivo de [orderId]. */
+    @Synchronized
+    fun marcarEfectivoSinRegistro(pantalla: Long, orderId: String) { efectivoSinRegistro = pantalla to orderId }
+
+    /** La pantalla [pantalla] ya no muestra ese error (Reintentar, Cancelar, otro estado o al morir). Sólo quita la suya. */
+    @Synchronized
+    fun quitarEfectivoSinRegistro(pantalla: Long) { if (efectivoSinRegistro?.first == pantalla) efectivoSinRegistro = null }
+
+    @Synchronized
+    override fun cuentaConEfectivoSinRegistro(): String? = efectivoSinRegistro?.second
+
     // 🔴 Founder, 29-sep-2026: «nada puede detener las ventas». Una devolución de AngelPay marca aquí el rato en que habla con
     // el procesador (segundos) para que un cobro del POS no le arranque la pantalla. Reloj MONOTÓNICO y tope de 2 min: aunque
     // algo no la soltara, la marca se apaga sola y nunca traba las ventas. 0 = sin devolución en curso.

@@ -669,6 +669,12 @@ class PaymentViewModel @Inject constructor(
     /** D666: el número de esta pantalla de cobro; al morir sólo suelta las banderas si ninguna nació después. */
     private val pantallaDeCobro = paymentStateHolder.entraPantallaDeCobro()
 
+    /**
+     * 6a2254 (founder, 24-nov: el freno mínimo): el «Error registrando pago en efectivo» que publicó [processCashPayment], con la
+     * cuenta de ese cobro. El colector del estado pone la marca en [PaymentStateHolder] mientras la pantalla muestra ESE error.
+     */
+    @Volatile private var errorDeEfectivoSinRegistro: Pair<PaymentState.Error, String>? = null
+
     init {
         Timber.d("🎬 [PaymentViewModel] Initialized")
 
@@ -740,6 +746,15 @@ class PaymentViewModel @Inject constructor(
         // Error/PrintError/Idle are genuinely terminal — no money work follows them.
         viewModelScope.launch {
             state.collect { s ->
+                // 6a2254: la marca de «error de registro del efectivo de la cuenta X» sigue a lo que la pantalla MUESTRA. Se pone
+                // ANTES de soltar la bandera de cobro activo (sin hueco entre las dos) y se quita con cualquier otro estado:
+                // Reintentar, Cancelar, reiniciar. Al morir la pantalla la quita onCleared.
+                val efectivo = errorDeEfectivoSinRegistro
+                if (efectivo != null && s == efectivo.first) {
+                    paymentStateHolder.marcarEfectivoSinRegistro(pantallaDeCobro, efectivo.second)
+                } else {
+                    paymentStateHolder.quitarEfectivoSinRegistro(pantallaDeCobro)
+                }
                 if (authorizationUnresolved && s is PaymentState.Error) {
                     showUnresolvedAuthorization()
                     return@collect
@@ -7115,7 +7130,7 @@ class PaymentViewModel @Inject constructor(
                             queueError = queueError,
                             orderIdForFlow = orderIdForFlow
                         )
-                        _state.value = PaymentState.Error(
+                        val errorDelEfectivo = PaymentState.Error(
                             message = "Error registrando pago en efectivo:\n\n${error.message ?: "Error desconocido"}",
                             context = RetryContext(
                                 amount = currentState.totalAmount,  // ✅ FIX: Use totalAmount for consistency
@@ -7126,6 +7141,10 @@ class PaymentViewModel @Inject constructor(
                             ),
                             canRetry = true
                         )
+                        // 6a2254: mientras este error se vea, el cobro del POS de ESTA cuenta no se inicia (el efectivo pudo
+                        // entrar al cajón sin registro). Se anota ANTES de publicar: el colector del estado pone la marca.
+                        errorDeEfectivoSinRegistro = orderIdForFlow?.let { errorDelEfectivo to it }
+                        _state.value = errorDelEfectivo
                     }
                 }
 
@@ -10652,6 +10671,8 @@ class PaymentViewModel @Inject constructor(
         super.onCleared()
         // 🛑 Ruling 96: una salida sin resetPayment() no se lleva el desenlace retenido de un cobro del POS.
         enviarDesenlaceRetenidoAlSalir()
+        // 6a2254: la pantalla que se va ya no muestra el error del efectivo. Sólo quita SU marca (D666).
+        paymentStateHolder.quitarEfectivoSinRegistro(pantallaDeCobro)
         // 🔒 The state collector died with viewModelScope — never leave the singleton flags stuck
         // true. A stuck money-window flag would refuse every future POS cancel; a stuck
         // charge-active flag would refuse every future POS CHARGE («La terminal tiene otro cobro en curso…»)

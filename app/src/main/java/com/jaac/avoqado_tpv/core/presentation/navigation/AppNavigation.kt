@@ -620,6 +620,8 @@ fun AppNavigation(
             )
                 // Parte 2 (Codex r2 #1): tampoco mientras cobra con saldo, ni sobre una cuenta con un saldo sin confirmar.
                 ?: cobroConSaldo.motivoParaNoCobrarRemoto(request.orderId)
+                // 6a2254: tampoco sobre la cuenta cuya pantalla muestra «Error registrando pago en efectivo» (PAX). Sólo esa cuenta.
+                ?: CobroRemotoDelPos.motivoPorEfectivoSinRegistro(request.orderId, paymentStateProvider)
             if (motivoParaNoIniciar != null) {
                 Timber.w("⚠️ [Remote] No se inicia el cobro (%s) - amount: ${request.amountCents}", motivoParaNoIniciar)
                 // If this came via socket, send rejection back so iOS doesn't hang

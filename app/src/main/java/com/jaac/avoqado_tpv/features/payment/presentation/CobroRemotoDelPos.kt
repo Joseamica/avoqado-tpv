@@ -35,6 +35,21 @@ internal object CobroRemotoDelPos {
         "La terminal está terminando una devolución: este cobro NO se inició. Vuelve a enviarlo en unos segundos, o cobra con otra terminal."
 
     /**
+     * 6a2254: lo que ve la tablet cuando la PAX muestra el error de registro del efectivo de ESA cuenta. El efectivo pudo entrar
+     * al cajón: no se le dice «vuelve a enviarlo», se le dice que revise la terminal antes de volver a cobrar.
+     */
+    const val NO_INICIADO_POR_EFECTIVO_SIN_REGISTRO =
+        "La terminal muestra un error al registrar el EFECTIVO de esta cuenta: este cobro NO se inició. " +
+            "El cliente pudo haber pagado ya en efectivo; revisa la terminal antes de volver a cobrar."
+
+    /**
+     * 6a2254 (founder, 24-nov): ¿la pantalla de cobro muestra ahora el error de registro del efectivo de [orderId]? Entonces el
+     * cobro del POS de ESA cuenta no se inicia. Las demás cuentas y el Pago rápido del POS (sin cuenta) pasan. `null` = puede.
+     */
+    fun motivoPorEfectivoSinRegistro(orderId: String?, estado: PaymentStateProvider): String? =
+        if (orderId != null && orderId == estado.cuentaConEfectivoSinRegistro()) NO_INICIADO_POR_EFECTIVO_SIN_REGISTRO else null
+
+    /**
      * ¿Por qué la terminal NO inicia AHORA un cobro que mandó el POS? `null` = puede iniciarlo. Una sola regla para las dos
      * pantallas: sólo la aparta lo que está ejecutándose en ese instante — un cobro en su pantalla, o una devolución hablando
      * con AngelPay (marca con tope de 2 min). Nada guardado ni en duda detiene un cobro (founder, 25 y 29-sep).

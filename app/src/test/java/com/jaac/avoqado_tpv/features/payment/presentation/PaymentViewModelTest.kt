@@ -3314,6 +3314,68 @@ class PaymentViewModelTest {
      * la compuerta sólo puede colgarse DESPUÉS de llegar a SelectingMerchant. Espera activa corta,
      * el mismo patrón (Thread.sleep) que ya usan las pruebas de esta clase con Dispatchers.IO.
      */
+    private fun esperarEstado(viewModel: PaymentViewModel, timeoutMs: Long = 5000, condicion: (PaymentState) -> Boolean) {
+        val limite = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < limite) {
+            if (condicion(viewModel.state.value)) return
+            Thread.sleep(20)
+        }
+        throw AssertionError("No llegó al estado esperado. Estado=${viewModel.state.value}")
+    }
+
+    // 6a2254 (founder, 24-nov: el freno mínimo): con «Error registrando pago en efectivo» de la cuenta X en la pantalla, el cobro
+    // del POS de ESA cuenta no se inicia. La marca vive en el PaymentStateHolder REAL de esta prueba y sigue a lo que se muestra.
+    @Test
+    fun `P1 6a2254 el error de registro del efectivo marca su cuenta y al salir del error se quita`() = runTest {
+        coEvery {
+            mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+        } returns Result.failure(RuntimeException("HTTP 500"))
+        coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.failure(RuntimeException("disco lleno"))
+
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountDirectToMerchant(
+                "100.00", orderId = "order-1", orderNumber = "0007", skipLocalOrderValidation = true
+            )
+            esperarSelectingMerchant(viewModel)
+            assertThat(paymentStateHolder.cuentaConEfectivoSinRegistro()).isNull()
+
+            viewModel.processCashPayment("100.00")
+            esperarEstado(viewModel) { it is PaymentState.Error }
+            assertThat((viewModel.state.value as PaymentState.Error).message).startsWith("Error registrando pago en efectivo")
+            esperarEstado(viewModel) { paymentStateHolder.cuentaConEfectivoSinRegistro() == "order-1" }
+            assertThat(CobroRemotoDelPos.motivoPorEfectivoSinRegistro("order-1", paymentStateHolder))
+                .isEqualTo(CobroRemotoDelPos.NO_INICIADO_POR_EFECTIVO_SIN_REGISTRO)
+            assertThat(CobroRemotoDelPos.motivoPorEfectivoSinRegistro("order-2", paymentStateHolder)).isNull()
+            // El error no aparta la terminal (founder, 25-sep): sólo esa cuenta espera.
+            assertThat(paymentStateHolder.isChargeAttemptActive()).isFalse()
+
+            viewModel.resetPayment()   // salir del error (Cancelar / Inicio)
+            esperarEstado(viewModel) { paymentStateHolder.cuentaConEfectivoSinRegistro() == null }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 6a2254 el efectivo sin cuenta no marca nada - el Pago rapido no tiene cuenta que frenar`() = runTest {
+        coEvery {
+            mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+        } returns Result.failure(RuntimeException("HTTP 500"))
+        coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.failure(RuntimeException("disco lleno"))
+
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountDirectToMerchant("100.00")
+            esperarSelectingMerchant(viewModel)
+            viewModel.processCashPayment("100.00")
+            esperarEstado(viewModel) { it is PaymentState.Error }
+            assertThat(paymentStateHolder.cuentaConEfectivoSinRegistro()).isNull()
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
     private fun esperarSelectingMerchant(viewModel: PaymentViewModel, timeoutMs: Long = 5000) {
         val limite = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < limite) {

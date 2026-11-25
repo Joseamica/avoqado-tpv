@@ -268,6 +268,10 @@ class SerializedSaleViewModel @Inject constructor(
      */
     fun onConfirmSale(onSuccess: (QuickSellResult) -> Unit) {
         val state = _uiState.value
+        // D671 (Codex r1 #2 y r2 #3): un segundo toque antes de repintar «Procesando…» mandaba otro quick-sell, y el SERVIDOR crea una
+        // orden PENDIENTE por cada uno (la SIM sólo se marca vendida al cobrar): la que no llega al cobro se queda sin cobro. Bandera
+        // propia y no `isLoading`: crear una categoría lo apaga con la venta todavía en camino.
+        if (ventaEnCamino) return
         val price = state.enteredPrice.ifEmpty { "0" }.toBigDecimalOrNull() ?: BigDecimal.ZERO
 
         if (price < BigDecimal.ZERO) {
@@ -287,56 +291,73 @@ class SerializedSaleViewModel @Inject constructor(
         }
 
         _uiState.update { it.copy(isLoading = true, error = null) }
+        ventaEnCamino = true
 
         viewModelScope.launch {
-            val terminalId = secureStorage.getTerminalId()
-
-            serializedSaleRepository.quickSell(
-                serialNumber = state.currentSerialNumber,
-                categoryId = categoryId,
-                price = price,
-                terminalId = terminalId,
-                isPortabilidad = state.isPortabilidad,
-                skipProofOfSale = false
-            )
-                .onSuccess { result ->
-                    Timber.d("Quick sell success: ${result.orderNumber}, price: $price, terminalId: $terminalId")
-                    _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            sellResult = result
-                        )
-                    }
-                    onSuccess(result)
-                    // The item is already SOLD server-side at this point, so a re-submit
-                    // with the stale serial can only ever produce "ya fue vendido" (400).
-                    // Navigation doesn't read uiState (payload captured via callback params),
-                    // so clearing here is safe. Prevents re-selling when the promoter backs
-                    // into this screen mid photo/payment flow (prod 2026-07-01: 6 duplicate
-                    // sell attempts across 5 SIMs, all rejected by the backend guard).
-                    returnToScanner()
-                }
-                .onFailure { error ->
-                    Timber.e(error, "Quick sell failed")
-                    // Plan §3.3 — surface SIM_NOT_ACCEPTED distinctly so the
-                    // screen can deep-link the promoter to Mis SIMs.
-                    val raw = error.message.orEmpty()
-                    val notAccepted = raw.contains("SIM_NOT_ACCEPTED", ignoreCase = true) ||
-                        raw.contains("aceptar la recepción", ignoreCase = true)
-                    _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            simNotAcceptedError = notAccepted,
-                            error = when {
-                                notAccepted -> null
-                                // Igual que al escanear: sin señal es un estado normal, no el error crudo
-                                error is java.io.IOException -> SIN_SENAL_AL_ESCANEAR
-                                else -> raw.ifEmpty { "Error al procesar venta" }
-                            }
-                        )
-                    }
-                }
+            try {
+                venderAhora(state, categoryId, price, onSuccess)
+            } finally {
+                ventaEnCamino = false
+            }
         }
+    }
+
+    /** D671: una sola venta en camino (sólo se lee y escribe en el hilo principal). */
+    private var ventaEnCamino = false
+
+    private suspend fun venderAhora(
+        state: SerializedSaleUiState,
+        categoryId: String?,
+        price: BigDecimal,
+        onSuccess: (QuickSellResult) -> Unit,
+    ) {
+        val terminalId = secureStorage.getTerminalId()
+
+        serializedSaleRepository.quickSell(
+            serialNumber = state.currentSerialNumber,
+            categoryId = categoryId,
+            price = price,
+            terminalId = terminalId,
+            isPortabilidad = state.isPortabilidad,
+            skipProofOfSale = false
+        )
+            .onSuccess { result ->
+                Timber.d("Quick sell success: ${result.orderNumber}, price: $price, terminalId: $terminalId")
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        sellResult = result
+                    )
+                }
+                onSuccess(result)
+                // The item is already SOLD server-side at this point, so a re-submit
+                // with the stale serial can only ever produce "ya fue vendido" (400).
+                // Navigation doesn't read uiState (payload captured via callback params),
+                // so clearing here is safe. Prevents re-selling when the promoter backs
+                // into this screen mid photo/payment flow (prod 2026-07-01: 6 duplicate
+                // sell attempts across 5 SIMs, all rejected by the backend guard).
+                returnToScanner()
+            }
+            .onFailure { error ->
+                Timber.e(error, "Quick sell failed")
+                // Plan §3.3 — surface SIM_NOT_ACCEPTED distinctly so the
+                // screen can deep-link the promoter to Mis SIMs.
+                val raw = error.message.orEmpty()
+                val notAccepted = raw.contains("SIM_NOT_ACCEPTED", ignoreCase = true) ||
+                    raw.contains("aceptar la recepción", ignoreCase = true)
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        simNotAcceptedError = notAccepted,
+                        error = when {
+                            notAccepted -> null
+                            // Igual que al escanear: sin señal es un estado normal, no el error crudo
+                            error is java.io.IOException -> SIN_SENAL_AL_ESCANEAR
+                            else -> raw.ifEmpty { "Error al procesar venta" }
+                        }
+                    )
+                }
+            }
     }
 
     /**

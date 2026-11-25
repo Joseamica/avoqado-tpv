@@ -3357,6 +3357,45 @@ class PaymentViewModelTest {
         }
     }
 
+    // Codex r1 #2: la marca se quita porque la pantalla deja de mostrar ESE error, no sólo con resetPayment().
+    @Test
+    fun `P1 6a2254 Reintentar desde el error quita la marca sin pasar por resetPayment`() = runTest {
+        coEvery {
+            mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+        } returns Result.failure(RuntimeException("HTTP 500"))
+        coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.failure(RuntimeException("disco lleno"))
+
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountDirectToMerchant(
+                "100.00", orderId = "order-1", orderNumber = "0007", skipLocalOrderValidation = true
+            )
+            esperarSelectingMerchant(viewModel)
+            viewModel.processCashPayment("100.00")
+            esperarEstado(viewModel) { paymentStateHolder.cuentaConEfectivoSinRegistro() == "order-1" }
+            val error = viewModel.state.value as PaymentState.Error
+
+            // Reintentar: ahora el registro sí pasa.
+            coEvery {
+                mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+            } returns Result.success(
+                PaymentReceipt(
+                    paymentId = "pay-1",
+                    receiptUrl = "https://receipt.avoqado.io/pay-1",
+                    accessKey = "k",
+                    amount = BigDecimal("100.00"),
+                    tipAmount = BigDecimal.ZERO,
+                )
+            )
+            viewModel.processCashPaymentFromError(error.context)
+
+            esperarEstado(viewModel) { it != error }
+            esperarEstado(viewModel) { paymentStateHolder.cuentaConEfectivoSinRegistro() == null }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
     @Test
     fun `P1 6a2254 el efectivo sin cuenta no marca nada - el Pago rapido no tiene cuenta que frenar`() = runTest {
         coEvery {
@@ -3369,7 +3408,9 @@ class PaymentViewModelTest {
             viewModel.submitAmountDirectToMerchant("100.00")
             esperarSelectingMerchant(viewModel)
             viewModel.processCashPayment("100.00")
-            esperarEstado(viewModel) { it is PaymentState.Error }
+            // Codex r1 #2: ESTE error (el del registro del efectivo), no cualquier error anterior al POST.
+            esperarEstado(viewModel) { (it as? PaymentState.Error)?.message?.startsWith("Error registrando pago en efectivo") == true }
+            coVerify(exactly = 1) { mockPaymentQueueRepository.enqueue(any()) }
             assertThat(paymentStateHolder.cuentaConEfectivoSinRegistro()).isNull()
         } finally {
             viewModel.viewModelScope.cancel()

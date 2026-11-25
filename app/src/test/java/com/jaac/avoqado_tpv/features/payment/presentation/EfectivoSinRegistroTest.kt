@@ -69,6 +69,22 @@ class EfectivoSinRegistroTest {
         assertThat(CobroRemotoDelPos.laTerminalRechazariaUnaVentaNueva(estado)).isFalse()
     }
 
+    // Codex r1 #1: una devolución del POS abre Pagos ENCIMA del error; la pantalla del error sigue viva debajo y su efectivo sigue
+    // sin registro. El freno se queda a propósito (soltarlo dejaría cobrar X con tarjeta) y el texto no dice que «se ve».
+    @Test fun `P1 el freno dura mientras la pantalla del error exista aunque otra la tape, y el texto no dice que se ve`() {
+        val estado = PaymentStateHolder()
+        val delError = estado.entraPantallaDeCobro()
+        estado.marcarEfectivoSinRegistro(delError, "cuenta-X")
+        // Otra pantalla de cobro nace encima (p. ej. el cobro del POS de otra cuenta) y se va: no toca la marca de la de abajo.
+        val encima = estado.entraPantallaDeCobro()
+        estado.quitarEfectivoSinRegistro(encima)
+        estado.salePantallaDeCobro(encima, soltarVentanaDelDinero = true)
+
+        assertThat(CobroRemotoDelPos.motivoPorEfectivoSinRegistro("cuenta-X", estado)).isNotNull()
+        assertThat(CobroRemotoDelPos.NO_INICIADO_POR_EFECTIVO_SIN_REGISTRO).contains("tiene abierto")
+        assertThat(CobroRemotoDelPos.NO_INICIADO_POR_EFECTIVO_SIN_REGISTRO).doesNotContain("muestra")
+    }
+
     @Test fun `el texto le dice a la tablet que no se inicio y que el cliente pudo haber pagado en efectivo`() {
         val texto = CobroRemotoDelPos.NO_INICIADO_POR_EFECTIVO_SIN_REGISTRO
         assertThat(texto).contains("NO se inició")

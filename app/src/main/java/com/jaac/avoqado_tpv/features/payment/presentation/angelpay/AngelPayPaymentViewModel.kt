@@ -2557,7 +2557,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         // hz:2c70dfc6:D2: si esa auth rehízo el login y la cuenta pide elegir comercio, se vuelve a elegir el MISMO
         // (como al entrar al cobro) y el candado de abajo se revisa igual, sin aflojarse.
         val reeleccionIntentada = reelegirComercioTrasLoginNuevo()
-        val sesionCobrable = sessionAlignedWithSelectedMerchant() &&
+        // Codex r3: si el POS ya canceló, ni siquiera se lee la sesión viva (es red y retendría el candado).
+        val sesionCobrable = !(reeleccionIntentada && cobroCanceladoPorElPos) &&
+            sessionAlignedWithSelectedMerchant() &&
             (!reeleccionIntentada || comercioReelegidoSigueCobrable())
         if (reeleccionIntentada && cobroCanceladoPorElPos) {
             // Codex r1 #4 / r2 #4: el POS canceló mientras se elegía o se leía la sesión viva: la pantalla ya dice
@@ -5162,6 +5164,21 @@ class AngelPayPaymentViewModel @Inject constructor(
         }
         if (elegido.isFailure) {
             Timber.e(elegido.exceptionOrNull(), "❌ [AngelPay] No se pudo volver a elegir el comercio $targetId antes de cobrar")
+            return true
+        }
+        // Codex r3 (r2 #3): la validación de la config dentro de la selección pudo no poder leer el SDK y dejar «Authenticated».
+        // Como origin/main, que en este punto vuelve a validar (la auth de arriba con la sesión ya viva corre la validación de
+        // config: un comercio que Avoqado ya quitó termina en AuthError y el candado lo frena). Con la sesión viva y de esta
+        // cuenta no rehace el login.
+        val revalidada = try {
+            angelPayAuthRepository.ensureAuthenticatedAs(cuentaObjetivo)
+        } catch (cancelada: CancellationException) {
+            throw cancelada
+        } catch (error: Exception) {
+            Result.failure(error)
+        }
+        if (revalidada.isFailure) {
+            Timber.e(revalidada.exceptionOrNull(), "❌ [AngelPay] Tras volver a elegir el $targetId no se pudo validar la sesión")
         }
         return true
     }

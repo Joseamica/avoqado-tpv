@@ -21,6 +21,7 @@
 
 ### **Changed**
 - **Nexgo (AngelPay) · SDK 1.0.24** (el que AngelPay publicó el 24-nov; re-auditado en el binario contra el 1.0.23): cuando la respuesta de un cobro llega pero no se puede leer, el SDK ya no contesta «rechazado» a ciegas: la busca en su historial y devuelve aprobado o «no concluyente». Al cancelar o devolver desde otra terminal con la respuesta perdida, busca la venta por la terminal que la cobró. La pantalla de cobro del SDK y las reglas de la terminal no cambian; un `G500` sin datos del banco se sigue tratando como duda.
+- **[Caja] [PAX/Nexgo] «Efectivo: ya lo revisé» ya no se borra en cada parpadeo del WiFi (C7 opción B, founder 25-nov)**: cuando el gerente revisa una venta en efectivo que no subió y la terminal la reintenta sola al volver la red, la revisión se conserva. Mientras la venta sube, la Caja la sigue esperando como hoy; si vuelve a fallar igual, la Caja ya no pide revisarla otra vez. Sólo un desenlace distinto la vuelve a pedir: el servidor la rechaza para siempre o sube con una diferencia de importe nueva. Sin pantallas ni botones nuevos.
 - **Interno, sin efecto en la app · `cobropropio`, bloque 1 de la fase 3 del SDK propio**: el módulo sigue sin conectarse (`:app` no depende de él).
   - Prueba instrumentada del transporte sobre el TLS de Android (SNI, un POST completo por HTTP/1.1, una escritura después del plazo no llega); se corre en la PAX aparte.
   - El observador de pruebas de DUKPT ya no vive en producción: la prueba inyecta su borrador.

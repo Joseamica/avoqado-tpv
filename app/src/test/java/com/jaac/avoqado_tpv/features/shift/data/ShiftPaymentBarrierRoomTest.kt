@@ -128,24 +128,93 @@ class ShiftPaymentBarrierRoomTest {
         coVerify(exactly = 1) { api.closeShift("v1", "c000000000000000000000032", any()) }
     }
 
-    @Test fun `reintentar una FAILED reconocida exige nueva revision si vuelve con diferencia`() = runTest {
+    // C7 opción B (founder, 25-nov): la revisión del gerente sobrevive al reintento que termina IGUAL; el cierre sigue esperando
+    // mientras la venta sube, y sólo un desenlace DISTINTO (rechazo para siempre o diferencia nueva) vuelve a pedirla.
+    @Test fun `una FAILED revisada que se reintenta sola y vuelve a fallar igual no vuelve a pedir revision`() = runTest {
+        val id = dao.insert(payment("retry-same").copy(syncStatus = "FAILED", acknowledged = true,
+            acknowledgedBy = "old-reviewer", acknowledgedAt = 1L))
+        assertThat(dao.contarBloqueanCierre("v1")).isEqualTo(0)
+        assertThat(dao.resetAllFailed()).isEqualTo(1)
+        val pendiente = dao.findByReference("retry-same", "v1")!!
+        assertThat(pendiente.syncStatus).isEqualTo("PENDING")
+        assertThat(pendiente.acknowledged).isTrue()
+        assertThat(pendiente.acknowledgedBy).isEqualTo("old-reviewer")
+        assertThat(pendiente.acknowledgedAt).isEqualTo(1L)
+        assertThat(dao.contarBloqueanCierre("v1")).isEqualTo(1)
+        val reclamada = dao.claimBatch(20, "worker", 200L, 50L).single()
+        assertThat(reclamada.acknowledged).isTrue()
+        assertThat(dao.contarBloqueanCierre("v1")).isEqualTo(1)
+        repository.closeShift("v1", "c000000000000000000000032")
+        repository.sincronizarCierresLocales("v1")
+        coVerify(exactly = 0) { api.closeShift(any(), any(), any()) }
+        assertThat(dao.release(id, "worker", PendingPaymentEntity.MAX_RETRY_ATTEMPTS, "HTTP 503")).isEqualTo(1)
+        val otraVez = dao.findByReference("retry-same", "v1")!!
+        assertThat(otraVez.syncStatus).isEqualTo("FAILED")
+        assertThat(otraVez.acknowledged).isTrue()
+        assertThat(otraVez.acknowledgedBy).isEqualTo("old-reviewer")
+        assertThat(dao.contarBloqueanCierre("v1")).isEqualTo(0)
+        repository.sincronizarCierresLocales("v1")
+        coVerify(exactly = 1) { api.closeShift("v1", "c000000000000000000000032", any()) }
+    }
+
+    @Test fun `el reintento a mano tambien conserva la revision mientras termina igual`() = runTest {
+        dao.insert(payment("manual-retry").copy(syncStatus = "FAILED", permanent = true, acknowledged = true,
+            acknowledgedBy = "old-reviewer", acknowledgedAt = 1L))
+        assertThat(dao.resetAllFailedIncludingPermanent()).isEqualTo(1)
+        val row = dao.findByReference("manual-retry", "v1")!!
+        assertThat(row.syncStatus).isEqualTo("PENDING")
+        assertThat(row.acknowledged).isTrue()
+        assertThat(dao.contarBloqueanCierre("v1")).isEqualTo(1)
+    }
+
+    @Test fun `una revisada cuyo reintento termina en rechazo para siempre vuelve a pedir revision`() = runTest {
+        val id = dao.insert(payment("retry-permanent").copy(syncStatus = "FAILED", acknowledged = true,
+            acknowledgedBy = "old-reviewer", acknowledgedAt = 1L))
+        dao.resetAllFailed()
+        dao.claimBatch(20, "worker", 200L, 50L).single()
+        assertThat(dao.markPermanentlyFailed(id, "worker", "HTTP 404: Order not found")).isEqualTo(1)
+        val row = dao.findByReference("retry-permanent", "v1")!!
+        assertThat(row.syncStatus).isEqualTo("FAILED")
+        assertThat(row.permanent).isTrue()
+        assertThat(row.acknowledged).isFalse()
+        assertThat(row.acknowledgedBy).isNull()
+        assertThat(row.acknowledgedAt).isNull()
+        assertThat(dao.contarBloqueanCierre("v1")).isEqualTo(1)
+    }
+
+    @Test fun `una revisada cuyo reintento sube con una diferencia nueva vuelve a pedir revision`() = runTest {
         for (permanent in listOf(false, true)) {
             val reference = "reset-$permanent"
-            dao.insert(payment(reference).copy(syncStatus = "FAILED", acknowledged = true, permanent = permanent,
+            val id = dao.insert(payment(reference).copy(syncStatus = "FAILED", acknowledged = true, permanent = permanent,
                 acknowledgedBy = "old-reviewer", acknowledgedAt = 1L))
             if (permanent) dao.resetAllFailedIncludingPermanent() else dao.resetAllFailed()
+            dao.markClaimed(10, "worker-$reference", 200L, 100L)
+            dao.guardarOrdenDeVentaGuardada(id, "worker-$reference", "order-$reference", "folio", true)
+            dao.markSynced(id, "worker-$reference")
             val row = dao.findByReference(reference, "v1")!!
             assertThat(row.acknowledged).isFalse()
             assertThat(row.acknowledgedBy).isNull()
             assertThat(row.acknowledgedAt).isNull()
-            dao.markClaimed(10, "worker-$reference", 200L, 100L)
-            dao.guardarOrdenDeVentaGuardada(row.id, "worker-$reference", "order-$reference", "folio", true)
-            dao.markSynced(row.id, "worker-$reference")
             repository.closeShift("v1", "c000000000000000000000032")
-        repository.sincronizarCierresLocales("v1")
+            repository.sincronizarCierresLocales("v1")
             coVerify(exactly = 0) { api.closeShift(any(), any(), any()) }
-            dao.delete(dao.findByReference(reference, "v1")!!)
+            dao.delete(row)
         }
+    }
+
+    @Test fun `una diferencia ya revisada no se vuelve a pedir cuando el reintento sube igual`() = runTest {
+        val id = dao.insert(payment("seen-difference").copy(syncStatus = "FAILED", requiereRevision = true, orderId = "order",
+            acknowledged = true, acknowledgedBy = "old-reviewer", acknowledgedAt = 1L))
+        dao.resetAllFailed()
+        dao.claimBatch(20, "worker", 200L, 50L).single()
+        assertThat(dao.guardarOrdenDeVentaGuardada(id, "worker", "order", "folio", true)).isEqualTo(1)
+        dao.markSynced(id, "worker")
+        val row = dao.findByReference("seen-difference", "v1")!!
+        assertThat(row.syncStatus).isEqualTo("SUCCESS")
+        assertThat(row.requiereRevision).isTrue()
+        assertThat(row.acknowledged).isTrue()
+        assertThat(row.acknowledgedBy).isEqualTo("old-reviewer")
+        assertThat(dao.contarBloqueanCierre("v1")).isEqualTo(0)
     }
 
     @Test fun `SQL cuenta cada desenlace una vez por negocio y las paginas no truncan el total`() = runTest {
@@ -319,13 +388,15 @@ class ShiftPaymentBarrierRoomTest {
         assertThat(dao.contarBloqueanCierre("v1")).isEqualTo(1)
     }
 
-    @Test fun `reclamar PENDING legacy limpia el reconocimiento antiguo antes del nuevo desenlace`() = runTest {
+    @Test fun `reclamar una PENDING revisada conserva la revision y el cierre la espera mientras sube`() = runTest {
         dao.insert(payment("legacy-claim").copy(acknowledged = true, acknowledgedBy = "old-reviewer", acknowledgedAt = 1L))
+        assertThat(dao.contarBloqueanCierre("v1")).isEqualTo(1)
         val claimed = dao.claimBatch(20, "new-claim", 200L, 50L).single()
-        assertThat(claimed.acknowledged).isFalse()
-        assertThat(claimed.acknowledgedBy).isNull()
-        assertThat(claimed.acknowledgedAt).isNull()
-        dao.release(claimed.id, "new-claim", PendingPaymentEntity.MAX_RETRY_ATTEMPTS, "rechazada otra vez")
+        assertThat(claimed.acknowledged).isTrue()
+        assertThat(claimed.acknowledgedBy).isEqualTo("old-reviewer")
+        assertThat(claimed.acknowledgedAt).isEqualTo(1L)
+        assertThat(dao.contarBloqueanCierre("v1")).isEqualTo(1)
+        dao.release(claimed.id, "new-claim", 1, "sin red")
         assertThat(dao.contarBloqueanCierre("v1")).isEqualTo(1)
     }
 

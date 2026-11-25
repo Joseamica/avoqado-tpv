@@ -82,7 +82,7 @@ internal class ColaDeResultados(
         }
     }
 
-    // V sólo sube (el permiso se acredita antes del primer POST de reverso, y el reporte nace después): leerlo antes es seguro.
+    // V = el origen congelado al anotar. `vinculoAcreditadoPorPermiso` ya no tiene escritor (bloque S); una fila vieja puede traerlo en true.
     private fun vinculoEfectivo(f: IntentoEntity) = f.origen == Origen.VINCULADO_AL_POS || f.vinculoAcreditadoPorPermiso
 
     /** Las llamadas de la libreta bloquean: nunca en el hilo de quien llama. */

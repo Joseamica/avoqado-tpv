@@ -84,7 +84,7 @@ import kotlin.time.Duration.Companion.milliseconds
 public enum class ResultadoDelCorte { CORTADO, YA_SALIO, SIN_CONFIRMAR, SIN_INTENTO_VIVO }
 
 /**
- * El motor de la venta: cobra, espera, pide permiso al SERVIDOR y reversa, EXACTAMENTE según la tabla de decisiones (secciones
+ * El motor de la venta: cobra, espera y reversa, EXACTAMENTE según la tabla de decisiones (secciones
  * A-H, rediseño v3 y parada 2). A los 30 s de t0 termina la transmisión en vivo del intento (`PorConfirmar` si el motor todavía
  * no decidió un final); lo que ve la pantalla lo decide quien usa el motor. La cancelación con la tarjeta (T9) entra por la
  * MISMA puerta, el mismo `Registro`, el mismo corte y las mismas salidas; sólo cambia lo de en medio, y nunca se reversa. Sólo

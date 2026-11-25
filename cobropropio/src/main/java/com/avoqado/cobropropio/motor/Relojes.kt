@@ -9,7 +9,6 @@ internal data class Relojes(
     val esperaLectura: Long = 30_000,
     val esperaRespuesta: Long = 15_000,
     val peorCasoCajera: Long = 30_000,
-    val esperaPermiso: Long = 11_000,
     val esperaReverso: Long = 10_000,
     val pausaEntreReversos: Long = 5_000,
     /** El último byte de un reverso se escribe antes de t0 + 45 s: un esfuerzo de puntualidad, no la corrección (parada 2). */

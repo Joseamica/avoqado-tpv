@@ -315,16 +315,6 @@ public class Libreta internal constructor(
         }
     }
 
-    /** El `Concedido` del SERVIDOR, durable ANTES del primer POST de reverso (r4 R4-08): el vínculo queda acreditado. */
-    internal fun guardarPermisoConcedido(id: AttemptId): Boolean = escribir("guardarPermisoConcedido") {
-        val f = fila(id)
-        if (f?.reverso != EstadoDelReverso.COMPROMETIDO) false
-        else {
-            if (!f.vinculoAcreditadoPorPermiso) guardar(f, f.copy(vinculoAcreditadoPorPermiso = true))
-            true
-        }
-    }
-
     /** Justo antes de cada POST de reverso: `COMPROMETIDO` o `NO_CONCLUYENTE` → `RECLAMADO`, con la hora del reclamo. */
     internal fun reclamarReverso(id: AttemptId): Boolean = escribir("reclamarReverso") {
         val f = fila(id)

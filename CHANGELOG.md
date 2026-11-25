@@ -20,6 +20,7 @@
   - La app: un Application dueño de todo (el carril en el hilo de la pantalla, el respondedor local, el lector y el motor armado con el par Basic de sandbox y una llave de huellas privada) y una pantalla que sólo manda órdenes: la lectura seca de L-c, la identidad en tres campos ocultos que se vacían al guardar, el importe, Cobrar y Cancelar.
 
 ### **Changed**
+- **Interno, sin efecto en la app · `cobropropio`, bloque S de la fase 3 del SDK propio**: cuando se pierde la respuesta de una venta, el motor manda el reverso en cuanto vence la espera, sin pedirle permiso al SERVIDOR (antes lo esperaba hasta 11 s y, con varias de sus respuestas, no reversaba); el módulo sigue sin conectarse (`:app` no depende de él).
 - **Nexgo (AngelPay) · SDK 1.0.24** (el que AngelPay publicó el 24-nov; re-auditado en el binario contra el 1.0.23): cuando la respuesta de un cobro llega pero no se puede leer, el SDK ya no contesta «rechazado» a ciegas: la busca en su historial y devuelve aprobado o «no concluyente». Al cancelar o devolver desde otra terminal con la respuesta perdida, busca la venta por la terminal que la cobró. La pantalla de cobro del SDK y las reglas de la terminal no cambian; un `G500` sin datos del banco se sigue tratando como duda.
 - **Interno, sin efecto en la app · `cobropropio`, bloque 1 de la fase 3 del SDK propio**: el módulo sigue sin conectarse (`:app` no depende de él).
   - Prueba instrumentada del transporte sobre el TLS de Android (SNI, un POST completo por HTTP/1.1, una escritura después del plazo no llega); se corre en la PAX aparte.

@@ -361,18 +361,6 @@ class LibretaTest {
         assertEquals(EstadoDelReverso.NINGUNO, l.buscar(v.id())!!.reverso)
     }
 
-    @Test fun `permiso concedido queda guardado antes del POST`() {
-        var l = libreta()
-        val v = enviada(l, venta(origen = Origen.LOCAL_SIN_SOLICITUD))
-        assertFalse(l.guardarPermisoConcedido(v.id())) // sin compromiso no hay permiso que guardar
-        assertEquals(Arbitraje.Comprometido, l.comprometerAReversar(v.id()))
-        assertTrue(l.guardarPermisoConcedido(v.id()))
-        l = reabrir(l)
-        val f = l.buscar(v.id())!!
-        assertTrue(f.vinculoAcreditadoPorPermiso)
-        assertEquals(EstadoDelReverso.COMPROMETIDO, f.reverso)
-    }
-
     // ---- vueltas del reverso ----
 
     @Test fun `cierre del reverso atomico con falla inyectada`() {

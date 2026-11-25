@@ -34,7 +34,6 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.ConscryptMode
 import java.io.File
 import java.time.Instant
-import kotlin.time.Duration
 
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [28])
@@ -61,8 +60,6 @@ class ColaDeResultadosTest {
         val reportados = mutableListOf<ResultadoDelReverso>()
         var durante: () -> Unit = {}
 
-        override suspend fun pedirPermiso(venueId: String, id: AttemptId, espera: Duration) = error("la cola no pide permiso")
-
         override suspend fun reportarResultado(venueId: String, id: AttemptId, r: ResultadoDelReverso): AcuseDelResultado {
             reportados += r
             durante()
@@ -75,6 +72,7 @@ class ColaDeResultadosTest {
         clase: ClaseDelReverso = ClaseDelReverso.Confirmado(pared),
         reportar: ResultadoParaReportar = ResultadoParaReportar.CONFIRMADO,
         origen: Origen = Origen.VINCULADO_AL_POS,
+        /** Una fila vieja con `vinculoAcreditadoPorPermiso` en true: la columna ya no tiene escritor (bloque S). */
         permiso: Boolean = false,
     ): AttemptId {
         val v = IntentoEntity(
@@ -86,7 +84,7 @@ class ColaDeResultadosTest {
         assertTrue(libreta.anotar(v))
         assertTrue(libreta.marcarEnviado(id, 1_000, DatosDelEnvio(null, null, null, null, null, null, null, null, v.attemptId)))
         assertEquals(Arbitraje.Comprometido, libreta.comprometerAReversar(id))
-        if (permiso) assertTrue(libreta.guardarPermisoConcedido(id))
+        if (permiso) assertTrue(libreta.transicionar(id, EstadoDelIntento.ENVIADO) { it.copy(vinculoAcreditadoPorPermiso = true) } != null)
         assertTrue(libreta.reclamarReverso(id))
         assertTrue(libreta.cerrarVuelta(id, clase, reportar, EstadoDelIntento.NO_SE))
         assertEquals(EstadoDelReporte.PENDIENTE, libreta.buscar(id)!!.reporte)

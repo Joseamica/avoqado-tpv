@@ -42,7 +42,6 @@ import com.avoqado.cobropropio.red.EnvioUnico
 import com.avoqado.cobropropio.red.Respuesta
 import com.avoqado.cobropropio.servidor.AcuseDelResultado
 import com.avoqado.cobropropio.servidor.ColaDeResultados
-import com.avoqado.cobropropio.servidor.PermisoDeReverso
 import com.avoqado.cobropropio.servidor.ResultadoDelReverso
 import com.avoqado.cobropropio.servidor.ReversoDelServidor
 import com.google.gson.Strictness
@@ -84,7 +83,7 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * Tarea 8: el MOTOR completo contra el SANDBOX de Blumon (método §2). `ClienteBlumon` real sobre `Endpoints.SANDBOX`, una
- * libreta de archivo, un SERVIDOR falso que concede el permiso, y la lectura sintética de Mastercard de las pruebas.
+ * libreta de archivo, un SERVIDOR falso que acusa lo reportado, y la lectura sintética de Mastercard de las pruebas.
  *
  * Se salta sin `COBRO_PROPIO_SANDBOX_FILE` (el mismo archivo de `SesionSandboxTest`). Con `COBRO_PROPIO_EVIDENCIA` escribe
  * ahí (600) lo medido, porque avq-verify sólo conserva los totales. Lo que imprime o guarda nunca lleva PAN, banda, llaves,
@@ -92,7 +91,7 @@ import kotlin.time.Duration.Companion.seconds
  * campo, y de cada texto sólo su largo (y su forma si es un dato corto sin espacios).
  *
  * Pasos: (1) venta normal; (2) venta cuya respuesta un envoltorio retiene más allá de `esperaRespuesta`, para que el
- * MOTOR la reverse por el arbitraje, el permiso, el reclamo durable, el techo y el cierre; (3) otra venta después del
+ * MOTOR la reverse por el arbitraje, el reclamo durable, el techo y el cierre; (3) otra venta después del
  * reverso; (4) la cancelación de la venta 3 por el motor, con la misma tarjeta sintética y una lectura nueva (T9: el
  * preflight y el sobre real de la cancelación); (5) cinco `iniciarSesion` seguidos para ver si alguna base KSN se repite.
  *
@@ -122,13 +121,7 @@ class RecorridoSandboxTest {
     }
 
     private class ServidorFalso : ReversoDelServidor {
-        val permisos = CopyOnWriteArrayList<AttemptId>()
         val reportados = CopyOnWriteArrayList<Pair<AttemptId, ResultadoDelReverso>>()
-
-        override suspend fun pedirPermiso(venueId: String, id: AttemptId, espera: Duration): PermisoDeReverso {
-            permisos += id
-            return PermisoDeReverso.Concedido("evt-recorrido")
-        }
 
         override suspend fun reportarResultado(venueId: String, id: AttemptId, r: ResultadoDelReverso): AcuseDelResultado {
             reportados += id to r
@@ -302,7 +295,6 @@ class RecorridoSandboxTest {
         val b = vender("2 · Venta retenida ⇒ reverso del motor", { LecturasDePrueba.mastercardPlasticoVenta(it).toque(2) }, LecturasDePrueba.PAN_MASTERCARD, retener = true)
         val fb = esperarResultadoDelReverso(libreta, b.s.id)
         nota("fila tras esperar el resultado del reverso: ${fila(fb)}")
-        nota("permisos pedidos al SERVIDOR falso: ${servidor.permisos.count { it == b.s.id }}")
         servidor.reportados.filter { it.first == b.s.id }.forEach { (_, r) ->
             nota("reportado al SERVIDOR falso: descripción ${r.descripcion?.let(::estadoOTexto)} · código ${r.codigo?.let(::codigoOForma)} · op ${r.operationNumber}")
         }
@@ -399,7 +391,6 @@ class RecorridoSandboxTest {
             assertEquals(visto, eventosC.last())
         }
         assertEquals(EstadoDelIntento.APROBADO, libreta.buscar(c.s.id)?.estado)
-        assertEquals("permisos pedidos", 1, servidor.permisos.count { it == b.s.id })
         val vueltaB = reversosB.firstOrNull { it.bytesEscritos > 0 && it.respuesta is Respuesta.Http && it.leidaEsLaDevuelta }
         assertTrue("ningún POST de reverso escrito con respuesta leída", vueltaB != null)
         assertTrue("la última vuelta no confirma", Clasificador.reverso(reversosB.last().respuesta, b.esperado) is ClaseDelReverso.Confirmado)

@@ -58,7 +58,7 @@ public data class IntentoEntity(
     val horaObservadaIso: String? = null,
     val estadoEnServidor: EstadoDelReversoEnServidor? = null,
     val origenDeLaAprobacion: OrigenDeLaAprobacion? = null,
-    /** Se guarda en la misma transacción que el `Concedido`, antes del primer POST de reverso (r4 R4-08). */
+    // ponytail: sin escritor desde el bloque S; se quita con la siguiente migración del esquema
     val vinculoAcreditadoPorPermiso: Boolean = false,
     /** Hora de pared del último reclamo del reverso: la hora observada del aviso `PUDO_ENTRAR` tras un apagón. */
     val reclamadoEnIso: String? = null,

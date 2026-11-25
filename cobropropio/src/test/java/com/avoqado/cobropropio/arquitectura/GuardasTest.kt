@@ -51,12 +51,11 @@ class GuardasTest {
             Triple("motor/MotorDeCobro.kt", "withTimeoutOrNull(t0 + relojes.esperaRespuesta - ahora()) { venta.await() }", "la venta sigue en su async: lo que llegue tarde lo guarda guardarRespuestaTardia"),
             Triple("motor/MotorDeCobro.kt", "withTimeoutOrNull(espera) { intentar { llamada(", "conBuzon (T9): el preflight y la cancelación; lo que el transporte leyó ya está en el buzón y se clasifica aunque venza (R3-2), con el mismo plazo que la llamada"),
             Triple("motor/MotorDeCobro.kt", "withTimeoutOrNull(relojes.esperaLibreta) { listo.await() }", "conTope (S1–S3): no envuelve red ni Room, sólo la espera de un Deferred; al vencer da lo más conservador (PorConfirmar o SIN_CONFIRMAR) y lo que llega tarde no admite ni contesta nada"),
-            Triple("motor/CaminoDelReverso.kt", "withTimeoutOrNull(relojes.esperaPermiso + CERCA_DEL_PERMISO)", "la cerca del permiso (p3 c5): sólo vence si el cliente rompe su plazo y da ErrorDelServidor, que nunca reversa"),
             Triple("motor/CaminoDelReverso.kt", "withTimeoutOrNull(relojes.esperaReverso)", "una vuelta del reverso: lo que el transporte leyó ya está clasificado en el buzón (R3-2)"),
             Triple("motor/CaminoDelReverso.kt", "withTimeoutOrNull(t0 + relojes.peorCasoCajera - ahora()) { entrega.await() }", "el acuse sigue en su async: se aplica a la libreta y se publica tarde"),
-            Triple("servidor/ReversoDelServidorHttp.kt", "withTimeoutOrNull(espera) { credencial.renovar", "renovar el JWT (permiso y /resultado): la app guarda el nuevo; perderlo no pierde evidencia (v5 §2.5)"),
+            Triple("servidor/ReversoDelServidorHttp.kt", "withTimeoutOrNull(espera) { credencial.renovar", "renovar el JWT tras un 401 de /resultado: la app guarda el nuevo; perderlo no pierde evidencia (v5 §2.5)"),
             Triple("servidor/ReversoDelServidorHttp.kt", "llamada.timeout().timeout(", "red de seguridad de OkHttp, del mismo largo que el reloj de quien pide"),
-            Triple("servidor/ReversoDelServidorHttp.kt", "withTimeoutOrNull(espera) { enCurso() } ?: llegada.get()", "el permiso y /resultado (R4-4): al vencer sale el código que llegó (r2 familia B)"),
+            Triple("servidor/ReversoDelServidorHttp.kt", "withTimeoutOrNull(espera) { enCurso() } ?: llegada.get()", "/resultado (R4-4): al vencer sale el código que llegó (r2 familia B)"),
         ),
     )
 
@@ -69,7 +68,6 @@ class GuardasTest {
         listOf(
             Triple("red/LectorJson.kt", "JsonReader(", "el único lector de cuerpos de Blumon"),
             Triple("servidor/ReversoDelServidorHttp.kt", "JsonParser.parseString", "cuerpos del SERVIDOR, no de Blumon"),
-            Triple("servidor/ReversoDelServidorHttp.kt", "fun JsonObject.objeto(", "cuerpos del SERVIDOR, no de Blumon"),
         ),
     )
 
@@ -92,6 +90,20 @@ class GuardasTest {
         assertTrue("dao::buscar volvió", apariciones(Regex("""dao::buscar""")).isEmpty())
         val fuera = apariciones(Regex("""\bdao\b""")).filterNot { it.first.startsWith("libreta/") }
         assertTrue("el dao fuera de la libreta: $fuera", fuera.isEmpty())
+    }
+
+    /**
+     * Bloque S (D-2): el reverso sale sin pedirle permiso al SERVIDOR. (1) Lo del permiso ya no está en `src/main`, ni en un
+     * comentario; (2) ningún archivo del motor llama al SERVIDOR (`servidor.` como receptor; el paquete de un `import` no
+     * cuenta, porque lo precede un punto).
+     */
+    @Test fun `el motor no le pregunta nada al SERVIDOR antes de reversar`() {
+        val retirados = listOf("pedirPermiso", "PermisoDeReverso", "esperaPermiso", "guardarPermisoConcedido", "CERCA_DEL_PERMISO", "\"intencion\"")
+        val quedan = raiz.walk().filter { it.extension == "kt" }
+            .flatMap { f -> retirados.filter { it in f.readText() }.map { f.relativeTo(raiz).path to it } }.toList()
+        assertTrue("lo del permiso sigue en src/main: $quedan", quedan.isEmpty())
+        val llamadas = apariciones(Regex("""(?<![.\w])servidor\.""")).filter { it.first.startsWith("motor/") }
+        assertTrue("el motor le habla al SERVIDOR: $llamadas", llamadas.isEmpty())
     }
 
     @Test fun `motor y libreta no tocan Gson`() {

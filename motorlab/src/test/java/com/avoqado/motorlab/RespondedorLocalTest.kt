@@ -43,6 +43,17 @@ class RespondedorLocalTest {
         assertNull(leerPeticion(ByteArrayInputStream((cabeza + "01234").toByteArray(Charsets.US_ASCII))))
     }
 
+    /**
+     * Sin forma no se cuenta ni se contesta (el contador «intencion» de las actas no miente). La cabecera termina en `\n` a secas:
+     * así sus caracteres son exactamente los que mide el tope de 8 KiB.
+     */
+    @Test fun `una linea de mas de 8 KiB o un Content-Length sin forma no tiene ruta`() {
+        fun conCabecera(c: String) = leerPeticion(ByteArrayInputStream("POST /x HTTP/1.1\r\n$c\n\r\n".toByteArray(Charsets.US_ASCII)))
+        assertEquals("/x", conCabecera("X: " + "a".repeat(8_192 - 3)))
+        assertNull(conCabecera("X: " + "a".repeat(8_193 - 3)))
+        for (malo in listOf("abc", "-1", "65537")) assertNull(malo, conCabecera("Content-Length: $malo"))
+    }
+
     /** Sólo en 127.0.0.1; cerrado, ya no acepta (en 127.0.0.1 el rechazo es inmediato). */
     @Test fun `escucha solo en 127 0 0 1 y cerrado ya no acepta`() {
         assertEquals(LOCAL, respondedor.direccion)

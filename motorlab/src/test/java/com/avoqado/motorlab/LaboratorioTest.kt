@@ -244,6 +244,42 @@ class LaboratorioTest {
     }
 
     /**
+     * En FALLO, «Guardar» sólo guarda: nunca arma otra vez (en la app, un segundo `crearMotorDeCobro` en el mismo proceso truena).
+     * Cada escritura termina con un aviso «identidad guardada…»; el segundo dice qué se hizo con el motor.
+     */
+    @Test fun `guardar con el motor en FALLO solo guarda y no fabrica otro`() {
+        fabrica = { error("no abrió") }
+        lab.arrancar()
+        esperar { it.motor == EstadoDelMotor.SinIdentidad }
+        lab.orden(Orden.Guardar("SERIE0099", "4321", ""))
+        esperar { it.motor is EstadoDelMotor.Fallo }
+        lab.orden(Orden.Guardar("SERIE0088", "8765", ""))
+        val s = esperar { it.avisos.count { a -> "identidad guardada" in a } == 2 }
+        assertEquals("identidad guardada: se usará al cerrar y abrir la app", s.avisos.last { "identidad guardada" in it }.substringAfter(' '))
+        assertEquals(IdentidadTecleada("SERIE0088", "8765", "SERIE0088"), ArchivoDeIdentidad(carpeta.root).leer().getOrNull())
+        assertEquals(1, fabricas.get())
+        assertEquals(EstadoDelMotor.Fallo("IllegalStateException"), lab.situacion.value.motor)
+    }
+
+    /** Con el motor caído el lector se sigue revisando: la lectura seca no depende del motor. */
+    @Test fun `la lectura seca se acepta con el motor en FALLO`() {
+        fabrica = { error("no abrió") }
+        val lecturas = AtomicInteger()
+        val suelta = CompletableDeferred<Unit>()
+        enSeco = { lecturas.incrementAndGet(); suelta.await(); "Resultado: Leída" }
+        lab.arrancar()
+        esperar { it.motor == EstadoDelMotor.SinIdentidad }
+        lab.orden(Orden.Guardar("SERIE0099", "4321", ""))
+        esperar { it.motor is EstadoDelMotor.Fallo }
+        lab.orden(Orden.LecturaSeca)
+        carrilVacio()
+        assertEquals(Trabajo.LecturaSeca, lab.situacion.value.trabajo) // aceptada: la lectura sigue en curso, nunca un rechazo
+        suelta.complete(Unit)
+        assertEquals("Lectura n.º 1\nResultado: Leída", esperar { it.trabajo == null }.lecturaSeca)
+        assertEquals(1, lecturas.get())
+    }
+
+    /**
      * Contrato de L-c: se suelta al terminar o si el intento aborta, no mientras el motor lee; el informe y los finales que publica
      * el motor van a su folio («final publicado», B); ocupado, ni folio ni motor.
      */

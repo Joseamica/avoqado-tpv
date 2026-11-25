@@ -25,7 +25,7 @@ class PrivacidadTest {
         """\bLog\.[a-z]+\(|\bLogUtils\.[a-z]+\(|\bprint(ln)?\(|printStackTrace|stackTraceToString|\bTimber\b|System\.(out|err)|""" +
             """\.message\b|localizedMessage|\b(bin|ultimos4|paisEmisor|huellaTarjeta|huellaLectura|ksnBase)\b|[tT]rack2|""" +
             // Una excepción interpolada (`"$e"`, `"$e."`, `"${e}"`) trae su mensaje; `"${e.javaClass.simpleName}"` sigue permitido.
-            """\${'$'}(e|ex|error|excepcion|throwable|causa)(?!\w)|\${'$'}\{(e|ex|error|excepcion|throwable|causa)\}""",
+            """\${'$'}(e|ex|error|excepcion|throwable|causa)(?!\w)|\${'$'}\{(e|ex|error|excepcion|throwable|causa)(?![\w.])""",
     )
 
     private fun hallazgos(raiz: File): List<String> =
@@ -45,8 +45,13 @@ class PrivacidadTest {
         File(raiz, "B.kt").writeText("val s = \"fallo: \$e\"\n")
         File(raiz, "C.java").writeText("Log.d(\"x\", \"y\");\n")
         // Lo permitido no se marca: la clase de la excepción y un nombre que sólo empieza como uno de la lista.
-        File(raiz, "D.kt").writeText("val a = \"\${e.javaClass.simpleName}\"\nval b = \"\$estado\"\n")
+        File(raiz, "D.kt").writeText("val a = \"\${e.javaClass.simpleName}\"\nval b = \"\$estado\"\nval c = \"\${estado}\"\n")
         File(raiz, "E.kt").writeText("val s = \"fallo: \$e.\"\n")
-        assertEquals(listOf("A.kt:1", "B.kt:1", "C.java:1", "E.kt:1"), hallazgos(raiz).sorted())
+        // Entre llaves con un operador detrás también se interpola la excepción entera.
+        File(raiz, "F.kt").writeText("val a = \"\${e!!}\"\nval b = \"\${e }\"\nval c = \"\${e ?: \"x\"}\"\n")
+        assertEquals(
+            listOf("A.kt:1", "B.kt:1", "C.java:1", "E.kt:1", "F.kt:1", "F.kt:2", "F.kt:3"),
+            hallazgos(raiz).sorted(),
+        )
     }
 }

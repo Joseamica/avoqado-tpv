@@ -384,12 +384,22 @@ class MotorDeCobroVentaTest {
         for ((i, respuesta) in respuestas.withIndex()) {
             blumon.venta = { delay(1_000); respuesta }
             val s = solicitud()
-            val eventos = cobrar(s).map { it.first }
-            assertFalse(RevisandoConElBanco in eventos)
+            // Lo ya publicado del intento cuando el motor pide el primer permiso del reverso (el permiso de siempre, a 1 s).
+            var alPedirPermiso: List<EventoDeCobro>? = null
+            servidor.permiso = {
+                if (alPedirPermiso == null) alPedirPermiso = motor.intentos.getValue(s.id).historia.value
+                delay(1_000); PermisoDeReverso.Concedido("evt-1")
+            }
+            val vistos = cobrar(s)
+            val eventos = vistos.map { it.first }
             assertFalse(eventos.any { it is Aprobado })
             assertEquals(NoSeCobro, eventos.last())
             assertEquals(s.id, servidor.permisos.last())
             assertEquals(i + 1, blumon.reversos.size)
+            // R: el motor avisa UNA vez, a la hora de la respuesta (t0 + 1 s) y antes del primer permiso del reverso.
+            val t0 = requireNotNull(fila(s).enviadoEnMs)
+            assertEquals("respuesta $i", listOf(t0 + 1_000), vistos.filter { it.first == RevisandoConElBanco }.map { it.second })
+            assertEquals("respuesta $i", RevisandoConElBanco, alPedirPermiso?.last())
         }
         assertEquals(1, blumon.inits) // el 401 y el 403 sólo renuevan el token
     }
@@ -402,6 +412,146 @@ class MotorDeCobroVentaTest {
         assertEquals(NoSeCobro, eventos.last().first)
         assertEquals(listOf(s.id), servidor.permisos)
         assertEquals(1, blumon.reversos.size)
+    }
+
+    // ───────────── Bloque R: el aviso de que el motor no tiene desenlace ─────────────
+
+    /** Una respuesta inútil (5xx) y el corte del transporte antes del primer byte (`SinRespuesta`) avisan en el instante. */
+    @Test fun `la respuesta inutil o el corte avisan en el instante`() = prueba {
+        val respuestas = listOf(http(503, APROBADA), Respuesta.SinRespuesta("RED"))
+        for ((i, respuesta) in respuestas.withIndex()) {
+            blumon.venta = { delay(1_000); respuesta }
+            val s = solicitud()
+            val vistos = cobrar(s)
+            val t0 = requireNotNull(fila(s).enviadoEnMs)
+            // El reverso, como hoy: el permiso, una vuelta REVERSADA y el acuse, cada uno a 1 s.
+            assertEquals("respuesta $i", NoSeCobro to t0 + 4_000, vistos.last())
+            assertEquals("respuesta $i", i + 1, blumon.reversos.size)
+            assertEquals("respuesta $i", EstadoDelIntento.NO_SE_COBRO, fila(s).estado)
+            assertEquals(
+                "respuesta $i",
+                listOf(Iniciado(s.id, identidad, Operacion.VENTA, s.importeCentavos), PideTarjeta, Autorizando, RevisandoConElBanco, NoSeCobro),
+                vistos.map { it.first },
+            )
+            assertEquals("respuesta $i", t0 + 1_000, vistos.single { it.first == RevisandoConElBanco }.second)
+        }
+        assertEquals(2, servidor.permisos.size)
+    }
+
+    /**
+     * El parcial avisa ANTES de escribir su evidencia: el gancho corre dentro de la transacción que la guarda, antes de su
+     * commit (la escritura detenida a la mitad), y para entonces el aviso ya está publicado.
+     */
+    @Test fun `el parcial avisa antes de escribir su evidencia`() = prueba {
+        blumon.venta = { delay(1_000); http(200, PARCIAL) }
+        val s = solicitud()
+        var enLaTransaccion: Pair<List<EventoDeCobro>, Long>? = null
+        // La primera `transicionar` del intento es la del parcial: antes de salir, nada de este camino la usa.
+        ganchos["transicionar"] = {
+            if (enLaTransaccion == null) enLaTransaccion = motor.intentos.getValue(s.id).historia.value to ahora()
+        }
+        assertEquals(NoSeCobro, terminal(s))
+        assertEquals(777L, fila(s).parcialOperacion)
+        assertEquals(50L, fila(s).parcialImporteCentavos)
+        val (publicado, cuando) = requireNotNull(enLaTransaccion)
+        assertEquals("la escritura del parcial es la de la respuesta", T0 + 1_000, cuando)
+        assertEquals(
+            listOf(Iniciado(s.id, identidad, Operacion.VENTA, s.importeCentavos), PideTarjeta, Autorizando, RevisandoConElBanco),
+            publicado,
+        )
+    }
+
+    /**
+     * Una sola vez en cada camino al reverso (la espera vencida, la respuesta inútil y el parcial), después de `Autorizando` y
+     * antes del único final; ninguna si la venta no salió o si no hubo intento.
+     */
+    @Test fun `el aviso sale una vez y nunca sin envio`() = prueba {
+        for ((camino, respuesta) in listOf("espera vencida" to null, "respuesta inutil" to http(503, APROBADA), "parcial" to http(200, PARCIAL))) {
+            blumon.venta = SILENCIO
+            if (respuesta != null) blumon.venta = { delay(1_000); respuesta }
+            val eventos = cobrar(solicitud()).map { it.first }
+            assertEquals(camino, NoSeCobro, eventos.last())
+            assertEquals(camino, 1, eventos.count { it.esTerminal })
+            assertEquals(camino, 1, eventos.count { it == RevisandoConElBanco })
+            assertTrue(camino, eventos.indexOf(Autorizando) < eventos.indexOf(RevisandoConElBanco))
+        }
+
+        fun sinAviso(caso: String, esperado: EventoDeCobro, eventos: List<EventoDeCobro>) {
+            assertEquals(caso, esperado, eventos.last())
+            assertFalse(caso, RevisandoConElBanco in eventos)
+        }
+        blumon.venta = { Respuesta.NoEnviada }
+        sinAviso("cero bytes", noSalio(MotivoNoSalio.INTERRUMPIDO), cobrar(solicitud()).map { it.first })
+        blumon.venta = { delay(1_000); http(200, APROBADA) }
+
+        red.hay = false
+        sinAviso("sin red", noSalio(MotivoNoSalio.SIN_RED), cobrar(solicitud()).map { it.first })
+        red.hay = true
+
+        val cortada = solicitud()
+        motor.antesDelPuntoSinRetorno = { motor.cortar(cortada) }
+        sinAviso("corte antes de salir", noSalio(MotivoNoSalio.INTERRUMPIDO), cobrar(cortada).map { it.first })
+        motor.antesDelPuntoSinRetorno = {}
+
+        val leer = lector.resultado
+        lector.resultado = { ResultadoDeLectura.Vencida }
+        sinAviso("lector vencido", noSalio(MotivoNoSalio.LECTURA_VENCIDA), cobrar(solicitud()).map { it.first })
+        lector.resultado = { i -> ResultadoDeLectura.Leida(LecturasDePrueba.visaPlasticoVenta(i + 1)) }
+        sinAviso(
+            "tarjeta no admitida", noSalio(MotivoNoSalio.NO_ADMITIDA, MotivoNoAdmitida.IMPORTE_NO_COINCIDE),
+            cobrar(solicitud()).map { it.first },
+        )
+        lector.resultado = leer
+
+        val ilegible = solicitud()
+        motor.antesDeBuscar = { id -> if (id == ilegible.id) throw IllegalStateException("Room tronó") }
+        sinAviso("admision sin fila legible", PorConfirmar(ilegible.importeCentavos), cobrar(ilegible).map { it.first })
+        assertEquals(3, blumon.reversos.size) // sólo los tres caminos al reverso
+    }
+
+    /** Un veto del permiso cierra sin reverso: después del aviso, el final es neutral (`PorConfirmar`), nunca `NoSeCobro`. */
+    @Test fun `un veto del permiso deja PorConfirmar despues del aviso`() = prueba {
+        blumon.venta = { delay(1_000); http(503, APROBADA) }
+        servidor.permiso = { delay(1_000); PermisoDeReverso.ErrorDelServidor }
+        val s = solicitud()
+        val vistos = cobrar(s)
+        esperarTodo()
+        assertEquals(PorConfirmar(s.importeCentavos) to T0 + 2_000, vistos.last())
+        assertTrue(blumon.reversos.isEmpty())
+        assertEquals(EstadoDelIntento.NO_SE, fila(s).estado)
+        assertFalse(NoSeCobro in tardiasDe(s))
+        assertEquals(
+            listOf(
+                Iniciado(s.id, identidad, Operacion.VENTA, s.importeCentavos), PideTarjeta, Autorizando, RevisandoConElBanco,
+                PorConfirmar(s.importeCentavos),
+            ),
+            vistos.map { it.first },
+        )
+    }
+
+    /** Quien se engancha al intento VIVO después del aviso lo recibe una vez, en su historia; el final, una vez a cada uno. */
+    @Test fun `al reengancharse la historia trae el aviso una sola vez`() = prueba {
+        blumon.venta = { delay(1_000); http(503, APROBADA) }
+        val s = solicitud()
+        val primero = prueba.async { cobrar(s) }
+        delay(T0 + 1_500) // el aviso salió a T0 + 1 s; el permiso contesta a T0 + 2 s
+        val r = motor.intentos.getValue(s.id)
+        assertFalse("el intento sigue vivo", r.terminado)
+        val avisoYaSalio = RevisandoConElBanco in r.historia.value
+        val segundo = cobrar(s)
+        val uno = primero.await()
+        // El final, como hoy, y una sola vez a cada colector.
+        for (vistos in listOf(uno, segundo)) {
+            assertEquals(NoSeCobro to T0 + 4_000, vistos.last())
+            assertEquals(1, vistos.count { it.first.esTerminal })
+        }
+        assertEquals(1, blumon.ventas.size)
+        assertEquals(1, blumon.reversos.size)
+        assertTrue("el segundo se enganchó después del aviso", avisoYaSalio)
+        val historia = listOf(Iniciado(s.id, identidad, Operacion.VENTA, s.importeCentavos), PideTarjeta, Autorizando, RevisandoConElBanco, NoSeCobro)
+        assertEquals(historia, uno.map { it.first })
+        assertEquals(historia, segundo.map { it.first })
+        assertEquals("llega con su historia, al engancharse", T0 + 1_500, segundo.single { it.first == RevisandoConElBanco }.second)
     }
 
     // ───────────── C. Permiso ─────────────

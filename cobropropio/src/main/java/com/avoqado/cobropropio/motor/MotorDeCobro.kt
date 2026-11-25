@@ -84,10 +84,16 @@ import kotlin.time.Duration.Companion.milliseconds
 public enum class ResultadoDelCorte { CORTADO, YA_SALIO, SIN_CONFIRMAR, SIN_INTENTO_VIVO }
 
 /**
- * El motor de la venta: cobra, espera, pide permiso al SERVIDOR, reversa y suelta a la cajera a los 30 s, EXACTAMENTE según la
- * tabla de decisiones (secciones A-H, rediseño v3 y parada 2). La cancelación con la tarjeta (T9) entra por la MISMA puerta,
- * el mismo `Registro`, el mismo corte y las mismas salidas; sólo cambia lo de en medio, y nunca se reversa. Sólo AFIRMA con evidencia concluyente; ante cualquier duda
- * después de salir al banco, `PorConfirmar`. Toda emisión terminal sale de la fila DESPUÉS de su commit.
+ * El motor de la venta: cobra, espera, pide permiso al SERVIDOR y reversa, EXACTAMENTE según la tabla de decisiones (secciones
+ * A-H, rediseño v3 y parada 2). A los 30 s de t0 termina la transmisión en vivo del intento (`PorConfirmar` si todavía no hay
+ * final); lo que ve la pantalla lo decide quien usa el motor. La cancelación con la tarjeta (T9) entra por la MISMA puerta,
+ * el mismo `Registro`, el mismo corte y las mismas salidas; sólo cambia lo de en medio, y nunca se reversa. Sólo AFIRMA con
+ * evidencia concluyente; ante cualquier duda después de salir al banco, `PorConfirmar`: el motor no tiene veredicto, que no es
+ * un «no se cobró». Toda emisión terminal sale de la fila DESPUÉS de su commit.
+ *
+ * Bloque R: en el instante en que una venta se queda sin un desenlace definitivo del importe completo y el motor va a intentar
+ * deshacerla (los tres caminos al reverso: sin respuesta, una respuesta que no sirve, un parcial), avisa `RevisandoConElBanco`,
+ * antes de tocar la libreta. Es neutral: la venta pudo no haber salido.
  *
  * La ejecución de cada intento vive en [fondo] desde que su id se registra; el colector sólo observa. Las llamadas de la
  * libreta bloquean: corren siempre en [io]. El camino del reverso está en `CaminoDelReverso.kt`.
@@ -186,7 +192,9 @@ public class MotorDeCobro internal constructor(
 
     /**
      * Todos los finales de cada intento, haya o no alguien escuchando; la fila es la verdad; quien consume deduplica por id, y
-     * un `PorConfirmar` nunca reemplaza a un definitivo.
+     * un `PorConfirmar` nunca reemplaza a un definitivo. Un `PorConfirmar` aquí (también el de los 30 s, cuando termina la
+     * transmisión en vivo) sólo dice que el motor no tiene veredicto: un definitivo puede llegar después, y la pantalla la
+     * decide quien usa el motor. `RevisandoConElBanco` no sale por aquí: no es un final.
      */
     public val resolucionesTardias: SharedFlow<Pair<AttemptId, EventoDeCobro>> = tardias.asSharedFlow()
 
@@ -567,7 +575,7 @@ public class MotorDeCobro internal constructor(
             }
             val t0 = ahora()
             if (r.solicitud is SolicitudDeVenta) {
-                if (!enLibreta { libreta.marcarEnviado(r.id, t0, salida.datos) }) return emitirFila(r) // ganó el corte
+                if (!enLibreta { libreta.marcarEnviado(r.id, t0, salida.datos) }) return emitirFila(r) // no salió: corte, fila en otro estado o lectura repetida
             } else {
                 // T9: preflight válido no es cancelación autorizada: este CAS vuelve a revisar original, venue, ámbito y huellas.
                 val enviada = enLibreta { libreta.marcarCancelacionEnviada(r.id, t0, salida.datos) }
@@ -876,9 +884,14 @@ public class MotorDeCobro internal constructor(
                     }
                     emitirFila(r)
                 }
-                DesenlaceDeVenta.NoSe -> caminoDelReverso(r, salida, t0)
+                DesenlaceDeVenta.NoSe -> {
+                    r.emitir(EventoDeCobro.RevisandoConElBanco)
+                    caminoDelReverso(r, salida, t0)
+                }
                 is DesenlaceDeVenta.DebeReversar -> {
-                    // La evidencia del parcial se guarda ANTES de reversar, y nunca promueve el estado.
+                    // El aviso sale en el instante, antes de tocar la libreta. La evidencia del parcial se guarda ANTES de
+                    // reversar, y nunca promueve el estado.
+                    r.emitir(EventoDeCobro.RevisandoConElBanco)
                     enLibreta {
                         libreta.transicionar(r.id, EstadoDelIntento.ENVIADO) {
                             it.copy(parcialOperacion = d.operationNumber, parcialImporteCentavos = d.importeAutorizadoCentavos)
@@ -945,9 +958,10 @@ public class MotorDeCobro internal constructor(
     }
 
     /**
-     * G con la vara A (R4-1): a los `peorCasoCajera` desde t0 la cajera recibe `PorConfirmar` PRIMERO, sin tocar Room; la
-     * fila pasa a NO_SE después, en [fondo], sin que nadie la espere. Si el proceso muere entre los dos, `recuperar` lleva el
-     * ENVIADO a NO_SE, y H reconstruye un ENVIADO como `PorConfirmar`.
+     * G con la vara A (R4-1): a los `peorCasoCajera` desde t0 termina la transmisión en vivo: quien escucha recibe
+     * `PorConfirmar` PRIMERO (el motor todavía no tiene veredicto; el intento sigue en [fondo]), sin tocar Room; la fila pasa a
+     * NO_SE después, en [fondo], sin que nadie la espere. Qué ve la cajera lo decide quien usa el motor. Si el proceso muere
+     * entre los dos, `recuperar` lleva el ENVIADO a NO_SE, y H reconstruye un ENVIADO como `PorConfirmar`.
      */
     private fun soltarALaCajera(r: Registro) {
         if (r.terminado) return

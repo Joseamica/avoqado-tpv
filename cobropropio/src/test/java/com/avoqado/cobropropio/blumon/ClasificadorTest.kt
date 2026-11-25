@@ -404,6 +404,10 @@ class ClasificadorTest {
         assertEquals(DesenlaceDeCancelacion.Rechazada("TX_024", "TIEMPO EXCEDIDO PARA REALIZAR CANCELACIÓN"), cancelacion(sinEco(200, error("TX_024"))))
         assertEquals(ClaseDelReverso.Rechazado("TX_007", hora), reverso(sinEco(200, error("TX_007"))))
         assertEquals(ClaseDelReverso.Reintentar("TX_008", true, hora), reverso(sinEco(200, error("TX_008"))))
+        // Bloque 1b · fila 13: P2 sigue mirando `dataResponse` SÓLO en la raíz. Uno anidado bajo una clave neutra no vuelve duda
+        // a un rechazo válido (si `conDatos` pasara a cualquier profundidad, esto saldría `NoSe`).
+        assertEquals(DesenlaceDeVenta.Rechazada("51", "FONDOS INSUFICIENTES"),
+            venta(sinEco(200, """{"status":false,"error":{"code":"51"},"detalle":{"dataResponse":{"x":1}}}""")))
     }
 
     /**
@@ -438,6 +442,39 @@ class ClasificadorTest {
             assertEquals(v, DesenlaceDeVenta.NoSe, venta(sinEco(200, """{"status":false,"error":{"code":"51"},"dataResponse":$v}""")))
             assertEquals(v, DesenlaceDeCancelacion.NoSe, cancelacion(sinEco(200, """{"status":false,"error":{"code":"TX_024"},"dataResponse":$v}""")))
             assertEquals(v, ClaseDelReverso.Reintentar("TX_014", false, hora), reverso(sinEco(200, """{"status":false,"error":{"code":"TX_014"},"dataResponse":$v}""")))
+        }
+    }
+
+    /**
+     * Bloque 1b · fila 13: P1 a cualquier profundidad. Un `error` lleno DENTRO de `dataResponse`, más abajo o dentro de una lista
+     * nunca deja un éxito definitivo, en las cinco operaciones; vacío (`null`, `{}`, `[]`) sigue siendo el éxito de hoy.
+     */
+    @Test fun `P1 un exito con algo bajo un error anidado nunca es definitivo`() {
+        val parcial = """{"status":true,"id":777,"dataResponse":{"codeResponse":"10","amount":"0.50","simulation":false}}"""
+        val preflightSi = """{"status":true,"dataResponse":{"simulation":false}}"""
+        val lugares = listOf<(String) -> String>(
+            { v -> "\"dataResponse\":{\"error\":$v," },
+            { v -> "\"dataResponse\":{\"detalle\":{\"error\":$v}," },
+            { v -> "\"dataResponse\":{\"lista\":[{\"error\":$v}]," },
+        )
+        fun con(s: String, lugar: (String) -> String, v: String) = s.replaceFirst("\"dataResponse\":{", lugar(v))
+        for (lugar in lugares) {
+            for (sucio in listOf("\"x\"", "504", "true", "[1]", "{\"httpStatusCode\":504}")) {
+                val caso = lugar(sucio)
+                assertEquals(caso, DesenlaceDeVenta.NoSe, venta(http(200, con(aprobadaDelSandbox, lugar, sucio)), enSandbox))
+                assertEquals(caso, DesenlaceDeVenta.DebeReversar(null, null), venta(http(200, con(parcial, lugar, sucio))))
+                assertEquals(caso, DesenlaceDeCancelacion.NoSe, cancelacion(http(200, con(CANCELACION_OK, lugar, sucio))))
+                assertTrue(caso, Clasificador.reverso(http(200, con(reversadaDelSandbox, lugar, sucio)), enSandbox, catalogo) { hora } is ClaseDelReverso.Reintentar)
+                assertEquals(caso, false, Clasificador.preflightDeCancelacion(sinEco(200, con(preflightSi, lugar, sucio)), Ambiente.SANDBOX))
+            }
+            for (limpio in listOf("null", "{}", "[]")) {
+                val caso = lugar(limpio)
+                assertEquals(caso, DesenlaceDeVenta.Aprobada(84678, "1A2B34"), venta(http(200, con(aprobadaDelSandbox, lugar, limpio)), enSandbox))
+                assertEquals(caso, DesenlaceDeVenta.DebeReversar(777, 50), venta(http(200, con(parcial, lugar, limpio))))
+                assertEquals(caso, DesenlaceDeCancelacion.Cancelada(12346), cancelacion(http(200, con(CANCELACION_OK, lugar, limpio))))
+                assertEquals(caso, ClaseDelReverso.Confirmado(hora), Clasificador.reverso(http(200, con(reversadaDelSandbox, lugar, limpio)), enSandbox, catalogo) { hora })
+                assertEquals(caso, true, Clasificador.preflightDeCancelacion(sinEco(200, con(preflightSi, lugar, limpio)), Ambiente.SANDBOX))
+            }
         }
     }
 

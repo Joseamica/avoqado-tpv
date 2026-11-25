@@ -34,6 +34,7 @@ import com.avoqado.cobropropio.dominio.SolicitudDeCancelacion
 import com.avoqado.cobropropio.dominio.SolicitudDeVenta
 import com.avoqado.cobropropio.fixtures.LecturasDePrueba
 import com.avoqado.cobropropio.fixtures.LecturasDePrueba.con
+import com.avoqado.cobropropio.fixtures.LecturasDePrueba.toque
 import com.avoqado.cobropropio.libreta.DatosDelEnvio
 import com.avoqado.cobropropio.libreta.EstadoDelIntento
 import com.avoqado.cobropropio.libreta.IntentoEntity
@@ -131,7 +132,8 @@ class MotorDeCobroCancelacionTest {
     private class LectorFalso : LectorDeTarjeta {
         val operaciones = mutableListOf<Operacion>()
         var demora = 1_000L
-        var venta: (Long) -> Lectura = { LecturasDePrueba.visaPlasticoVenta(it) }
+        var ventas = 0
+        var venta: (Long) -> Lectura = { LecturasDePrueba.visaPlasticoVenta(it).toque(++ventas) }
         var cancelacion: (Long) -> Lectura = { LecturasDePrueba.visaPlasticoCancelacion(it).con(tags = mapOf(0x9F36 to "0002")) }
 
         override suspend fun leer(operacion: Operacion, importeCentavos: Long, espera: Long): ResultadoDeLectura {

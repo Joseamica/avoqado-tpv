@@ -42,8 +42,14 @@ public enum class ResultadoKernel { PIDE_BANCO, APROBADA_SIN_BANCO, NEGADA_SIN_B
 /** La verificación que pidió el kernel. `DISPOSITIVO` = el teléfono ya verificó al dueño (CVM_CONSUMER_DEVICE de Visa). */
 public enum class Cvm { SIN_CVM, DISPOSITIVO, FIRMA, PIN, OTRO }
 
+/**
+ * Quién cobra (bloque 4-L · L-b). La sesión con Blumon nace sólo con el MISMO `posId` que devuelve `device/init`: se compara
+ * siempre, y el motor exige su forma al armarse (`ArmadoDelMensaje`). [comercio] se compara sólo si viene: `null` = la
+ * identidad no lo conoce. La contraseña del token es SHA-256 de [serieBlumon] + `PAX` + [modelo] (con `A910S`, la de
+ * siempre). [serieFisica] va al 9F1E.
+ */
 public data class Identidad(
-    val comercio: String,
+    val comercio: String?,
     val posId: String,
     val serieFisica: String,
     val serieBlumon: String,

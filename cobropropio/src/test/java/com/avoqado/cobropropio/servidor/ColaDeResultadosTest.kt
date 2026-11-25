@@ -84,7 +84,7 @@ class ColaDeResultadosTest {
         )
         val id = AttemptId(v.attemptId)
         assertTrue(libreta.anotar(v))
-        assertTrue(libreta.marcarEnviado(id, 1_000, DatosDelEnvio(null, null, null, null, null, null, null, null, null)))
+        assertTrue(libreta.marcarEnviado(id, 1_000, DatosDelEnvio(null, null, null, null, null, null, null, null, v.attemptId)))
         assertEquals(Arbitraje.Comprometido, libreta.comprometerAReversar(id))
         if (permiso) assertTrue(libreta.guardarPermisoConcedido(id))
         assertTrue(libreta.reclamarReverso(id))

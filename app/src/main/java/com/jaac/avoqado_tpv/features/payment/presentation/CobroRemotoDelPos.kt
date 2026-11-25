@@ -63,6 +63,21 @@ internal object CobroRemotoDelPos {
     fun laTerminalRechazariaUnaVentaNueva(estado: PaymentStateProvider): Boolean =
         motivoParaNoIniciar(enPantallaDeCobro = true, estado = estado) != null
 
+    /**
+     * D669: con la terminal bloqueada (o en mantenimiento) desde Avoqado, ni el cobro ni la devolución que manda el POS se abren,
+     * y la tablet dice por qué. `null` = sin candado. El bloqueo manda: sólo Avoqado lo quita (el mantenimiento, el cajero). El
+     * texto del cobro va detrás del «En la terminal: » de la admisión (D8); el de la devolución viaja tal cual.
+     */
+    fun motivoDelCandado(bloqueada: Boolean, enMantenimiento: Boolean, esDevolucion: Boolean = false): String? {
+        val estado = when {
+            bloqueada -> "está bloqueada desde Avoqado"
+            enMantenimiento -> "está en mantenimiento"
+            else -> return null
+        }
+        return if (esDevolucion) "La terminal $estado. No se abrió la devolución."
+        else "${estado.replaceFirstChar { it.uppercase() }}. Este cobro NO se inició."
+    }
+
     /** Lo que ve la tablet cuando la terminal no puede nombrar qué la aparta (p. ej. no pudo guardar el intento). */
     const val NO_INICIADO_SIN_DETALLE =
         "La terminal no pudo iniciar este cobro (tiene un cobro pendiente o no pudo guardar el intento): este cobro NO se inició."

@@ -1244,6 +1244,22 @@ class HomeViewModel @Inject constructor(
      * que se haya devuelto nada: eso lo confirma una persona en el aparato.
      */
     private fun openRemoteRefund(event: SocketEvent.TerminalRefundRequest) {
+        // D669 (Codex r2 #2): el último evento del socket se reentrega a cada HomeViewModel nuevo; lo ya contestado no se repite.
+        if (!remotePaymentCoordinator.esDevolucionNueva(event.requestId)) {
+            Timber.i("↩️ [Refund] ${event.requestId} ya se contestó (reentrega del último evento del socket): se ignora")
+            return
+        }
+        // D669: bloqueada o en mantenimiento desde Avoqado, la devolución no se abre y el POS sabe por qué (`rejected` es del
+        // contrato del ACK desde que existe; el SERVIDOR lo contesta como 422 con este `errorMessage`).
+        com.jaac.avoqado_tpv.features.payment.presentation.CobroRemotoDelPos.motivoDelCandado(
+            bloqueada = lockScreenManager.isCurrentlyLocked(),
+            enMantenimiento = maintenanceManager.isCurrentlyInMaintenance(),
+            esDevolucion = true,
+        )?.let { motivo ->
+            Timber.w("↩️ [Refund] No se abre la devolución del pago ${event.paymentId}: $motivo")
+            socketManager.emitTerminalRefundResult(requestId = event.requestId, status = "rejected", errorMessage = motivo)
+            return
+        }
         remotePaymentCoordinator.submitSocketRefundRequest(
             com.jaac.avoqado_tpv.core.remotepayment.RemoteRefundRequest(
                 socketRequestId = event.requestId,

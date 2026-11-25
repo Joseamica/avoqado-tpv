@@ -546,6 +546,41 @@ class SocketManagerTest {
         verify(exactly = 0) { mockRemotePaymentCoordinator.submitSocketPaymentRequest(any()) }
     }
 
+    // ═══ D26: al morir la pantalla dueña, se suelta la propiedad y se avisa lo que diría la sonda (si ya no es «viva») ═══
+
+    @Test
+    fun `D26 la pantalla que se fue cierra sus filas, suelta la propiedad y avisa el cese sin esperar la sonda`() = runTest(testDispatcher) {
+        val orden = mutableListOf<String>()
+        every { mockRemotePaymentCoordinator.soltarPropiedad("req-ida") } answers { orden += "soltar" }
+        coEvery { mockRemotePaymentCoordinator.probeSocketPaymentRequest("req-ida", "venue-1") } answers {
+            orden += "sonda"
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeAnswer(
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition.ACTIVE, executionAlive = false, closedForExecution = true,
+            )
+        }
+        socketManager.alMorirUnaPantallaDeCobro("req-ida", "venue-1") { orden += "filas" }
+        verify(timeout = 2000) {
+            mockSocket.emit("terminal:payment_probe_result", match<JSONObject> {
+                it.optString("requestId") == "req-ida" && it.optString("disposition") == "ACTIVE" &&
+                    !it.optBoolean("executionAlive", true) && it.optBoolean("closedForExecution", false)
+            })
+        }
+        assertThat(orden).containsExactly("filas", "soltar", "sonda").inOrder()
+    }
+
+    @Test
+    fun `D26 si la bandeja todavia dice viva no se manda nada`() = runTest(testDispatcher) {
+        coEvery { mockRemotePaymentCoordinator.probeSocketPaymentRequest("req-viva", "venue-1") } returns
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeAnswer(
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition.ACTIVE,
+            )
+        socketManager.alMorirUnaPantallaDeCobro("req-viva", "venue-1")
+        coVerify(timeout = 2000) { mockRemotePaymentCoordinator.probeSocketPaymentRequest("req-viva", "venue-1") }
+        Thread.sleep(300)
+        verify(exactly = 1) { mockRemotePaymentCoordinator.soltarPropiedad("req-viva") }
+        verify(exactly = 0) { mockSocket.emit("terminal:payment_probe_result", any<JSONObject>()) }
+    }
+
     @Test
     fun `probe forwards the venue of the payload so a NOT_FOUND tombstone lands in the right tenant`() = runTest(testDispatcher) {
         coEvery { mockRemotePaymentCoordinator.probeSocketPaymentRequest("req-none", "venue-7") } returns

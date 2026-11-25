@@ -650,4 +650,95 @@ class BlumonSaleReferenceTest {
             io.mockk.verify(exactly = 0) { despues.alConfirmarse(any()) }
         } finally { vm.viewModelScope.cancel() }
     }
+
+    // ═══ D26 (22-nov, Testarudo): la terminal nunca queda apartada por una pantalla de cobro que ya no cobra ═══
+
+    private fun momentumSinContacto(texto: String) = com.example.clean_lib_services.utils.clean.Either.Left(
+        com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_ctls.SaleCtlsFailure.MomentumFailure(
+            mockk<com.example.clean_lib_services.shared.core.domain.entity.sale_data.MomentumDataFailure>(relaxed = true) {
+                every { this@mockk.toString() } returns texto
+            }
+        )
+    )
+
+    /**
+     * La PAX de producción (2.16.0, intento 8f08262f): SaleCtls sin contacto, Momentum contestó «TRANSACCIÓN NO PERMITIDA» y el cobro
+     * quedó en DUDA («Estamos confirmando el cobro»). La pantalla se quedaba con la bandera de cobro activo arriba (el recolector salía
+     * antes de bajarla) y la bandeja contestaba «viva» a cada sonda y cancel hasta reiniciar. Con el SDK ya regresado y sin aprobación,
+     * la duda aparta su VENTA, no la terminal: la bandera baja.
+     */
+    @Test
+    fun `D26 un rechazo de Momentum sin contacto que queda en duda no deja la terminal apartada`() = runTest(testDispatcher) {
+        val vm = viewModelReadyToAuthorize()
+        try {
+            scheduler.advanceUntilIdle()
+            org.junit.Assert.assertTrue("precondición: «Autorizando con banco…» publica el cobro activo", paymentStateHolder.isChargeAttemptActive())
+            coEvery { mockSaleCtlsUseCase.run(any()) } returns
+                momentumSinContacto("MomentumDataFailure(httpCode=500, code=000000, description=TRANSACCION NO PERMITIDA, membership=null)")
+
+            vm.performOnlineAuthorization("100.00", "", "", "", isContactless = true)
+            scheduler.advanceUntilIdle()
+
+            val estado = vm.state.value as PaymentState.Error
+            assertEquals(false, estado.canRetry)
+            assertEquals("test-attempt", estado.unresolvedAttemptId)
+            io.mockk.coVerify { mockPaymentAttemptLedger.markIndeterminate("test-attempt", any()) }
+            io.mockk.coVerify { mockPaymentAttemptLedger.marcarSdkRegreso("test-attempt") }
+            assertEquals("la duda no aparta la terminal", false, paymentStateHolder.isChargeAttemptActive())
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    /** Control: «Cobrado. Sincronización pendiente» (el banco APROBÓ y falta registrar) sigue apartando, como siempre (N1). */
+    @Test
+    fun `D26 control - el aprobado sin registrar sigue apartando la terminal`() = runTest(testDispatcher) {
+        val vm = viewModelReadyToAuthorize()
+        try {
+            scheduler.advanceUntilIdle()
+            fun campo(nombre: String) = PaymentViewModel::class.java.getDeclaredField(nombre).apply { isAccessible = true }
+            campo("authorizationUnresolved").set(vm, true)
+            campo("authorizationApproved").set(vm, true)
+            campo("authorizationReturned").set(vm, true)
+            @Suppress("UNCHECKED_CAST")
+            (campo("_state").get(vm) as MutableStateFlow<PaymentState>).value = PaymentState.Error("Cobrado. Sincronización pendiente.", canRetry = false)
+            scheduler.advanceUntilIdle()
+
+            assertEquals(true, paymentStateHolder.isChargeAttemptActive())
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    /** D26: el registro del rechazo lleva el código y el httpCode de Momentum (para decidir con datos si fue rechazo o duda). */
+    @Test
+    fun `D26 el registro del rechazo de Momentum lleva el codigo y el httpCode`() = runTest(testDispatcher) {
+        val vm = viewModelReadyToAuthorize()
+        try {
+            coEvery { mockSaleCtlsUseCase.run(any()) } returns
+                momentumSinContacto("MomentumDataFailure(httpCode=500, code=000000, description=TRANSACCION NO PERMITIDA, membership=null)")
+            vm.performOnlineAuthorization("100.00", "", "", "", isContactless = true)
+            io.mockk.verify {
+                observabilityManager.logWarning(any(), match { it.startsWith("Autorización rechazada") }, match<Map<String, Any?>> {
+                    it["codigo"] == "000000" && it["httpCode"] == "500"
+                })
+            }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    /** D26 (T4): al morir la pantalla dueña de un cobro del POS, se suelta su propiedad y se le avisa al SERVIDOR. */
+    @Test
+    fun `D26 al morir la pantalla de un cobro del POS se suelta el cobro`() = runTest(testDispatcher) {
+        val vm = viewModelReadyToAuthorize()
+        vm.setSocketPaymentSource("SOCKET", "req-d26")
+        vm.viewModelScope.cancel()
+        PaymentViewModel::class.java.getDeclaredMethod("onCleared").apply { isAccessible = true }.invoke(vm)
+        io.mockk.verify(exactly = 1) { mockSocketManager.alMorirUnaPantallaDeCobro("req-d26", "venue-test-001", any()) }
+    }
+
+    /** D26 (aparato, 22-nov): la pantalla que se va ANTES de elegir método (no hay venue del cobro todavía) también avisa, con el de la sesión. */
+    @Test
+    fun `D26 la pantalla que se va antes de elegir metodo tambien suelta el cobro y avisa con el venue de la sesion`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        vm.setSocketPaymentSource("SOCKET", "req-d26-antes")
+        vm.viewModelScope.cancel()
+        PaymentViewModel::class.java.getDeclaredMethod("onCleared").apply { isAccessible = true }.invoke(vm)
+        io.mockk.verify(exactly = 1) { mockSocketManager.alMorirUnaPantallaDeCobro("req-d26-antes", "venue-test-001", any()) }
+    }
 }

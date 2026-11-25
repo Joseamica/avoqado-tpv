@@ -25,7 +25,8 @@ import kotlin.time.TimeSource
 
 /**
  * El cliente de Blumon sobre `EnvioUnico` (rescate de `lectorlab/BlumonPilot.kt:49-85` y `BlumonSandbox.kt`). La sesión
- * sólo se arma si `device/init` devuelve ESTA identidad con `qps=false`, y si la IPEK cuadra con su KCV.
+ * sólo se arma si `device/init` devuelve el `posId` de ESTA identidad (y su comercio, si la identidad lo trae) con
+ * `qps=false`, y si la IPEK cuadra con su KCV.
  */
 internal class ClienteBlumon(
     private val endpoints: Endpoints,
@@ -49,7 +50,8 @@ internal class ClienteBlumon(
         val init = datos(core("device/init", token, json("serialNumber" to identidad.serieBlumon), fin))
             ?: return@sinExcepciones null
         val mismaIdentidad = init.texto("dataResponse", "posId") == identidad.posId &&
-            init.texto("dataResponse", "commerceName") == identidad.comercio &&
+            init.soloEn("dataResponse", "commerceName") &&
+            (identidad.comercio == null || init.texto("dataResponse", "commerceName") == identidad.comercio) &&
             init.booleano("dataResponse", "contactless") == true && init.booleano("dataResponse", "initializeKeys") == true &&
             init.booleano("dataResponse", "qps") == false
         if (!mismaIdentidad) return@sinExcepciones null
@@ -113,11 +115,14 @@ internal class ClienteBlumon(
         return envio.post(endpoints.core + "retail/present/cancel/$operationNumber", "Bearer ${sesion.token}", cuerpo, espera, null, alLeer)
     }
 
-    /** Token: por query en producción y por formulario en el sandbox, como se midió. Un solo `access_token`, en la raíz. */
+    /**
+     * Token: por query en producción y por formulario en el sandbox, como se midió. Un solo `access_token`, en la raíz. La
+     * contraseña es SHA-256 de la serie de Blumon + `PAX` + el modelo de la identidad (bloque 4-L · L-b; con `A910S`, la de siempre).
+     */
     private suspend fun token(fin: TimeMark): String? {
         val espera = restante(fin) ?: return null
         val serie = identidad.serieBlumon
-        val clave = MessageDigest.getInstance("SHA-256").digest((serie + "PAXA910S").toByteArray(Charsets.US_ASCII)).aHex()
+        val clave = MessageDigest.getInstance("SHA-256").digest((serie + "PAX" + identidad.modelo).toByteArray(Charsets.US_ASCII)).aHex()
         val r = if (identidad.ambiente == Ambiente.PRODUCCION) {
             val url = endpoints.tokener + "?grant_type=password&username=${enc(serie)}&password=${enc(clave)}"
             envio.post(url, basic, CuerpoDeBlumon.desde(JsonObject()), espera, null)

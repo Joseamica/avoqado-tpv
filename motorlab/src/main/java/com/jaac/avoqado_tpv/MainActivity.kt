@@ -83,7 +83,7 @@ class MainActivity : Activity() {
      * suelta, y el latido con él. La fila del motor puede cambiar sin evento (un reverso tras «por confirmar»): al verse y en
      * cada latido el laboratorio la relee. La cabeza lee la red al pintar, así que el latido la mantiene al día aunque el carril
      * no publique. `pintar()` no toca los campos de la identidad ni el importe: repintar no borra lo que se teclea. Es sólo la
-     * vista: no toca el carril ni retrasa ninguna orden.
+     * vista: no toca el carril ni retrasa ninguna orden. El latido revisa cada segundo, pero sólo escribe el texto que cambió.
      */
     override fun onStart() {
         super.onStart()
@@ -103,11 +103,20 @@ class MainActivity : Activity() {
     /** El estado VIGENTE del carril, leído aquí: este hilo es el carril (Codex r3 #2). */
     private fun pintar() {
         val s = lab.situacion.value
-        cabeza.text = "Pantalla n.º $pantalla\n${app.cabecera()}\n${textoDeLaSituacion(s)}"
-        resultado.text = s.lecturaSeca ?: "Lectura seca: sin tocar"
+        cabeza.ponSiCambia("Pantalla n.º $pantalla\n${app.cabecera()}\n${textoDeLaSituacion(s)}")
+        resultado.ponSiCambia(s.lecturaSeca ?: "Lectura seca: sin tocar")
         cobrar.isEnabled = porQueNoCobra(s) == null
         lecturaSeca.isEnabled = s.trabajo == null
-        folios.text = lab.folios.value
+        folios.ponSiCambia(lab.folios.value)
+    }
+
+    /**
+     * Escribe sólo si el texto cambió. Un `setText` con el mismo texto también despierta a la accesibilidad, y con el latido de
+     * un segundo la pantalla nunca quedaba quieta: `uiautomator dump` contestaba «could not get idle state» y el laboratorio no
+     * podía leer la app (hallado en la PAX el 25-nov).
+     */
+    private fun TextView.ponSiCambia(texto: String) {
+        if (text.toString() != texto) text = texto
     }
 
     private fun boton(texto: String, alTocar: () -> Unit) = Button(this).apply {

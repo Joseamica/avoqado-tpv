@@ -53,4 +53,24 @@ class NuevaOrdenNoReabreElCobroTest {
         assertThat(nexgo).contains("if (state is AngelPayPaymentState.Success || state is AngelPayPaymentState.Queued) propinaDeMesaCobrada = true")
         assertThat(nexgo).contains("if (initialAmount != null && state is AngelPayPaymentState.Idle && !propinaDeMesaCobrada) {")
     }
+
+    /**
+     * 🪑 hz:1450a1e9:D6: en la Nexgo, «Nueva Orden» hace `resetPayment()` mientras Mesas libera la mesa. El estado pasa a `Idle` pero
+     * `showSuccessContent` sigue prendido, y la rama del éxito no tenía nada que pintar: se veía la pantalla vacía hasta que llegaba la
+     * respuesta del SERVIDOR (la nube lo vio con la liberación retenida). Ahora, con un cobro hecho, `Idle` dice «Un momento...» como la
+     * PAX, y esa rama va antes que las del éxito.
+     */
+    @Test
+    fun `en la Nexgo tras un cobro hecho Idle dice Un momento antes que la rama del exito`() {
+        val nexgo = File("src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/angelpay/AngelPayPaymentScreen.kt").readText()
+        val overlays = nexgo.indexOf("// ── Full-screen overlays (no scaffold)")
+        val espera = nexgo.indexOf("propinaDeMesaCobrada && state is AngelPayPaymentState.Idle -> {", overlays)
+        val letrero = nexgo.indexOf("AvoqadoLoadingOverlay(message = \"Un momento...\")", espera)
+        val exito = nexgo.indexOf("showSuccessContent -> {", overlays)
+        assertThat(overlays).isAtLeast(0)
+        assertThat(espera).isGreaterThan(overlays)
+        assertThat(letrero).isGreaterThan(espera)
+        assertThat(letrero).isLessThan(exito)
+        assertThat(nexgo.substring(letrero, exito)).contains("return")
+    }
 }

@@ -60,6 +60,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.angelpay.angelpaysdk.AngelPayPaymentContract
 import com.angelpay.angelpaysdk.models.PaymentResult
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoBrandLoader
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTextField
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
@@ -337,6 +338,15 @@ fun AngelPayPaymentScreen(
 
     // ── Full-screen overlays (no scaffold) ───────────────────────────
     when {
+        // 🪑 hz:1450a1e9:D6: con el cobro hecho, Idle sólo espera la salida («Nueva Orden» de Mesas libera la mesa y luego va al
+        // plano). Antes caía en la rama del éxito sin estado que pintar y la Nexgo enseñaba la pantalla vacía; ahora, como la PAX.
+        propinaDeMesaCobrada && state is AngelPayPaymentState.Idle -> {
+            Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+                AvoqadoLoadingOverlay(message = "Un momento...")
+            }
+            return
+        }
+
         // Approved animation overlay
         showApprovedAnimation && !showSuccessContent -> {
             val successState = state as? AngelPayPaymentState.Success

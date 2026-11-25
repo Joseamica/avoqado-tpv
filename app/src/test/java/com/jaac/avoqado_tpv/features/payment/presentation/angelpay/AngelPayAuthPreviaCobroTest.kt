@@ -935,7 +935,7 @@ class AngelPayAuthPreviaCobroTest {
 
     /** Tres comercios de la misma cuenta, como la cuenta QA de la oficina. */
     private val tresComercios = listOf(
-        MerchantOption(id = 11, name = "Testarudo", afiliationNumber = "1001"),
+        MerchantOption(id = 11, name = "Comercio uno", afiliationNumber = "1001"),
         MerchantOption(id = 12, name = "Otro", afiliationNumber = "1002"),
         MerchantOption(id = 13, name = "Tercero", afiliationNumber = "1003"),
     )
@@ -1316,7 +1316,7 @@ class AngelPayAuthPreviaCobroTest {
             vm.ponerCampo("_state", AngelPayPaymentState.Cancelled)
             coEvery { sdkGateway.getUserMerchants() } answers {
                 lecturasTrasCancelar++
-                Result.success(listOf(MerchantSummary(id = 11, name = "Testarudo", affiliationNumber = "1001", isActive = true)))
+                Result.success(listOf(MerchantSummary(id = 11, name = "Comercio uno", affiliationNumber = "1001", isActive = true)))
             }
         }
         vm = createViewModel()

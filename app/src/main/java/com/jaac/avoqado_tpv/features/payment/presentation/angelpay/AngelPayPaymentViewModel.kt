@@ -5125,7 +5125,7 @@ class AngelPayPaymentViewModel @Inject constructor(
      * ([AngelPayAuthRepository.completeMerchantSelection], que rehace el login si su token venció).
      *
      * Sólo actúa si la sesión pide elegir, el comercio elegido es de AngelPay con id válido, el login nuevo es de la
-     * cuenta de ese comercio (regla de Amaena: nunca otra cuenta) y esa cuenta lo ofrece. No decide nada: quien decide si
+     * cuenta de ese comercio (nunca otra cuenta: incidente del 29-jul) y esa cuenta lo ofrece. No decide nada: quien decide si
      * se cobra sigue siendo [sessionAlignedWithSelectedMerchant] (y la regla de cuentas), justo después.
      *
      * Un comercio legacy sin cuenta ligada ([MerchantAccount.angelpayUserAccountId] nulo) no se re-elige (Codex r1 #2): el

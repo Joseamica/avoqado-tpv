@@ -278,6 +278,7 @@ class ReversoDelServidorHttpTest {
         assertEquals(AcuseDelResultado.Final(403, "TERMINAL_IDENTITY_REQUIRED"), resultado())
         contesta(409, """{"success":false,"code":"ATTEMPT_NOT_BLUMON"}""")
         assertEquals(AcuseDelResultado.Final(409, "ATTEMPT_NOT_BLUMON"), resultado())
+        assertTrue(credencial.rechazados.isEmpty()) // un 403 no renueva el JWT
     }
 
     @Test fun `503 5xx y sin red se reintentan`() {

@@ -20,6 +20,7 @@ public sealed interface EventoDeCobro {
     public data class Aprobado(
         val operationNumber: Long?,
         val autorizacion: String?,
+        /** Hoy el motor siempre lo entrega `null`: su columna ya no tiene escritor desde el bloque S (la firma se conserva). */
         val paymentId: String?,
         val marca: Marca?,
         val medio: Medio?,

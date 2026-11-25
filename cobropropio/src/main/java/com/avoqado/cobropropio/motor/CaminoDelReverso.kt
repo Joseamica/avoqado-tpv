@@ -56,9 +56,9 @@ internal suspend fun MotorDeCobro.caminoDelReverso(r: MotorDeCobro.Registro, sal
         when (clase) {
             is ClaseDelReverso.Confirmado -> {
                 enLibreta { libreta.cerrarVuelta(id, clase, ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE_COBRO) }
-                emitirFila(r)
                 // El reporte es una obligación durable de la libreta: aquí sólo se adelanta un intento; `recuperar()` lo repite.
                 fondo.launch { intentar { cola.entregar(id) } }
+                emitirFila(r)
                 return
             }
             is ClaseDelReverso.Rechazado -> {
@@ -104,7 +104,10 @@ private suspend fun MotorDeCobro.unaVuelta(
     return buzon.get() ?: clasificar(respuesta ?: Respuesta.SinRespuesta("TIEMPO"))
 }
 
-/** F. Al vencer el plazo, o si ya no había tiempo (o forma) para reversar. Siempre `NO_SE` + `PorConfirmar`. */
+/**
+ * F. Al vencer el plazo, o si ya no había tiempo (o forma) para reversar: cierra como `NO_SE` lo que siga en duda y publica lo
+ * que diga la fila (si una aprobación ganó la escritura justo antes, manda ella).
+ */
 private suspend fun MotorDeCobro.alPlazo(r: MotorDeCobro.Registro) {
     val id = r.id
     enLibreta {

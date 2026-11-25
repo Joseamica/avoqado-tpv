@@ -76,6 +76,7 @@ public data class IntentoEntity(
     /** La aprobación recibida DESPUÉS del arbitraje: sólo se guarda (la fase 3 la muestra para conciliar). */
     val evidenciaTardiaOperacion: Long? = null,
     val evidenciaTardiaAutorizacion: String? = null,
+    // ponytail: sin escritor desde el bloque S; se quita con la siguiente migración del esquema
     val paymentId: String? = null,
     /** En una cancelación, el `attemptId` de la venta original. */
     val operacionOriginal: String? = null,

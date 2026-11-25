@@ -495,6 +495,7 @@ class LibretaTest {
         var f = l.buscar(v.id())!!
         assertEquals(EstadoDelReporte.PENDIENTE, f.reporte)
         assertNull(f.estadoEnServidor)
+        assertEquals(EstadoDelIntento.NO_SE_COBRO, f.estado)
 
         f = l.aplicarAcuse(v.id(), ResultadoParaReportar.CONFIRMADO, EstadoDelReversoEnServidor.REVERSED, EstadoDelReporte.ENTREGADO)!!
         assertEquals(EstadoDelIntento.NO_SE_COBRO, f.estado)
@@ -642,7 +643,7 @@ class LibretaTest {
         assertTrue(l.cerrarVuelta(entregada.id(), ClaseDelReverso.Reintentar("68", false, pared), ResultadoParaReportar.PUDO_ENTRAR, EstadoDelIntento.NO_SE))
         assertTrue(l.aplicarAcuse(entregada.id(), ResultadoParaReportar.PUDO_ENTRAR, EstadoDelReversoEnServidor.REVERSING, EstadoDelReporte.ENTREGADO) != null)
         val confirmada = reclamada(l)
-        assertTrue(l.cerrarVuelta(confirmada.id(), ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
+        assertTrue(l.cerrarVuelta(confirmada.id(), ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE_COBRO))
         l = reabrir(l, proceso = UUID.randomUUID().toString())
         assertTrue(l.recuperarAlArrancar { emptyList() }.isEmpty())
         assertEquals(EstadoDelReporte.ENTREGADO, l.buscar(entregada.id())!!.reporte)

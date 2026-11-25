@@ -282,7 +282,7 @@ class ColaDeResultadosTest {
         // Mientras el PUDO_ENTRAR va en camino, otra vuelta confirma el reverso y deja una obligación nueva (CONFIRMADO).
         servidor.durante = {
             assertTrue(libreta.reclamarReverso(id))
-            assertTrue(libreta.cerrarVuelta(id, ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, null))
+            assertTrue(libreta.cerrarVuelta(id, ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE_COBRO))
         }
         servidor.acuses += guardado(EstadoDelReversoEnServidor.REVERSING)
         val e = runBlocking { cola.entregar(id) }

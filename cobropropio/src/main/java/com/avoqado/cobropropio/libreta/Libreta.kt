@@ -568,7 +568,7 @@ public class Libreta internal constructor(
         // r2 familia C: un importe parcial es menor que el pedido y mayor que cero; nunca se guarda un número sin cotejar.
         require(i.parcialImporteCentavos == null || i.parcialImporteCentavos in 1 until i.importeCentavos) { "parcialImporteCentavos fuera de rango" }
         // Codex r4 #2, las dos reglas de dinero: el aviso «REVERSADA» al SERVIDOR exige el reverso confirmado, y «Aprobado» exige
-        // el folio bancario o el id de pago del SERVIDOR.
+        // el folio bancario o un `paymentId`; desde el bloque S `paymentId` ya no tiene escritor, así que hoy sólo el folio.
         require(i.resultadoParaReportar != ResultadoParaReportar.CONFIRMADO || i.reverso == EstadoDelReverso.CONFIRMADO) {
             "aviso confirmado sin reverso confirmado"
         }

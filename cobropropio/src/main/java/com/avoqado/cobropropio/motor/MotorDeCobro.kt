@@ -222,9 +222,6 @@ public class MotorDeCobro internal constructor(
 
         /** El de la venta; el de una cancelación sale de la fila de su original al anotarla (0 mientras no se sabe). */
         @Volatile var importeCentavos: Long = (solicitud as? SolicitudDeVenta)?.importeCentavos ?: 0
-
-        /** Sólo en los caminos de la venta (el reverso): una cancelación nunca llega ahí. */
-        val venta: SolicitudDeVenta get() = solicitud as SolicitudDeVenta
         val historia = MutableStateFlow<List<EventoDeCobro>>(emptyList())
         val reservada = AtomicBoolean(false)
         @Volatile var enviado = false

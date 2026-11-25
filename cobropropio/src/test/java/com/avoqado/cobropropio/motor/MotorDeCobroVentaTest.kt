@@ -72,10 +72,10 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.yield
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
@@ -524,8 +524,8 @@ class MotorDeCobroVentaTest {
         assertEquals(t0 + motor.relojes.esperaRespuesta, blumon.reversos.first().first)
     }
 
-    /** D-2: un SERVIDOR que contesta error no frena el reverso; si Blumon lo confirma, la fila lo dice. */
-    @Test fun `con el SERVIDOR contestando error el motor reversa igual`() = prueba {
+    // Un control: «nada antes del reverso» lo cuidan `sin respuesta el primer reverso sale al vencer la espera…` y la guarda de `GuardasTest`.
+    @Test fun `con el reporte fallando el motor reversa y confirma igual`() = prueba {
         blumon.venta = SILENCIO
         servidor.acuse = { delay(1_000); AcuseDelResultado.Reintentar } // falla en lo único que le queda: un 500 de /resultado
         val s = solicitud()
@@ -533,6 +533,41 @@ class MotorDeCobroVentaTest {
         esperarTodo()
         assertEquals(1, blumon.reversos.size)
         assertEquals(EstadoDelReverso.CONFIRMADO, fila(s).reverso)
+    }
+
+    /** Revisión final: una entrega que lanza se queda en su `intentar`; si no, tumbaría `fondo` (y con él la prueba). */
+    @Test fun `una entrega que lanza no tumba al motor`() = prueba {
+        blumon.venta = SILENCIO
+        servidor.acuse = { throw IllegalStateException() }
+        val s = solicitud()
+        assertEquals(NoSeCobro, terminal(s))
+        esperarTodo()
+        assertEquals(EstadoDelReporte.PENDIENTE, fila(s).reporte)
+    }
+
+    /**
+     * Codex #1: el reporte del reverso se programa ANTES de publicar el final. La fila no se puede leer justo después del
+     * `REVERSADA` (una falla pasajera de Room, como en el test 25), así que la lectura con que el motor publica el final truena;
+     * el envío ya estaba en `fondo`. Los dos `yield` reparan la fila después de esa lectura y antes de la del envío, que se
+     * programó primero (si cambia el orden de los despachos, la prueba se pone roja, nunca verde de más).
+     */
+    @Test fun `si la publicacion del final falla el reporte ya se habia programado`() = prueba {
+        blumon.venta = SILENCIO
+        val s = solicitud()
+        ganchos["cerrarVuelta"] = {
+            danar(s, "NO_SE_COBRO") // dentro de la transacción del REVERSADA
+            prueba.launch {
+                yield()
+                yield()
+                db.openHelper.writableDatabase.execSQL("UPDATE intentos SET operationNumber = NULL WHERE attemptId = ?", arrayOf(s.id.valor))
+            }
+        }
+        assertEquals("la publicación del final tronó", PorConfirmar(s.importeCentavos), terminal(s))
+        esperarTodo()
+        assertEquals(listOf(s.id), servidor.reportados.map { it.first })
+        val f = fila(s)
+        assertEquals(EstadoDelIntento.NO_SE_COBRO, f.estado)
+        assertEquals(EstadoDelReverso.CONFIRMADO, f.reverso)
     }
 
     /**
@@ -611,7 +646,12 @@ class MotorDeCobroVentaTest {
     @Test fun `con el techo ya vencido no se compromete ni sale un reverso`() = prueba(Relojes(techoDelReverso = 15_000)) {
         blumon.venta = { delay(18_000); http(200, APROBADA) } // el camino del reverso empieza a los t0 + 15 s: justo en el techo
         val s = solicitud()
-        assertEquals(PorConfirmar(s.importeCentavos) to T0 + 15_000, cobrar(s).last())
+        val eventos = cobrar(s)
+        assertEquals(
+            listOf(Iniciado(s.id, identidad, Operacion.VENTA, s.importeCentavos), PideTarjeta, Autorizando, RevisandoConElBanco, PorConfirmar(s.importeCentavos)),
+            eventos.map { it.first },
+        )
+        assertEquals(T0 + 15_000, eventos.last().second)
         esperarTodo()
         val f = fila(s)
         assertTrue(blumon.reversos.isEmpty())
@@ -619,6 +659,7 @@ class MotorDeCobroVentaTest {
         assertEquals(EstadoDelReverso.NINGUNO, f.reverso)
         assertEquals(12345L, f.evidenciaTardiaOperacion)
         assertFalse(tardiasDe(s).any { it is Aprobado })
+        assertFalse(NoSeCobro in tardiasDe(s))
     }
 
     /** La gemela: un milisegundo antes del techo sí se compromete y reclama una vuelta. */
@@ -640,7 +681,8 @@ class MotorDeCobroVentaTest {
         esperarTodo()
         val f = fila(s)
         assertTrue(blumon.reversos.isEmpty())
-        assertNotEquals(EstadoDelReverso.COMPROMETIDO, f.reverso)
+        assertEquals(EstadoDelReverso.NO_CONCLUYENTE, f.reverso)
+        assertEquals(EstadoDelReporte.NO_APLICA, f.reporte)
         assertEquals(EstadoDelIntento.NO_SE, f.estado)
     }
 

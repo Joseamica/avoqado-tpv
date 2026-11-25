@@ -311,6 +311,33 @@ class RecordPaymentUseCaseTest {
     }
 
     @Test
+    fun `P1 un 500 seguido de plazos viaja pegado al error final y la cola cuenta la pasada (encargo 29ef3d)`() = runTest {
+        val plazo = java.net.SocketTimeoutException("timeout")
+        coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returnsMany listOf(
+            Result.failure(BackendHttpException(500, "boom")),
+            Result.failure(java.net.SocketTimeoutException("timeout")),
+            Result.failure(java.net.SocketTimeoutException("timeout")),
+            Result.failure(java.net.SocketTimeoutException("timeout")),
+            Result.failure(plazo),
+        )
+        val result = useCase(cashContext, CardDetails.CASH, authorization, reference, alreadyQueued = true)
+        // El error final sigue siendo el mismo (misma clasificación); el 500 sólo viaja como `suppressed`.
+        assertThat(result.exceptionOrNull()).isSameInstanceAs(plazo)
+        assertThat(plazo.suppressed.toList()).hasSize(1)
+        assertThat(com.jaac.avoqado_tpv.features.payment.domain.sync.nadieContesto(plazo)).isFalse()
+    }
+
+    @Test
+    fun `P1 cinco plazos seguidos quedan como nadie contesto (encargo 29ef3d)`() = runTest {
+        val plazo = java.net.SocketTimeoutException("timeout")
+        coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returns Result.failure(plazo)
+        val result = useCase(cashContext, CardDetails.CASH, authorization, reference, alreadyQueued = true)
+        assertThat(result.exceptionOrNull()).isSameInstanceAs(plazo)
+        assertThat(plazo.suppressed.toList()).isEmpty()
+        assertThat(com.jaac.avoqado_tpv.features.payment.domain.sync.nadieContesto(plazo)).isTrue()
+    }
+
+    @Test
     fun `P1 si la escritura durable falla no se hace ningun POST`() = runTest {
         val failure = IOException("FULLTEST disco no disponible")
         coEvery { queue.enqueueAndClaim(any()) } returns Result.failure(failure)

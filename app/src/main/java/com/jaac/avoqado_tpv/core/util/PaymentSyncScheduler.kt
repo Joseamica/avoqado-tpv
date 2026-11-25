@@ -108,6 +108,25 @@ object PaymentSyncScheduler {
         Timber.d("✅ Payment sync scheduler started")
     }
 
+    /** Marca de la pasada que pide la reconexión: revive las ventas FAILED transitorias antes de reclamar (encargo 29ef3d). */
+    const val REVIVIR_FALLIDAS = "revivir_fallidas"
+
+    /** Datos de entrada de la pasada de reconexión ([alVolverElServidor]). */
+    fun datosDeReconexion(): androidx.work.Data = androidx.work.Data.Builder().putBoolean(REVIVIR_FALLIDAS, true).build()
+
+    /**
+     * Volvió el SERVIDOR tras un corte: una pasada que PRIMERO revive las ventas FAILED transitorias y luego sube todo
+     * (encargo 29ef3d). APPEND, como [continuarDespuesDeEstaPasada]: si ya corre una pasada, ésta va detrás y no se pierde
+     * (con el KEEP de [runNow] se perdía, y una venta revivida después de reclamar esperaba el periódico de 15 min).
+     */
+    fun alVolverElServidor(context: Context) {
+        val request = androidx.work.OneTimeWorkRequestBuilder<PaymentSyncWorker>()
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setInputData(datosDeReconexion())
+            .addTag(PAYMENT_SYNC_WORK_NAME).build()
+        WorkManager.getInstance(context).enqueueUniqueWork(IMMEDIATE_WORK_NAME, androidx.work.ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+    }
+
     /** APPEND persiste la siguiente pasada aunque la inmediata actual aún esté RUNNING (KEEP la perdería). */
     fun continuarDespuesDeEstaPasada(context: Context) {
         val request = androidx.work.OneTimeWorkRequestBuilder<PaymentSyncWorker>()

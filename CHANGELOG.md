@@ -38,6 +38,7 @@
   - La sesión con Blumon nace con el mismo `posId`; el nombre del comercio pasa a ser opcional y, si viene, se sigue comparando. La contraseña del token usa el modelo de la identidad (con `A910S`, la misma que hoy).
   - Prueba: las seis ventas medidas, Amex incluida, se admiten con importes distintos de $1 (lo que cobra la app de laboratorio).
 - **Interno, sin efecto en la app · `cobropropio`, bloque R de la fase 3 del SDK propio**: el motor de cobro propio (inerte, sólo laboratorio) avisa en el instante cuando se queda sin una respuesta definitiva del banco, en los tres caminos al reverso.
+- **Interno, sin efecto en la app · `cobropropio`, bloque R2 de la fase 3 del SDK propio**: quien escucha `cobrar` o `cancelar` del motor de cobro propio ya no corre en su pila; aunque se bloquee, el envío, el reverso y la hora de un final no se mueven.
 
 ### **Fixed**
 - **Cobro del POS · la terminal ya no se queda «cobrando» hasta reiniciarla (D26, Testarudo, 22-nov: PAX 25 min y N86 8 min)**: un rechazo, una duda o una pantalla que se fue dejaba una nota de la libreta (`KERNEL_ACTIVO`, `AUTORIZANDO`, `INDETERMINADO` sin el fin del SDK) o la bandera de cobro activo arriba, y la terminal contestaba «viva» a la sonda y al cancel del POS, rechazaba los cobros nuevos y vetaba el «No se cobró» de la tablet. Se invierte el default:

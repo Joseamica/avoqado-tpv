@@ -59,6 +59,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -71,6 +72,8 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.ContinuationInterceptor
+import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -144,6 +147,15 @@ public class MotorDeCobro internal constructor(
     /** Sólo las pruebas lo usan: corre en [cortar], dentro de la escritura con tope, antes del veto. */
     internal var antesDeVetar: suspend (AttemptId) -> Unit = {}
 
+    /**
+     * R2: el despachador de [fondo]. Ahí corre quien entrega los eventos de [cobrar] y [cancelar] a cada oyente, nunca la pila
+     * del intento.
+     * ponytail: un oyente que colecta sin despachar y bloquea ocupa un hilo de este despachador (Default: ≥ 2) mientras bloquea;
+     * con un `fondo` que no despacha (sólo pruebas) se publica en la pila, como antes. Si un día hace falta, un despachador
+     * propio (p. ej. IO).
+     */
+    private val avisos: CoroutineContext = fondo.coroutineContext[ContinuationInterceptor] ?: Dispatchers.Default
+
     private val armado = ArmadoDelMensaje(identidad)
 
     init {
@@ -205,6 +217,11 @@ public class MotorDeCobro internal constructor(
      * un `PorConfirmar` nunca reemplaza a un definitivo. Un `PorConfirmar` aquí (también el de los 30 s, cuando termina la
      * transmisión en vivo) sólo dice que el motor no tiene veredicto: un definitivo puede llegar después, y la pantalla la
      * decide quien usa el motor. `RevisandoConElBanco` no sale por aquí: no es un final.
+     *
+     * Contrato de quien se suscribe: los valores se publican de forma síncrona, en la pila de quien los publica (normalmente
+     * quien decide el final). Quien se suscribe no debe bloquear dentro del colector ni colectar en un despachador que no
+     * despacha (`Dispatchers.Unconfined`, o `Dispatchers.Main.immediate` si se publica desde el hilo principal): ahí corre
+     * DENTRO de esa publicación y lo que tarde detiene a quien publica.
      */
     public val resolucionesTardias: SharedFlow<Pair<AttemptId, EventoDeCobro>> = tardias.asSharedFlow()
 
@@ -216,8 +233,9 @@ public class MotorDeCobro internal constructor(
      * r7 (familia de los candados):
      * - C1: el corte y el punto de no retorno son UNA máquina CAS sin candado ([paso]: `LIBRE`, `ENVIANDO`, `CORTADO`).
      * - C3: bajo [candado] sólo se DECIDE (la historia nueva y si se publica tarde) y se encola; la publicación (el
-     *   `StateFlow`, que con `Main.immediate` reanuda a quien escucha en la misma pila, y [resolucionesTardias]) sale DESPUÉS de
-     *   soltarlo, por un drenador serial del propio Registro, en el MISMO orden en que se decidió (R1-7 se conserva).
+     *   `StateFlow`, cuyo colector corre en el despachador de [fondo] ([avisos]), y [resolucionesTardias], que puede reanudar a
+     *   su suscriptor en la misma pila) sale DESPUÉS de soltarlo, por un drenador serial del propio Registro, en el MISMO orden
+     *   en que se decidió (R1-7 se conserva).
      */
     internal inner class Registro(val solicitud: Solicitud) {
         val id get() = solicitud.id
@@ -324,7 +342,8 @@ public class MotorDeCobro internal constructor(
         /**
          * Sin candado: publica lo encolado en orden. Un solo hilo drena a la vez; quien encola mientras otro drena se lo deja
          * (y si la publicación reanuda a alguien que vuelve a emitir en la misma pila, también: no hay reentrada). Es síncrona:
-         * un colector sin despachar corre aquí mismo y puede retrasar al intento (contrato de quien escucha en [cobrar]).
+         * el colector de `historia` corre en el despachador de [fondo] ([avisos]); un suscriptor de [resolucionesTardias] que
+         * colecta sin despachar sí corre aquí mismo (su contrato).
          */
         private fun publicar() {
             while (drenando.compareAndSet(false, true)) {
@@ -368,12 +387,11 @@ public class MotorDeCobro internal constructor(
      * Ninguna lectura vieja se usa: las filas de un folio sólo las escribe su intento, que entra a [intentos] antes de anotar
      * y no sale de ahí mientras alguien admite (v3.1). Un «sin fila» viejo contra el veto de [cortar] lo arbitra `anotar`.
      *
-     * Contrato de quien escucha (el de hoy: el motor NO aísla la publicación de quien escucha). Los eventos se publican de forma
-     * síncrona desde el hilo que publica (normalmente el del motor; [Registro.emitir]). Quien recolecta este `Flow` (o
-     * [resolucionesTardias]) no debe bloquear dentro del colector ni recolectar en un despachador que no despacha
-     * (`Dispatchers.Unconfined`, o `Dispatchers.Main.immediate` si se publica desde el hilo principal): ahí el colector corre
-     * DENTRO de la publicación, en ese hilo, y lo que tarde puede retrasar al intento (el reverso y, con él, la hora de su
-     * final). Que quien escucha se vaya no cambia nada del intento.
+     * Quien escucha (bloque R2; vale para este `Flow` y el de [cancelar]). Quien lo colecta corre fuera de la pila del motor:
+     * lo que publica el intento se colecta en el despachador de [fondo] ([avisos]) y de ahí le llega. Si quien escucha bloquea
+     * dentro del colector, ocupa su propio hilo o, si colecta sin despachar (`Dispatchers.Unconfined`), uno del despachador de
+     * [fondo]; no el del intento, así que lo que tarde no mueve el envío, el reverso ni la hora de un final. Que quien escucha
+     * se vaya no cambia nada del intento. [resolucionesTardias] no tiene esta garantía: ver su contrato.
      */
     public fun cobrar(s: SolicitudDeVenta): Flow<EventoDeCobro> = entrar(s)
 
@@ -381,8 +399,8 @@ public class MotorDeCobro internal constructor(
      * T9: la cancelación con la tarjeta de una venta aprobada. Las mismas reglas que [cobrar] (N, C, M y la cajera), con su
      * orden: la fila primero ([Libreta.anotarCancelacion]), una lectura nueva y su admisión, las huellas, el preflight de
      * Blumon, el contador, el punto de no retorno con [Libreta.marcarCancelacionEnviada] (original, venue, ámbito y huellas en
-     * el mismo CAS) y la cancelación. Nunca se reversa: sin respuesta, `NO_SE` + `PorConfirmar`. Mismo contrato de quien
-     * escucha que [cobrar].
+     * el mismo CAS) y la cancelación. Nunca se reversa: sin respuesta, `NO_SE` + `PorConfirmar`. Quien
+     * escucha, igual que en [cobrar].
      */
     public fun cancelar(s: SolicitudDeCancelacion): Flow<EventoDeCobro> = entrar(s)
 
@@ -394,7 +412,7 @@ public class MotorDeCobro internal constructor(
             is Contestar -> emit(entrada.e)
             is Arrancar -> emitAll(arrancar(entrada.r)) // sin ningún punto de suspensión desde el monitor
         }
-    }
+    }.flowOn(avisos)
 
     private suspend fun admitir(s: Solicitud): Entrada {
         intentos[s.id]?.let { return Adjuntar(it) }

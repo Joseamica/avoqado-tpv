@@ -32,6 +32,7 @@ import com.avoqado.cobropropio.red.Respuesta
 import com.avoqado.cobropropio.servidor.ColaDeResultados
 import com.avoqado.cobropropio.servidor.CredencialDelServidor
 import com.avoqado.cobropropio.servidor.ReversoDelServidorHttp
+import com.avoqado.cobropropio.simulador.ServidorSimuladoDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withTimeout
@@ -62,6 +63,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.ConscryptMode
 import java.io.File
 import java.time.Instant
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import javax.crypto.spec.SecretKeySpec
@@ -97,6 +99,7 @@ class CarreraDelPermisoTest {
         val reversos = AtomicInteger()
         val ventas = AtomicInteger()
         val ventaSalio = CompletableDeferred<Unit>()
+        val reversoSalio = CompletableDeferred<Unit>()
         override suspend fun iniciarSesion(espera: Duration) =
             SesionBlumon("token", ByteArray(16) { (it + 1).toByte() }, "FFFF9876543210E00000".hexABytes(), 10)
         override suspend fun renovarToken(espera: Duration): TokenDeBlumon? = TokenDeBlumon("token-2")
@@ -108,6 +111,7 @@ class CarreraDelPermisoTest {
         }
         override suspend fun reversar(congelado: CuerpoCongelado, espera: Duration, noEmpezarDespuesDe: Long, alLeer: (Respuesta) -> Unit): Respuesta {
             reversos.incrementAndGet()
+            reversoSalio.complete(Unit)
             return Respuesta.Http(200, """{"status":true,"id":12347,"dataResponse":{"description":"REVERSADA","simulation":false}}""")
         }
         override suspend fun validarCancelacion(sesion: SesionBlumon, operationNumber: Long, espera: Duration, alLeer: (Respuesta) -> Unit): Respuesta =
@@ -277,5 +281,32 @@ class CarreraDelPermisoTest {
         assertTrue("$orden", orden.indexOf("anotar") > orden.indexOf("recuperarAlArrancar"))
         lectura.complete(Unit)
         quienCobra.cancel()
+    }
+
+    /** R2: quien escucha sin confinar y se detiene corre en el relevo, nunca en la pila del intento: la venta sale igual. */
+    @Test(timeout = 30_000) fun `quien escucha sin confinar y se detiene en Autorizando no retrasa el envio`() = runBlocking {
+        val m = mundo()
+        val s = SolicitudDeVenta(AttemptId.nuevo(), "venue-1", 10_000, Origen.VINCULADO_AL_POS)
+        val salio = CountDownLatch(1).also { l -> m.blumon.ventaSalio.invokeOnCompletion { l.countDown() } }
+        val vio = CompletableDeferred<Boolean>()
+        val oyente = launch(Dispatchers.Unconfined) {
+            m.motor.cobrar(s).collect { if (it == EventoDeCobro.Autorizando) vio.complete(salio.await(3, TimeUnit.SECONDS)) }
+        }
+        assertTrue("la venta no salió mientras quien escucha estaba detenido", withTimeout(10_000) { vio.await() })
+        oyente.cancel()
+    }
+
+    /** R2: lo mismo en el aviso de que se revisa con el banco: el reverso sale aunque quien escucha siga detenido. */
+    @Test(timeout = 30_000) fun `quien escucha sin confinar y se detiene en el aviso no retrasa el reverso`() = runBlocking {
+        server.dispatcher = ServidorSimuladoDispatcher() // un folio sin sufijo: concede al instante
+        val m = mundo()
+        val s = SolicitudDeVenta(AttemptId.nuevo(), "venue-1", 10_000, Origen.VINCULADO_AL_POS)
+        val salio = CountDownLatch(1).also { l -> m.blumon.reversoSalio.invokeOnCompletion { l.countDown() } }
+        val vio = CompletableDeferred<Boolean>()
+        val oyente = launch(Dispatchers.Unconfined) {
+            m.motor.cobrar(s).collect { if (it == EventoDeCobro.RevisandoConElBanco) vio.complete(salio.await(5, TimeUnit.SECONDS)) }
+        }
+        assertTrue("el reverso no salió mientras quien escucha estaba detenido", withTimeout(10_000) { vio.await() })
+        oyente.cancel()
     }
 }

@@ -14,13 +14,14 @@ import com.avoqado.motorlab.AppDelLaboratorio
 import com.avoqado.motorlab.Laboratorio
 import com.avoqado.motorlab.Orden
 import com.avoqado.motorlab.centavosDe
+import com.avoqado.motorlab.momentosDePintar
 import com.avoqado.motorlab.porQueNoCobra
 import com.avoqado.motorlab.textoDeLaSituacion
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 
 /**
@@ -78,21 +79,18 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Pinta en cada cambio del carril o de los folios mientras se ve; al dejar de verse se suelta. La fila del motor puede
-     * cambiar sin evento (un reverso tras «por confirmar»): al verse y, mientras se ve, cada segundo, el laboratorio la relee.
-     * Es sólo la vista: no toca el carril ni retrasa ninguna orden.
+     * Pinta en cada cambio del carril o de los folios y en cada latido (cada segundo) mientras se ve; al dejar de verse se
+     * suelta, y el latido con él. La fila del motor puede cambiar sin evento (un reverso tras «por confirmar»): al verse y en
+     * cada latido el laboratorio la relee. La cabeza lee la red al pintar, así que el latido la mantiene al día aunque el carril
+     * no publique. `pintar()` no toca los campos de la identidad ni el importe: repintar no borra lo que se teclea. Es sólo la
+     * vista: no toca el carril ni retrasa ninguna orden.
      */
     override fun onStart() {
         super.onStart()
         lab.releer()
         pintor = CoroutineScope(Dispatchers.Default).launch {
-            launch {
-                while (true) {
-                    delay(1_000)
-                    lab.releer()
-                }
-            }
-            combine(lab.situacion, lab.folios) { _, _ -> }.collect { runOnUiThread { if (!isDestroyed) pintar() } }
+            val latido = flow { while (true) { delay(1_000); lab.releer(); emit(Unit) } }
+            momentosDePintar(lab.situacion, lab.folios, latido).collect { runOnUiThread { if (!isDestroyed) pintar() } }
         }
     }
 

@@ -11,6 +11,9 @@ import com.avoqado.cobropropio.dominio.Operacion
 import com.avoqado.cobropropio.dominio.Origen
 import com.avoqado.cobropropio.libreta.EstadoDelIntento
 import com.avoqado.cobropropio.libreta.IntentoEntity
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -79,5 +82,11 @@ class PantallaTest {
             "lector: ERROR · este intento no abrió el lector · error IllegalStateException",
             texto(Causa.ERROR, Cierre.NO_SE_ABRIO, error = "IllegalStateException"),
         )
+    }
+
+    /** El hallazgo de T5 (L-d2): en reposo, la cabeza (y su «red: sí/no») se repinta en cada latido, aunque el carril no publique. */
+    @Test fun `cada latido repinta aunque el carril no publique`() = runBlocking {
+        val veces = momentosDePintar(flowOf(Situacion()), flowOf("Libreta: sin leer"), flowOf(Unit, Unit)).toList()
+        assertEquals(3, veces.size) // una por el carril y una por cada latido
     }
 }

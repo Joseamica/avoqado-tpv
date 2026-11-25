@@ -3314,15 +3314,6 @@ class PaymentViewModelTest {
      * la compuerta sólo puede colgarse DESPUÉS de llegar a SelectingMerchant. Espera activa corta,
      * el mismo patrón (Thread.sleep) que ya usan las pruebas de esta clase con Dispatchers.IO.
      */
-    private fun esperarEstado(viewModel: PaymentViewModel, timeoutMs: Long = 5000, condicion: (PaymentState) -> Boolean) {
-        val limite = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < limite) {
-            if (condicion(viewModel.state.value)) return
-            Thread.sleep(20)
-        }
-        throw AssertionError("No llegó al estado esperado. Estado=${viewModel.state.value}")
-    }
-
     // 6a2254 (founder, 24-nov: el freno mínimo): con «Error registrando pago en efectivo» de la cuenta X en la pantalla, el cobro
     // del POS de ESA cuenta no se inicia. La marca vive en el PaymentStateHolder REAL de esta prueba y sigue a lo que se muestra.
     @Test
@@ -3387,6 +3378,19 @@ class PaymentViewModelTest {
         esperarEstado(viewModel) { it != error }
         esperarEstado(viewModel) { !paymentStateHolder.hayAlgunEfectivoSinRegistro() }
     }
+
+    // Codex r3 #3: al cerrarse la pantalla de verdad (Android llama onCleared), su marca se va; la de otra pantalla viva, no.
+    @Test
+    fun `P1 6a2254 al cerrarse la pantalla con el error su marca se quita y la de otra pantalla se queda`() =
+        conElErrorDelEfectivoDeLaCuenta1 { viewModel, _ ->
+            val otraPantalla = paymentStateHolder.entraPantallaDeCobro()
+            paymentStateHolder.marcarEfectivoSinRegistro(otraPantalla, "order-2")
+
+            PaymentViewModel::class.java.getDeclaredMethod("onCleared").apply { isAccessible = true }.invoke(viewModel)
+
+            assertThat(paymentStateHolder.hayEfectivoSinRegistro("order-1")).isFalse()
+            assertThat(paymentStateHolder.hayEfectivoSinRegistro("order-2")).isTrue()
+        }
 
     @Test
     fun `P1 6a2254 el boton Cancelar del error quita la marca`() = conElErrorDelEfectivoDeLaCuenta1 { viewModel, error ->

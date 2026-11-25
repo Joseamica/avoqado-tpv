@@ -93,12 +93,13 @@ public enum class ResultadoDelCorte { CORTADO, YA_SALIO, SIN_CONFIRMAR, SIN_INTE
  *
  * Ningún evento es prueba del estado guardado de la fila: quien lo necesita lee `Libreta.buscar`. Un final que decide una
  * escritura se publica después del commit de esa escritura; el `PorConfirmar` de los 30 s ([soltarALaCajera]) y el de la
- * salida de emergencia ([Registro.soltarDesdeMemoria]) se publican desde la memoria. Así, un `PorConfirmar`, o un
- * `NoSalioAlBanco` contestado sin una escritura propia, puede salir con la fila todavía abierta (`ANOTADO`, `ENVIADO`),
- * cerrándose, o con un final ya guardado que todavía no se publica. Una fila abierta la puede cerrar el propio intento o un
- * [recuperar] posterior, que la app debe volver a llamar (no sólo al arrancar); [recuperar] nunca reversa, y lo que hace con
- * cada fila lo dice `Libreta.recuperarAlArrancar`. Un definitivo que llega después reemplaza al `PorConfirmar` y sale también
- * por [resolucionesTardias].
+ * salida de emergencia ([Registro.soltarDesdeMemoria]) se publican desde la memoria. El `NoSalioAlBanco(INTERRUMPIDO)` de la
+ * salida de emergencia también sale de la memoria, y sólo antes del punto de no retorno: ese folio no salió ni saldrá. Así, un
+ * `PorConfirmar`, o un `NoSalioAlBanco` contestado sin una escritura propia, puede salir con la fila todavía abierta
+ * (`ANOTADO`; un `PorConfirmar`, también `ENVIADO`), cerrándose, o con un final ya guardado que todavía no se publica. Una fila
+ * abierta la puede cerrar el propio intento o un [recuperar] posterior, que la app debe volver a llamar (no sólo al arrancar);
+ * [recuperar] nunca reversa. Un definitivo que llega después reemplaza al `PorConfirmar` y sale también por
+ * [resolucionesTardias].
  *
  * Bloque R: en el instante en que una venta se queda sin un desenlace definitivo del importe completo y el motor va a intentar
  * deshacerla (los tres caminos al reverso: sin respuesta, una respuesta que no sirve, un parcial), avisa `RevisandoConElBanco`,
@@ -446,7 +447,8 @@ public class MotorDeCobro internal constructor(
     }
 
     /**
-     * Al arrancar: cierra lo que dejó un proceso muerto (sin inventar respuestas de Blumon) y entrega los reportes pendientes.
+     * Al arrancar y cada vez que la app la llame: cierra lo que dejó un proceso muerto y las filas de ESTE proceso sin intento
+     * vivo (sin inventar respuestas de Blumon) y entrega los reportes pendientes.
      * Un `reversed` que llega aquí se publica tarde. Regresa los ids que cambiaron o se entregaron.
      *
      * Puede lanzar (la libreta o la entrega al SERVIDOR fallan): la app la llama dentro de un `try` y la reintenta; lo que no

@@ -531,4 +531,130 @@ class RecordPaymentUseCaseTest {
         assertThat(conPendientes(sim, tarjeta, "auth", "ref").getOrNull()).isSameInstanceAs(receipt)
         coVerify(exactly = 1) { sales.addLocalSale(any(), any(), any(), any(), any(), any(), any()) }
     }
+
+    // --- Encargo 97042c: con el SERVIDOR mudo, el efectivo no espera ~1 min por venta ----------------------------------
+
+    private val conexion = com.jaac.avoqado_tpv.core.util.ConnectionStateManager()
+    private val conFranja = RecordPaymentUseCase(
+        fastRecorder, orderRecorder, queue, com.jaac.avoqado_tpv.features.shift.data.legacyShiftBoundaryFixture(), conexion = conexion,
+    )
+
+    private fun stubRelease() {
+        coEvery { queue.release(7L, ownToken, any(), any()) } coAnswers {
+            stored = stored?.copy(syncStatus = SyncStatus.PENDING, claimToken = null, lastError = arg(3))
+            1
+        }
+    }
+
+    @Test
+    fun `P1 efectivo con la franja de sin servidor se guarda y va a la cola sin tocar la red`() = runTest {
+        stubClaim(); stubRelease()
+        conexion.setServerConnected(false)
+
+        val result = conFranja(cashContext, CardDetails.CASH, authorization, reference)
+
+        // Guardada ANTES de decidir, con su llave; sale como «no se conectó» (Retryable): la cola la manda sola, una vez.
+        assertThat(result.exceptionOrNull()).isInstanceOf(ServidorSinContestarException::class.java)
+        assertThat(result.exceptionOrNull()).isInstanceOf(java.net.ConnectException::class.java)
+        assertThat(useCase.isRetryable(result.exceptionOrNull())).isTrue()
+        coVerify(exactly = 1) { queue.enqueueAndClaim(any()) }
+        coVerify(exactly = 0) { fastRecorder.recordPayment(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { orderRecorder.recordPayment(any(), any(), any(), any()) }
+        // Sin intento no se suma intento: el contador del claim se devuelve igual.
+        coVerify(exactly = 1) { queue.release(7L, ownToken, 0, any()) }
+        coVerify(exactly = 0) { queue.markSynced(any(), any()) }
+        coVerify(exactly = 0) { queue.markPermanentlyFailed(any(), any(), any()) }
+        assertThat(stored?.syncStatus).isEqualTo(SyncStatus.PENDING)
+        assertThat(stored?.idempotencyKey).isEqualTo("de9d91c6-13fc-40e8-8044-27e129096ca8")
+    }
+
+    @Test
+    fun `P1 sin internet no es la franja - intenta como siempre, con sus 5 intentos`() = runTest {
+        // Sin internet la petición falla al instante (sin ruta ni DNS): conserva su camino de siempre.
+        stubClaim(); stubRelease()
+        conexion.setInternetConnected(false); conexion.setServerConnected(false)
+        val sinDns = java.net.UnknownHostException("sin DNS")
+        coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returns Result.failure(sinDns)
+
+        val result = conFranja(cashContext, CardDetails.CASH, authorization, reference)
+
+        assertThat(result.exceptionOrNull()).isSameInstanceAs(sinDns)
+        coVerify(exactly = 5) { fastRecorder.recordPayment(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { queue.release(7L, ownToken, any(), any()) }
+    }
+
+    @Test
+    fun `P2 sin la franja los reintentos de siempre siguen - 503, plazo y luego 200 registra en vivo`() = runTest {
+        stubClaim()
+        coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returnsMany listOf(
+            Result.failure(BackendHttpException(503, "Servicio no disponible")),
+            Result.failure(java.net.SocketTimeoutException("timeout")),
+            Result.success(receipt),
+        )
+
+        assertThat(conFranja(cashContext, CardDetails.CASH, authorization, reference).getOrNull()).isSameInstanceAs(receipt)
+
+        coVerify(exactly = 3) { fastRecorder.recordPayment(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { queue.markSynced(7L, ownToken) }
+    }
+
+    @Test
+    fun `P1 con la franja la tarjeta y el replay de la cola SI intentan registrar`() = runTest {
+        conexion.setServerConnected(false)
+        coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returns Result.success(receipt)
+        val conCuenta = cashContext.copy(merchantAccountId = "FULLTEST-merchant")
+
+        // La tarjeta ya movió dinero en el banco: su registro no cambia. El worker es quien sube al volver: tampoco cambia.
+        assertThat(conFranja(conCuenta, tarjeta, "auth", "ref-tarjeta").getOrNull()).isSameInstanceAs(receipt)
+        assertThat(conFranja(cashContext, CardDetails.CASH, authorization, reference, alreadyQueued = true).getOrNull()).isSameInstanceAs(receipt)
+
+        coVerify(exactly = 2) { fastRecorder.recordPayment(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { queue.enqueueAndClaim(any()) }
+    }
+
+    @Test
+    fun `P1 efectivo con el servidor sano se registra como siempre`() = runTest {
+        stubClaim()
+        coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returns Result.success(receipt)
+
+        assertThat(conFranja(cashContext, CardDetails.CASH, authorization, reference).getOrNull()).isSameInstanceAs(receipt)
+
+        coVerify(exactly = 1) { fastRecorder.recordPayment(cashContext.copy(queueClaimToken = ownToken), CardDetails.CASH, authorization, reference) }
+        coVerify(exactly = 1) { queue.markSynced(7L, ownToken) }
+        coVerify(exactly = 0) { queue.release(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `P2 efectivo que regresa en el segundo intento se registra en vivo`() = runTest {
+        stubClaim()
+        coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returnsMany listOf(
+            Result.failure(java.io.InterruptedIOException("timeout")), Result.success(receipt),
+        )
+
+        assertThat(conFranja(cashContext, CardDetails.CASH, authorization, reference).getOrNull()).isSameInstanceAs(receipt)
+
+        coVerify(exactly = 2) { fastRecorder.recordPayment(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { queue.markSynced(7L, ownToken) }
+    }
+
+    @Test
+    fun `P2 sin la franja un 503 conserva sus 5 intentos en efectivo`() = runTest {
+        stubClaim(); stubRelease()
+        coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returns Result.failure(BackendHttpException(503, "Servicio no disponible"))
+
+        conFranja(cashContext, CardDetails.CASH, authorization, reference)
+
+        coVerify(exactly = 5) { fastRecorder.recordPayment(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `P2 la tarjeta con la franja sin respuesta conserva sus 5 intentos`() = runTest {
+        conexion.setServerConnected(false)
+        coEvery { fastRecorder.recordPayment(any(), any(), any(), any()) } returns Result.failure(java.net.SocketTimeoutException("timeout"))
+
+        conFranja(cashContext.copy(merchantAccountId = "FULLTEST-merchant"), tarjeta, "auth", "ref-tarjeta")
+
+        coVerify(exactly = 5) { fastRecorder.recordPayment(any(), any(), any(), any()) }
+    }
+
 }

@@ -79,6 +79,8 @@ class CobroDeVentaLocalTest {
     private lateinit var vm: PaymentViewModel
     private lateinit var impresor: com.jaac.avoqado_tpv.core.printer.PrinterManager
     private val impresiones = mutableListOf<List<Any?>>()
+    /** Sin internet (como siempre en este arnés): ahí la subida se intenta y falla al instante. La franja se prueba aparte (97042c). */
+    private val conexion = ConnectionStateManager().apply { setInternetConnected(false); setServerConnected(false) }
     private val llave = "c000000000000000000000001"
     private val venta = VentaLocal(
         llave, "venue-1", "staff-1", "shift-1", 1_760_000_000_000L, 10000,
@@ -172,6 +174,24 @@ class CobroDeVentaLocalTest {
         coVerifyOrder { dao.insert(any()); api.crearOrden("venue-1", any()) }
         coVerify(exactly = 0) { registrar(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any()) }
         verify(exactly = 1) { PaymentSyncScheduler.runNow(context) }
+    }
+
+    @Test fun `P1 con la franja de sin servidor la venta local se guarda y no espera al servidor`() = runTest {
+        conexion.setInternetConnected(true); conexion.setServerConnected(false) // hay internet, el servidor no contesta
+
+        vm.processCashPayment("100.00")
+        esperarFinal()
+
+        val exito = vm.state.value as PaymentState.Success
+        assertThat(exito.pendingSyncMessage).isEqualTo("Venta guardada sin conexión: se manda sola al volver el internet")
+        assertThat(fila()!!.syncStatus).isEqualTo("PENDING")
+        assertThat(fila()!!.claimToken).isNull()
+        assertThat(fila()!!.retryCount).isEqualTo(0) // sin intento no se suma intento
+        assertThat(fila()!!.idempotencyKey).isEqualTo(llave)
+        coVerify(exactly = 0) { api.crearOrden(any(), any()) }
+        coVerify(exactly = 0) { api.pagar(any(), any(), any()) }
+        coVerify(exactly = 0) { registrar(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any()) }
+        verify(exactly = 1) { PaymentSyncScheduler.runNow(context) } // la cola la manda al volver
     }
 
     @Test fun `morir despues del insert no pierde la venta aunque no se llegue a pintar el exito`() = runTest {
@@ -391,7 +411,7 @@ class CobroDeVentaLocalTest {
         verificationUploadManager = mockk(relaxed = true), paymentApiService = mockk(relaxed = true), apiService = mockk(relaxed = true),
         customerRepository = mockk(relaxed = true), secureStorage = mockk(relaxed = true) { every { getSerialNumber() } returns "AVQD-1" },
         modulesRepository = mockk(relaxed = true) { every { modules } returns MutableStateFlow(emptyList()) },
-        connectionStateManager = ConnectionStateManager().apply { setInternetConnected(false); setServerConnected(false) },
+        connectionStateManager = conexion,
         merchantRepository = mockk(relaxed = true), merchantEligibilityRepository = mockk(relaxed = true),
         criticalNetworkOperationManager = mockk(relaxed = true),
         paymentStateHolder = com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder(),

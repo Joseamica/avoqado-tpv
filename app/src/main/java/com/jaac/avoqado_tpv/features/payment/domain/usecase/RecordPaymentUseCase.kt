@@ -30,6 +30,13 @@ class CashAdmissionRejectedException(error: Throwable) : IllegalStateException(e
     }
 }
 
+/**
+ * El efectivo NO tocó la red: la franja ya dice que el servidor no contesta. Es un `ConnectException`
+ * («no se conectó»), así que la cola lo trata como cualquier falla de red: Retryable, con su misma llave. Como nada salió por
+ * el cable, nada se pudo duplicar (encargo 97042c; misma idea que `RendirseRapido` de ANDROID).
+ */
+class ServidorSinContestarException : java.net.ConnectException("Sin conexión con el servidor: la venta se guardó en la terminal y se manda sola")
+
 /** No es un rechazo de admisión: el dinero existente conserva su dueño y necesita consulta. */
 class CashOwnerReviewRequiredException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)
 
@@ -89,6 +96,11 @@ class RecordPaymentUseCase @Inject constructor(
     private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
     /** «Pendientes» sin señal: la venta con SIM recién registrada se guarda en la terminal. null en pruebas viejas. */
     private val actionableSales: ActionableSalesRepository? = null,
+    /**
+     * La franja de conexión (latido HTTP, 2 fallos seguidos). null en pruebas viejas = como antes. Sólo la lee el efectivo en
+     * vivo: si ya se sabe que el servidor no contesta ([ConnectionStateManager.servidorMudo]), no se le pregunta (97042c).
+     */
+    private val conexion: com.jaac.avoqado_tpv.core.util.ConnectionStateManager? = null,
 ) {
     private suspend fun revisionDeDueno(context: PaymentContext, reference: String, cause: Throwable? = null): CashOwnerReviewRequiredException {
         val compatible = runCatching { shiftRepository.contratoDelPagoGuardadoCoincide(context, reference) }.getOrDefault(false)
@@ -258,7 +270,12 @@ class RecordPaymentUseCase @Inject constructor(
 
         // Un throw/cancel conserva SYNCING: tras vencer el claim el worker retoma esta
         // misma identidad. Nunca se borra o reinserta dinero para manejar una cancelación.
-        val result = recordPaymentWithRetry(
+        // 📴 Efectivo en vivo con la franja de «sin servidor» (hay internet, el servidor no contesta): la fila ya está guardada
+        // y reclamada; no se le pregunta y se suelta a la cola al instante. Tarjeta y replay del worker (alreadyQueued) no cambian.
+        val result = if (cashClaim != null && conexion?.servidorMudo() == true) {
+            Timber.w("📴 Efectivo con el servidor sin contestar: queda en la cola sin intentar | ref=$referenceNumber")
+            Result.failure(ServidorSinContestarException())
+        } else recordPaymentWithRetry(
             recorder = recorder,
             context = recordingContext.withQueueClaimToken(cashClaim?.claimToken ?: recordingContext.queueClaimToken),
             cardDetails = cardDetails,

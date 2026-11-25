@@ -11,6 +11,9 @@ import com.avoqado.cobropropio.dominio.Operacion
 import com.avoqado.cobropropio.dominio.Origen
 import com.avoqado.cobropropio.libreta.EstadoDelIntento
 import com.avoqado.cobropropio.libreta.IntentoEntity
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -57,5 +60,33 @@ class PantallaTest {
         assertEquals(1L, centavosDe("0.01"))
         for (malo in listOf("", "0", "100.01", "25,37", "-5", "25.375", "abc")) assertNull(malo, centavosDe(malo))
         assertEquals("\$25.30", pesos(2_530))
+    }
+
+    /** Un solo decimal son decenas de centavos: «10.5» es $10.50, nunca $10.05. */
+    @Test fun `un decimal es de decenas de centavos`() {
+        assertEquals(1_050L, centavosDe("10.5"))
+        assertEquals(50L, centavosDe("0.5"))
+    }
+
+    /** Cada cierre se dice TAL CUAL y distinto (Ruling 8): el reposo de las tandas exige «lector cerrado», y sólo ACREDITADO lo dice. */
+    @Test fun `el informe dice su cierre tal cual`() {
+        fun texto(causa: Causa, cierre: Cierre, fallas: List<String> = emptyList(), error: String? = null) =
+            textoDelInforme(Informe(folio, causa, null, null, null, null, null, emptySet(), cierre, fallas, error))
+        assertEquals("lector: LEIDA · este intento no abrió el lector", texto(Causa.LEIDA, Cierre.NO_SE_ABRIO))
+        assertEquals("lector: LEIDA · lector cerrado", texto(Causa.LEIDA, Cierre.ACREDITADO))
+        assertEquals(
+            "lector: LEIDA · cierre del lector sin acreditar: PICC, KERNEL",
+            texto(Causa.LEIDA, Cierre.SIN_ACREDITAR, listOf("PICC", "KERNEL")),
+        )
+        assertEquals(
+            "lector: ERROR · este intento no abrió el lector · error IllegalStateException",
+            texto(Causa.ERROR, Cierre.NO_SE_ABRIO, error = "IllegalStateException"),
+        )
+    }
+
+    /** El hallazgo de T5 (L-d2): en reposo, la cabeza (y su «red: sí/no») se repinta en cada latido, aunque el carril no publique. */
+    @Test fun `cada latido repinta aunque el carril no publique`() = runBlocking {
+        val veces = momentosDePintar(flowOf(Situacion()), flowOf("Libreta: sin leer"), flowOf(Unit, Unit)).toList()
+        assertEquals(3, veces.size) // una por el carril y una por cada latido
     }
 }

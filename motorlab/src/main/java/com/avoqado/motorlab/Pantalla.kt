@@ -2,7 +2,14 @@ package com.avoqado.motorlab
 
 import com.avoqado.cobropropio.dominio.EventoDeCobro
 import com.avoqado.cobropropio.libreta.IntentoEntity
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.merge
 import java.util.Locale
+
+/** Cuándo se pinta: en cada cambio del carril o de los folios, y en cada latido. La cabeza lee la red AL PINTAR (T5 de L-d2). */
+internal fun momentosDePintar(situacion: Flow<*>, folios: Flow<*>, latido: Flow<Unit>): Flow<Unit> =
+    merge(combine(situacion, folios) { _, _ -> }, latido)
 
 internal fun pesos(centavos: Long): String = String.format(Locale.ROOT, "\$%d.%02d", centavos / 100, centavos % 100)
 

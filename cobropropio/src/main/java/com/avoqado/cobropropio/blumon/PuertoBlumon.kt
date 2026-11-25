@@ -69,7 +69,7 @@ internal class TokenDeBlumon internal constructor(@get:JvmSynthetic internal val
 }
 
 internal interface PuertoBlumon {
-    /** `null` si no coinciden `posId` y comercio, si `qps != false`, si el KCV no cuadra, si algo falla o si vence `espera`. */
+    /** `null` si no coinciden el `posId` y, si la identidad lo trae, el comercio; si `qps != false`, si el KCV no cuadra, si algo falla o si vence `espera`. */
     suspend fun iniciarSesion(espera: Duration): SesionBlumon?
 
     /** Sólo el tokener (`grant_type=password`): un token nuevo, sin init ni llaves. `null` si algo falla o vence `espera`. */

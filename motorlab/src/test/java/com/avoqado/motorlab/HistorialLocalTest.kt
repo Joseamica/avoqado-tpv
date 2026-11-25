@@ -43,4 +43,12 @@ class HistorialLocalTest {
         assertNull(leidos[1].importeCentavos)
         assertEquals(1_000L, leidos[2].importeCentavos)
     }
+
+    /** Otro arranque sigue la numeración: el folio nuevo nunca queda en medio (la pantalla enseña sólo los últimos 15). */
+    @Test fun `tras reiniciar el folio nuevo va al final`() {
+        val (a, b, c) = List(3) { AttemptId.nuevo() }
+        HistorialLocal(dir()).apply { anotarFolio(a, 100); anotarFolio(b, 200) }
+        HistorialLocal(dir()).anotarFolio(c, 300) // otro arranque: sigue la numeración
+        assertEquals(listOf(a, b, c), HistorialLocal(dir()).leer().map { it.folio })
+    }
 }

@@ -42,4 +42,11 @@ class IdentidadTest {
         assertTrue(runCatching { llaveDeHuellas(carpeta.root) }.isFailure) // nunca se reemplaza
         assertEquals(5, File(carpeta.root, "llave-de-huellas").length())
     }
+
+    /** Una llave en ceros haría predecible la huella de cada tarjeta: la primera nace de `SecureRandom`. */
+    @Test fun `la llave nueva no es de puros ceros`() {
+        val k = llaveDeHuellas(carpeta.root).encoded
+        assertEquals(32, k.size)
+        assertTrue("la llave nació en ceros: SecureRandom no corrió", k.any { it != 0.toByte() })
+    }
 }

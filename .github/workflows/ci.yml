@@ -132,7 +132,7 @@ jobs:
       - name: Comprobar que SÍ corrieron tests del motor propio
         if: matrix.variante == 'Sandbox'
         run: |
-          xml=$(find cobropropio/build/test-results -name '*.xml' 2>/dev/null)
+          xml=$(find cobropropio/build/test-results -name '*.xml' 2>/dev/null || true)
           total=$(echo "$xml" | xargs grep -ho ' tests="[0-9]*"' 2>/dev/null | tr -dc '0-9\n' | paste -sd+ - | bc)
           saltadas=$(echo "$xml" | xargs grep -ho ' skipped="[0-9]*"' 2>/dev/null | tr -dc '0-9\n' | paste -sd+ - | bc)
           corridas=$(( ${total:-0} - ${saltadas:-0} ))
@@ -150,6 +150,29 @@ jobs:
           nuevos=$(git ls-files --others --exclude-standard cobropropio/schemas)
           if [ -n "$nuevos" ]; then echo "::error::Esquema de Room nuevo sin commitear: $nuevos"; exit 1; fi
 
+      # El laboratorio del motor (`:motorlab`, sólo la PAX del laboratorio): sus pruebas y su APK de depuración, para que un
+      # cambio del motor (bloque R) no lo deje roto sin que nadie lo vea. JDK 17 como el paso del motor, así lo que ese paso ya
+      # compiló queda al día y no se repite. `--rerun` toca sólo a las pruebas (corren siempre, aunque el caché tenga sus
+      # resultados); compilar sigue saliendo del caché.
+      - name: Tests y APK del laboratorio del motor
+        if: matrix.variante == 'Sandbox'
+        run: ./gradlew :motorlab:testDebugUnitTest --rerun :motorlab:assembleDebug
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
+
+      - name: Comprobar que SÍ corrieron tests del laboratorio
+        if: matrix.variante == 'Sandbox'
+        run: |
+          xml=$(find motorlab/build/test-results -name '*.xml' 2>/dev/null || true)
+          total=$(echo "$xml" | xargs grep -ho ' tests="[0-9]*"' 2>/dev/null | tr -dc '0-9\n' | paste -sd+ - | bc)
+          saltadas=$(echo "$xml" | xargs grep -ho ' skipped="[0-9]*"' 2>/dev/null | tr -dc '0-9\n' | paste -sd+ - | bc)
+          corridas=$(( ${total:-0} - ${saltadas:-0} ))
+          echo "Tests del laboratorio corridos: $corridas (de ${total:-0}, ${saltadas:-0} saltadas)"
+          if [ "$corridas" -lt 1 ]; then
+            echo "::error::El módulo motorlab salió en 0 pero NO corrió un solo test. Verde falso."
+            exit 1
+          fi
+
       # sandbox: "el 90% del tiempo" según la tabla de Build Variants del propio
       # CLAUDE.md — la compilación más representativa del día a día.
       - name: Compilar (debug)
@@ -166,4 +189,6 @@ jobs:
             app/build/reports/tests/
             cobropropio/build/reports/tests/
             cobropropio/build/test-results/
+            motorlab/build/reports/tests/
+            motorlab/build/test-results/
           retention-days: 7

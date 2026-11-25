@@ -645,15 +645,20 @@ dependencies {
     // trae `originalTerminal` en cancelar/devolver (D1: desde otra Nexgo ya no da M2AP), el modo kiosko (inerte; su
     // administrador de aparato se quita en el manifiesto) y la inicialización movida a un localizador interno.
     // SHA-256 be5018ae…0f74 (el portal lo baja como «angelpaySDK-v1.0.21 (2).aar»; aquí va con el real).
-    compileOnly(files("libs/angelpaySDK-v1.0.23-fat-release.aar"))
-    "nexgoImplementation"(files("libs/angelpaySDK-v1.0.23-fat-release.aar"))
-    "nexgoProdImplementation"(files("libs/angelpaySDK-v1.0.23-fat-release.aar"))
+    // 🔴 1.0.24 (25-nov-2026, re-auditado en bytecode contra el 1.0.23): `PaymentActivity`, el traductor de errores (`o.r`) y
+    // todo `c0.v0` idénticos salvo UN método, la verificación tras duda (`c0.v0.a(b.d, String, …)`), que ahora también entra con
+    // una respuesta ilegible (`o.h`): historial ⇒ S000 «Aprobada (verificada en historial)» o G505. El error no reconocido
+    // (`o.n`) sigue saliendo G500 sin verificar. `resolveInDoubtPostOp` busca por terminal de la venta + referencia.
+    // SHA-256 96fe7688…be64 (el portal lo baja como «angelpaySDK-v1.0.21 (3).aar»; aquí va con el real).
+    compileOnly(files("libs/angelpaySDK-v1.0.24-fat-release.aar"))
+    "nexgoImplementation"(files("libs/angelpaySDK-v1.0.24-fat-release.aar"))
+    "nexgoProdImplementation"(files("libs/angelpaySDK-v1.0.24-fat-release.aar"))
     // AngelPay SDK types are referenced in unit tests (e.g., AngelPaySdkGatewayTest) for
     // mocking — Result<List<MerchantSummary>> return types and `AngelPaySDK` object need
     // the AAR on the test classpath at both compile time and runtime so MockK can mock
     // the singleton via `mockkObject(AngelPaySDK)`. Production code still uses compileOnly
     // for non-Nexgo flavors, so this affects unit tests only.
-    testImplementation(files("libs/angelpaySDK-v1.0.23-fat-release.aar"))
+    testImplementation(files("libs/angelpaySDK-v1.0.24-fat-release.aar"))
 
     // AngelPay SDK 1.0.7 fat-release.aar ships the full io.github.binaryfoo:emv-bertlv
     // bundle internally (AmexTags, DecodedData, CryptogramInformationDecoder,

@@ -241,7 +241,7 @@ class EstadoDelProcesoTest {
         //    (`setResult(-1, …)` + `finish()`) sin tocar el lector;
         //  - `onDestroy` sólo toca el hardware dentro de un `runCatching`, así que la pantalla sin armar no tumba la app.
         // 🔴 Si esto cae porque llegó un SDK nuevo: NO cambies el número a ciegas. Vuelve a comprobar esos tres puntos con `javap`.
-        assertThat(AngelPaySDK.version()).isEqualTo("1.0.23")
+        assertThat(AngelPaySDK.version()).isEqualTo("1.0.24") // 25-nov: `PaymentActivity` idéntica a la del 1.0.23 (javap)
         assertThat(PaymentActivity::class.java.name).isEqualTo(PantallaDelSdkNoSeRestaura.NOMBRE)
         // Por reflexión: el compañero del AAR está ofuscado y Kotlin no ve la constante.
         assertThat(PaymentActivity::class.java.getField("EXTRA_REQ").get(null)).isEqualTo(PantallaDelSdkNoSeRestaura.EXTRA_DEL_COBRO)

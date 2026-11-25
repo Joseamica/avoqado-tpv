@@ -453,10 +453,10 @@ class AngelPaySdk119ReglaTest {
     @Test
     fun `P1 T12 con otra version del SDK la regla no corre`() {
         val u101 = delOrquestador(PaymentResult.Status.TIMEOUT, "Tiempo de espera agotado", AppErrorCatalog.Code.U101)
-        assertThat(decidir(u101)).isEqualTo(DecisionDelSdk.SIN_AUTORIZACION) // control: con 1.0.23 sí
+        assertThat(decidir(u101)).isEqualTo(DecisionDelSdk.SIN_AUTORIZACION) // control: con 1.0.24 sí
         // 🔴 El 1.0.19 ya NO: su Cancelar no se revisaba antes de enviar (diseño §4.2, ventanas W1/W2). Y el 1.0.20 y el
-        // 1.0.21 y el 1.0.22 tampoco: se audita el binario que se empaqueta (1.0.23 desde el 12-nov), no el anterior.
-        listOf("1.0.18", "1.0.19", "1.0.20", "1.0.21", "1.0.22", "1.0.24", "1.0.230", "", null).forEach { otra ->
+        // 1.0.21, el 1.0.22 y el 1.0.23 tampoco: se audita el binario que se empaqueta (1.0.24 desde el 25-nov), no el anterior.
+        listOf("1.0.18", "1.0.19", "1.0.20", "1.0.21", "1.0.22", "1.0.23", "1.0.25", "1.0.240", "", null).forEach { otra ->
             assertWithMessage("versión=$otra").that(decidir(u101, versionSdk = otra)).isEqualTo(DecisionDelSdk.REGLAS_DE_HOY)
         }
     }
@@ -469,21 +469,25 @@ class AngelPaySdk119ReglaTest {
         // Cancelar sigue revisándose antes de `m = true` y del envío en chip y banda, sin caminos de envío nuevos ni
         // salidas nuevas; lo único nuevo es la detección de wallet AMEX antes del tope sin contacto);
         // re-audítalo contra el nuevo antes de mover el candado.
-        val aar = listOf(File("libs/angelpaySDK-v1.0.23-fat-release.aar"), File("app/libs/angelpaySDK-v1.0.23-fat-release.aar"))
+        // 25-nov · 1.0.24: re-auditado contra el 1.0.23. De `c0.v0` sólo cambia la verificación tras duda
+        // (`a(b.d, String, ContinuationImpl)`, que ahora también entra con `o.h`); `m`, el Cancelar, los caminos de envío y
+        // las salidas quedan idénticos tras normalizar, igual que `PaymentActivity` y el traductor `o.r`.
+        val aar = listOf(File("libs/angelpaySDK-v1.0.24-fat-release.aar"), File("app/libs/angelpaySDK-v1.0.24-fat-release.aar"))
             .firstOrNull { it.exists() }
-        assertWithMessage("no se encontró el AAR 1.0.23 (directorio de trabajo: ${File(".").absolutePath})").that(aar).isNotNull()
+        assertWithMessage("no se encontró el AAR 1.0.24 (directorio de trabajo: ${File(".").absolutePath})").that(aar).isNotNull()
         val sha = MessageDigest.getInstance("SHA-256").digest(aar!!.readBytes()).joinToString("") { "%02x".format(it) }
         // El que publica AngelPay en su portal («SDK-Angelpay-Nexgo — v1.0,23», 06-nov-2026, «sha256 be5018aef307…»; lo
         // descarga como «angelpaySDK-v1.0.21 (2).aar»: el nombre miente, `version()` no).
-        assertThat(sha).isEqualTo("be5018aef3072171ce1f75b87cdba99f9bdd5e13d39bc97e7613a3c6ea900f74")
+        // 1.0.24: «SDK-Angelpay-Nexgo — v1.0.24», 24-nov-2026, «sha256 96fe76888e6d…»; lo descarga como «angelpaySDK-v1.0.21 (3).aar».
+        assertThat(sha).isEqualTo("96fe76888e6d35319d17113fdb19bd1512668a1d26000242b369e2cc85b6be64")
         // La versión que el binario dice ser es la del candado.
         assertThat(AngelPaySDK.version()).isEqualTo(AngelPayOutcomeClassifier.VERSION_SDK_AUDITADA)
         // Y el build empaqueta ESE archivo en las cuatro configuraciones (compileOnly, nexgo, nexgoProd, pruebas).
         val gradle = listOf(File("build.gradle.kts"), File("app/build.gradle.kts")).first { it.exists() }.readText()
         val aars = Regex("""files\("libs/(angelpaySDK-[^"]+)"\)""").findAll(gradle).map { it.groupValues[1] }.toList()
         assertThat(aars).containsExactly(
-            "angelpaySDK-v1.0.23-fat-release.aar", "angelpaySDK-v1.0.23-fat-release.aar",
-            "angelpaySDK-v1.0.23-fat-release.aar", "angelpaySDK-v1.0.23-fat-release.aar",
+            "angelpaySDK-v1.0.24-fat-release.aar", "angelpaySDK-v1.0.24-fat-release.aar",
+            "angelpaySDK-v1.0.24-fat-release.aar", "angelpaySDK-v1.0.24-fat-release.aar",
         )
     }
 

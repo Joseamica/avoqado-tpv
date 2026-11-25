@@ -150,8 +150,15 @@ object AngelPayOutcomeClassifier {
      * Lo nuevo no toca el cobro: `originalTerminal` en cancelar/devolver, el modo kiosko (inerte si nunca se llama
      * `setKioskMode`) y la inicialización movida a un localizador interno. El 1.0.22 ya NO está auditado.
      * Acta: `Avoqado/docs/audit/2026-11-12-angelpay-sdk-1023/auditoria-bytecode.md`.
+     *
+     * 🔴 **1.0.24 (25-nov), re-auditado en bytecode contra el 1.0.23:** `PaymentActivity`, el traductor de errores (`o.r`) y el
+     * manifiesto del AAR son IDÉNTICOS. De `c0.v0` cambia un solo método, la verificación tras duda (`a(b.d, String, …)`): ahora
+     * también entra cuando la respuesta llegó ilegible (`o.h`) y devuelve `S000` «Aprobada (verificada en historial)» o `G505`.
+     * `m`, el Cancelar y los caminos de envío no se mueven: la frontera de la regla es la misma. `resolveInDoubtPostOp` busca la
+     * venta por terminal de la venta + referencia. El error no reconocido (`o.n`) sigue saliendo `G500` sin verificar. El 1.0.23
+     * ya NO está auditado.
      */
-    const val VERSION_SDK_AUDITADA = "1.0.23"
+    const val VERSION_SDK_AUDITADA = "1.0.24"
 
     /**
      * 🔴 La regla del SDK 1.0.19 (diseño `diseno-nexgo-sdk-1.0.19.md` §2.1 + decisiones del founder del 18-sep).
@@ -257,7 +264,9 @@ object AngelPayOutcomeClassifier {
     private const val CODIGO_LIMITE_SIN_CONTACTO = "E608"
 
     /**
-     * `G500` («Transaccion rechazada por el gateway»): en el AAR 1.0.23 es el cajón de sastre del armador de resultados
+     * `G500` («Transaccion rechazada por el gateway»): en el AAR 1.0.23 era el cajón de sastre del armador de resultados; en el
+     * 1.0.24 (re-auditado el 25-nov) la respuesta ilegible (`o.h`) ya se verifica en el historial (S000 o G505), pero el error
+     * que el traductor no reconoce (`o.n`) sigue cayendo aquí sin verificar: el paso 3a NO cambia. Descripción del armador
      * (`c0.v0.a(b.d, Boolean, String)`, bytecode 0–146): además del rechazo real —que trae la respuesta del gateway—, cae
      * ahí un error que el traductor no reconoce (`o.n`) o una respuesta ilegible (`o.h`), con TODOS los campos del host en
      * null (`b.c` 437–558) — y también una respuesta leída que no trae ningún dato (venta por banda). Ver el paso 3a de

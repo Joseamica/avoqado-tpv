@@ -87,6 +87,9 @@ class SalidaDeMesaTest {
         assertTrue(navegacion.contains("alcance = pagoVm.viewModelScope,"))
         assertTrue(navegacion.contains("alcance = angelVm.viewModelScope,"))
         assertEquals(2, Regex("""salirDeMesaTrasCobrar\(\s+alcance = \w+\.viewModelScope,\s+entrada = backStackEntry,""").findAll(navegacion).count())
-        assertEquals("clearTable de Mesas sólo dentro de salirDeMesaTrasCobrar", 2, Regex("""tablesRepository\.clearTable\(venueId, session\.tableId""").findAll(navegacion).count())
+        assertEquals("clearTable de Mesas con la sesión tomada al tocar", 2, Regex("""tablesRepository\.clearTable\(venueId, sesionDelCobro\.tableId""").findAll(navegacion).count())
+        // Codex r8: la respuesta tardía de la mesa anterior no borra la sesión de la mesa que el cajero abrió después.
+        assertEquals(2, Regex("""val epocaDelCobro = tableSession\.epoch""").findAll(navegacion).count())
+        assertEquals(2, Regex("""if \(tableSession\.epoch == epocaDelCobro\) tableSession\.clear\(\)""").findAll(navegacion).count())
     }
 }

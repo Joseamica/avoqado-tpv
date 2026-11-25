@@ -2189,18 +2189,21 @@ fun AppNavigation(
                         // unpaid) and return to the Mesas floor plan, never the
                         // legacy FloorPlan/unified Cart.
                         // 🪑 hz:1450a1e9:D4: en el alcance del ViewModel, no de la composición: si otra pantalla se abre encima a media
-                        // espera, la mesa se libera igual y se vuelve al plano al regresar (ver salirDeMesaTrasCobrar).
+                        // espera, la mesa se libera igual y se vuelve al plano al regresar (ver salirDeMesaTrasCobrar). La sesión y su
+                        // época se toman AL TOCAR: si el cajero ya abrió otra mesa cuando llega la respuesta, ésa no se borra (Codex r8,
+                        // como releaseTable de TableCheckoutViewModel).
+                        val sesionDelCobro = tableSession.current()
+                        val epocaDelCobro = tableSession.epoch
                         salirDeMesaTrasCobrar(
                             alcance = pagoVm.viewModelScope,
                             entrada = backStackEntry,
                             liberar = {
                                 val venueId = secureStorage.getVenueId()
-                                val session = tableSession.current()
-                                if (venueId != null && session != null) {
-                                    tablesRepository.clearTable(venueId, session.tableId, session.orderId, session.isProvisional)
+                                if (venueId != null && sesionDelCobro != null) {
+                                    tablesRepository.clearTable(venueId, sesionDelCobro.tableId, sesionDelCobro.orderId, sesionDelCobro.isProvisional)
                                         .onFailure { Timber.w(it, "⚠️ [Mesas] clearTable no liberó la mesa tras el cobro con tarjeta") }
                                 }
-                                tableSession.clear()
+                                if (tableSession.epoch == epocaDelCobro) tableSession.clear()
                             },
                             alPlano = {
                                 navController.navigate(NavRoute.Tables.route) {
@@ -3238,24 +3241,26 @@ fun AppNavigation(
                         // split params, so a card charge here is always the whole
                         // balance). Same clearTable-then-navigate-to-Tables as the
                         // Blumon Payment branch above.
-                        // 🪑 hz:1450a1e9:D4: en el alcance del ViewModel, no de la composición (ver salirDeMesaTrasCobrar).
+                        // 🪑 hz:1450a1e9:D4: en el alcance del ViewModel, no de la composición (ver salirDeMesaTrasCobrar). La sesión y
+                        // su época se toman AL TOCAR: otra mesa abierta mientras tanto no se borra (Codex r8).
+                        val entry = EntryPointAccessors.fromApplication(
+                            angelPayContext.applicationContext,
+                            AppNavigationEntryPoint::class.java,
+                        )
+                        val tablesRepository = entry.tablesRepository()
+                        val tableSession = entry.tableSession()
+                        val sesionDelCobro = tableSession.current()
+                        val epocaDelCobro = tableSession.epoch
                         salirDeMesaTrasCobrar(
                             alcance = angelVm.viewModelScope,
                             entrada = backStackEntry,
                             liberar = {
-                                val entry = EntryPointAccessors.fromApplication(
-                                    angelPayContext.applicationContext,
-                                    AppNavigationEntryPoint::class.java,
-                                )
-                                val tablesRepository = entry.tablesRepository()
-                                val tableSession = entry.tableSession()
                                 val venueId = secureStorage.getVenueId()
-                                val session = tableSession.current()
-                                if (venueId != null && session != null) {
-                                    tablesRepository.clearTable(venueId, session.tableId, session.orderId, session.isProvisional)
+                                if (venueId != null && sesionDelCobro != null) {
+                                    tablesRepository.clearTable(venueId, sesionDelCobro.tableId, sesionDelCobro.orderId, sesionDelCobro.isProvisional)
                                         .onFailure { Timber.w(it, "⚠️ [Mesas] clearTable no liberó la mesa tras el cobro AngelPay") }
                                 }
-                                tableSession.clear()
+                                if (tableSession.epoch == epocaDelCobro) tableSession.clear()
                             },
                             alPlano = {
                                 navController.navigate(NavRoute.Tables.route) {

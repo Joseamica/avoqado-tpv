@@ -22,6 +22,7 @@ import com.jaac.avoqado_campo.identidad.Sesion
 import com.jaac.avoqado_campo.identidad.Sucursal
 import io.mockk.coEvery
 import io.mockk.mockk
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -500,6 +501,60 @@ class ControlDeGpsTest {
         // v9 no es suya: con el turno vivo no se sigue; olvidado, decide la sesión (v1, que sí sigue).
         assertFalse(debeSeguir(yo, viejo.copy(abiertoAt = AHORA - 60_000L), AHORA))
         assertTrue(debeSeguir(yo, viejo, AHORA))
+    }
+
+    /** Lo que `descartarConHijos` le hace al turno al quitar su ENTRADA (rechazada, o descartada por el SERVIDOR). */
+    private suspend fun quitarLaEntrada() = db.piezaDao().run { guardarTurno(turnoAhora()!!.copy(llaveEntrada = null, timeEntryId = null)) }
+
+    @Test fun `D1 - quitar la entrada despierta la espera y la siguiente lectura para el servicio`() = runBlocking<Unit> {
+        abrirTurno()
+        val s = seguimiento()
+        assertTrue(s.tomarUno())
+        val espera = async { s.esperar(30 * 60_000L) }
+        delay(200)
+        assertTrue(espera.isActive) // con el turno igual, duerme
+        quitarLaEntrada()
+        withTimeout(5_000) { espera.await() } // antes: hasta 30 min con el aviso «Turno activo» puesto
+        assertFalse(s.tomarUno())
+    }
+
+    @Test fun `D1 - una entrada nueva despierta la espera sin esperar 30 min`() = runBlocking<Unit> {
+        abrirTurno()
+        val s = seguimiento()
+        assertTrue(s.tomarUno())
+        val espera = async { s.esperar(30 * 60_000L) }
+        delay(200)
+        db.piezaDao().guardarTurno(TurnoLocal(staffId = "s1", llaveEntrada = "e2", timeEntryId = null, venueId = "v1", abiertoAt = AHORA - 1_000L))
+        withTimeout(5_000) { espera.await() }
+    }
+
+    @Test fun `D1 - la misma entrada que sube (su timeEntryId) no despierta la espera`() = runBlocking<Unit> {
+        abrirTurno()
+        val s = seguimiento()
+        assertTrue(s.tomarUno())
+        val espera = async { s.esperar(30 * 60_000L) }
+        delay(200)
+        db.piezaDao().run { guardarTurno(turnoAhora()!!.copy(timeEntryId = "te1")) }
+        delay(500)
+        assertTrue(espera.isActive) // no pide una lectura de más
+        espera.cancel()
+    }
+
+    @Test fun `D1 - si la entrada se quito entre la lectura y la espera, la espera no duerme`() = runBlocking<Unit> {
+        abrirTurno()
+        val s = seguimiento()
+        assertTrue(s.tomarUno())
+        quitarLaEntrada()
+        withTimeout(5_000) { s.esperar(30 * 60_000L) }
+    }
+
+    @Test fun `D1 - sin cambios la espera dura lo que se le pide`() = runBlocking<Unit> {
+        abrirTurno()
+        val s = seguimiento()
+        assertTrue(s.tomarUno())
+        val inicio = System.currentTimeMillis()
+        s.esperar(300L)
+        assertTrue(System.currentTimeMillis() - inicio >= 290L)
     }
 
     @Test fun `bateria - sin la pantalla directa abre la lista de ajustes, y sin ninguna no hay boton`() {

@@ -25,8 +25,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -135,12 +136,28 @@ class SeguimientoDelTurno(
             estado.publicar(ResultadoGps.NoLoUsaLaTienda)
             return false
         }
+        turnoSeguido = ClaveDelTurno.de(ahoraT)
         if (l == null || !mismoTurno(t, ahoraT)) return true
         val venueId = ahoraT.venueId ?: yo.sesion?.venueId ?: return true
         pings.guardarSi(Ping(venueId = venueId, lat = l.lat, lon = l.lon, precision = l.precision, capturadoAt = capturado)) {
             quienSoy.instantanea().let { !it.limpiando && it.generacion == yo.generacion }
         }
         return true
+    }
+
+    /** El turno con el que la última lectura decidió seguir (D1). */
+    @Volatile private var turnoSeguido: ClaveDelTurno? = null
+
+    /**
+     * D1 (hz:1450a1e9:D1): la espera entre lecturas ([ms], 30 min) termina en cuanto el turno deja de ser el que se siguió: se
+     * quitó la entrada (rechazada, o descartada por el SERVIDOR) o se marcó otra. Antes dormía a ciegas: sin turno, el aviso
+     * «Turno activo» se quedaba hasta 30 min, y la entrada nueva esperaba esos 30 min su primera ubicación. Compara contra la
+     * última lectura, no contra la fila al empezar a esperar: un cambio entre las dos tampoco se pierde. La misma entrada que sube
+     * (su `timeEntryId`) no cuenta: no pide una lectura de más.
+     */
+    suspend fun esperar(ms: Long) {
+        val visto = turnoSeguido
+        withTimeoutOrNull(ms) { piezas.turno().first { ClaveDelTurno.de(it) != visto } }
     }
 
     /** Un error del GPS (permiso quitado a media lectura, el proveedor) es «sin posición»: no salta la revisión del turno. */
@@ -156,6 +173,13 @@ class SeguimientoDelTurno(
 
 /** La misma entrada (no otra marcada después): `timeEntryId` y la llave cambian al subir; la hora del toque y la sucursal no. */
 private fun mismoTurno(a: TurnoLocal, b: TurnoLocal) = a.staffId == b.staffId && a.venueId == b.venueId && a.abiertoAt == b.abiertoAt
+
+/** Lo que [mismoTurno] compara, más si sigue abierto: lo que despierta la espera del bucle (D1). */
+private data class ClaveDelTurno(val staffId: String?, val venueId: String?, val abiertoAt: Long?, val abierto: Boolean) {
+    companion object {
+        fun de(t: TurnoLocal?) = t?.let { ClaveDelTurno(it.staffId, it.venueId, it.abiertoAt, it.abierto) }
+    }
+}
 
 /**
  * El bucle del servicio: una lectura y luego [esperar] (30 min), hasta que [tomarUno] diga que ya no hay turno que seguir.
@@ -197,7 +221,10 @@ internal fun pararCumpliendoPrimerPlano(primerPlano: () -> Unit, quitarPrimerPla
     parar()
 }
 
-/** Servicio en primer plano durante el turno: una lectura al arrancar y luego cada 30 min. Lo arranca [ControlDeGpsReal]. */
+/**
+ * Servicio en primer plano durante el turno: una lectura al arrancar y luego cada 30 min, o antes si el turno cambia (D1). Lo
+ * arranca [ControlDeGpsReal].
+ */
 @AndroidEntryPoint
 class ServicioDeUbicacion : Service() {
     @Inject lateinit var seguimiento: SeguimientoDelTurno
@@ -241,7 +268,7 @@ class ServicioDeUbicacion : Service() {
                 return@launch
             }
             if (bucle?.isActive != true) bucle = alcance.launch {
-                correrBucle(seguimiento::tomarUno, arranques = { arranques }) { delay(CADA_MS) }
+                correrBucle(seguimiento::tomarUno, arranques = { arranques }) { seguimiento.esperar(CADA_MS) }
                 stopSelf(ultimoStartId)
             }
         }

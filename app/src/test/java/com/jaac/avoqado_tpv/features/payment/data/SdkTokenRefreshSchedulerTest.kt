@@ -167,5 +167,68 @@ class SdkTokenRefreshSchedulerTest {
             .isInstanceOf(SdkTokenRefreshScheduler.RefreshOutcome.Error::class.java)
         verify(exactly = 0) { initManager.invalidateForRefresh() }
     }
+    // ── D2 (25-nov): la revisión saltada por un cobro ya no espera una hora ────────────────────
+
+    private val hora = 60L * 60L * 1000L
+
+    @Test
+    fun `D2 tras saltarse por un cobro en curso vuelve a mirar a los 2 minutos`() = runTest {
+        every { critical.isAnyCriticalOperationInProgress() } returns true
+        every { secureStorage.getLastBlumonInitTimestamp() } returns aLongTimeAgo()
+
+        scheduler.runCheck()
+
+        assertThat(scheduler.nextCheckDelayMs()).isEqualTo(SdkTokenRefreshScheduler.RETRY_AFTER_SKIP_MS)
+    }
+
+    @Test
+    fun `D2 si un cobro empieza a media revision tambien vuelve a mirar a los 2 minutos`() = runTest {
+        every { critical.isAnyCriticalOperationInProgress() } returnsMany listOf(false, true)
+        every { secureStorage.getLastBlumonInitTimestamp() } returns aLongTimeAgo()
+
+        scheduler.runCheck()
+
+        assertThat(scheduler.lastRefreshOutcome.value).isEqualTo(SdkTokenRefreshScheduler.RefreshOutcome.SkippedRaceLost)
+        assertThat(scheduler.nextCheckDelayMs()).isEqualTo(SdkTokenRefreshScheduler.RETRY_AFTER_SKIP_MS)
+    }
+
+    @Test
+    fun `D2 la primera revision cae justo a las 23 h, no hasta una hora despues`() = runTest {
+        val ahora = 1_000_000_000_000L
+        every { secureStorage.getLastBlumonInitTimestamp() } returns ahora - (22 * hora + 40 * 60_000L) // 22 h 40 min
+
+        assertThat(scheduler.nextCheckDelayMs(now = ahora)).isEqualTo(20 * 60_000L)
+    }
+
+    @Test
+    fun `D2 con la llave recien hecha la revision sigue siendo cada hora`() = runTest {
+        val ahora = 1_000_000_000_000L
+        every { secureStorage.getLastBlumonInitTimestamp() } returns ahora - hora
+
+        assertThat(scheduler.nextCheckDelayMs(now = ahora)).isEqualTo(SdkTokenRefreshScheduler.CHECK_INTERVAL_MS)
+    }
+
+    @Test
+    fun `D2 con la bandera ya abajo o recien invalidada no hace falta mirar seguido`() = runTest {
+        every { secureStorage.getLastBlumonInitTimestamp() } returns aLongTimeAgo()
+        scheduler.runCheck() // invalida
+        assertThat(scheduler.nextCheckDelayMs()).isEqualTo(SdkTokenRefreshScheduler.CHECK_INTERVAL_MS)
+
+        isInitializedFlow.value = false
+        scheduler.runCheck()
+        assertThat(scheduler.lastRefreshOutcome.value).isEqualTo(SdkTokenRefreshScheduler.RefreshOutcome.SkippedFlagAlreadyFalse)
+        assertThat(scheduler.nextCheckDelayMs()).isEqualTo(SdkTokenRefreshScheduler.CHECK_INTERVAL_MS)
+    }
+
+    @Test
+    fun `D2 sin sello o tras un error con la llave vieja nunca espera de mas`() = runTest {
+        every { secureStorage.getLastBlumonInitTimestamp() } returns null
+        assertThat(scheduler.nextCheckDelayMs()).isEqualTo(SdkTokenRefreshScheduler.CHECK_INTERVAL_MS)
+
+        every { secureStorage.getLastBlumonInitTimestamp() } returns aLongTimeAgo()
+        every { critical.isAnyCriticalOperationInProgress() } throws IllegalStateException("x")
+        scheduler.runCheck()
+        assertThat(scheduler.nextCheckDelayMs()).isEqualTo(SdkTokenRefreshScheduler.RETRY_AFTER_SKIP_MS)
+    }
 }
 

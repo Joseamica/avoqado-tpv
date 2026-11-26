@@ -205,10 +205,7 @@ class InitializationManager @Inject constructor(
      */
     suspend fun awaitInitialization(antesDeUsarElLector: Boolean = false): Result<Unit> {
         // D15 (Codex r1 #1): sólo quien está por usar el lector para SU operación gasta la marca; nadie más la toca.
-        if (antesDeUsarElLector) {
-            marcarSiLaLlaveYaVencio()
-            repararElLectorSiToca()
-        }
+        if (antesDeUsarElLector) repararElLectorSiToca()
         if (_isInitialized.value) {
             return Result.success(Unit)
         }
@@ -484,24 +481,6 @@ class InitializationManager @Inject constructor(
      * Quien vio el fallo deja esta marca; el SIGUIENTE intento reinicializa el lector antes de pedir la tarjeta.
      * 🔴 Nunca reintenta el cobro solo (Blumon lo vetó: doble cobro). Sólo prepara el lector para cuando el cajero lo pida.
      */
-    /**
-     * 🔑 hz:1450a1e9:D2: la llave OAuth de Blumon vence a las 24 h. [SdkTokenRefreshScheduler] la renueva desde las 23 h, pero
-     * sólo con la terminal quieta y una vez por hora. Si a las 23 h había una operación en curso, la siguiente revisión podía caer
-     * después de las 24 h, y el cobro de ese hueco salía con la llave muerta (`invalid_token`), porque aquí sólo se miraba la
-     * bandera. Ahora, justo antes de usar el lector, una llave de más de 24 h marca el lector para repararlo, como D15. Pasa por su
-     * enfriamiento, sus candados y su «ya se reinicializó después».
-     *
-     * Sólo con la llave ya vencida, nunca antes: la inicialización de Blumon en producción falla seguido y tarda ~10 s (medido el
-     * 16-nov). Con una llave todavía viva no se arriesga un cobro que sí pasaba. Si la inicialización falla, el cobro dice «Error
-     * inicializando sistema de pago» sin tocar la tarjeta, que es lo mismo que haría hoy con la llave vencida.
-     */
-    private fun marcarSiLaLlaveYaVencio() {
-        if (!_isInitialized.value) return
-        val ultimoInit = secureStorage.getLastBlumonInitTimestamp() ?: return
-        val edad = System.currentTimeMillis() - ultimoInit
-        if (edad > TWENTY_FOUR_HOURS_MS) marcarLectorParaReparar("llave de Blumon vencida (${edad / 3_600_000L} h)")
-    }
-
     fun marcarLectorParaReparar(motivo: String) {
         lectorPorReparar = true
         marcadoEn = System.currentTimeMillis()

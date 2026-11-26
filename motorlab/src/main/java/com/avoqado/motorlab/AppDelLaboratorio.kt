@@ -21,7 +21,7 @@ import com.avoqado.cobropropio.motor.crearMotorDeCobro
 import com.avoqado.cobropropio.servidor.CredencialDelServidor
 import com.example.clean_lib_services.shared_tools.constants.ApiConstants
 import com.pax.dal.entity.ETermInfoKey
-import com.paxsz.module.pos.Sdk
+import com.pax.neptunelite.api.NeptuneLiteUser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
 import java.io.File
 import java.util.concurrent.Executor
+import kotlin.concurrent.thread
 import kotlin.time.Duration
 
 /**
@@ -40,21 +41,29 @@ class AppDelLaboratorio : Application() {
         private set
     private lateinit var respondedor: RespondedorLocal
     private lateinit var red: RedDelLaboratorio
-    private lateinit var serie: String
+
+    /** La serie medida al arrancar (bloque P0): «midiendo…» hasta que su hilo termina. */
+    @Volatile private var serie: String = "Serie del aparato: midiendo…"
     private val alcance = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
         super.onCreate()
         val archivo = ArchivoDeIdentidad(noBackupFilesDir)
         // Bloque P0: la serie desde el arranque en frío, ANTES del lector y de todo `AppManager.init` (que carga los parámetros
-        // EMV; el DAL no los necesita, `Sdk.java:40`). Sin `READ_PHONE_STATE`: si `Build` no puede, eso es el dato.
-        serie = lineaDeLaSerie(
-            listOf(
-                "DAL" to { Sdk.getInstance(this).dal?.sys?.termInfo?.get(ETermInfoKey.SN) },
-                "Build" to { Build.getSerial() },
-            ),
-            archivo.leer().getOrNull()?.serieFisica,
-        )
+        // EMV; el DAL no los necesita). En su propio hilo y cada vía con plazo: un DAL colgado no detiene la pantalla ni la vía
+        // `Build`. El DAL directo, no `Sdk.getDal()`, que imprime la traza al fallar (`Sdk.java:40-47`): aquí sólo sale la clase.
+        // Sin `READ_PHONE_STATE`: si `Build` no puede, eso es el dato.
+        thread(isDaemon = true, name = "motorlab-serie") {
+            serie = lineaDeLaSerie(
+                listOf(
+                    "DAL" to conPlazo(PLAZO_DE_SERIE_MS) {
+                        NeptuneLiteUser.getInstance().getDal(this)?.sys?.termInfo?.get(ETermInfoKey.SN)
+                    },
+                    "Build" to conPlazo(PLAZO_DE_SERIE_MS) { Build.getSerial() },
+                ),
+                archivo.leer().getOrNull()?.serieFisica,
+            )
+        }
         respondedor = RespondedorLocal(ahora = SystemClock::elapsedRealtime) // el reloj de las notas de los folios
         red = RedDelLaboratorio(this)
         val lector = LectorPax(PaxDeLaTerminal(this), red)
@@ -97,6 +106,7 @@ class AppDelLaboratorio : Application() {
 
 private const val IMPORTE = 2_550L // $25.50: distinto de $1 y dentro del tope de la tarjeta del laboratorio ($100)
 private const val ESPERA = 30_000L // la misma espera de lectura que el motor
+private const val PLAZO_DE_SERIE_MS = 3_000L // por vía: lo que pase de esto sale «ilegible (SinRespuesta)»
 
 /** La lectura seca de L-c, tal cual: no cobra; sólo lo permitido del informe. */
 private suspend fun leerEnSeco(lector: LectorPax): String {
@@ -107,7 +117,7 @@ private suspend fun leerEnSeco(lector: LectorPax): String {
 }
 
 /** Sólo lo permitido: el resultado, la causa, lo que dijo el kernel, el 9F02, QUÉ tags vinieron y cómo quedó el lector. */
-private fun describir(r: ResultadoDeLectura, i: Informe?): String = buildString {
+internal fun describir(r: ResultadoDeLectura, i: Informe?): String = buildString {
     appendLine("Lectura seca de \$25.50 (no cobra)")
     appendLine(
         "Resultado: " + when (r) {
@@ -122,7 +132,11 @@ private fun describir(r: ResultadoDeLectura, i: Informe?): String = buildString 
         return@buildString
     }
     appendLine("Causa: ${i.causa} · código: ${i.codigo ?: "—"}")
-    appendLine("Marca: ${i.marca ?: "—"} · Entrada: ${i.entrada ?: "—"} · kernel: ${i.resultado ?: "—"} · CVM: ${i.cvm ?: "—"}")
+    // Sin entrada (nadie acercó la tarjeta) no se menciona, como en los folios (`textoDelInforme`).
+    appendLine(
+        "Marca: ${i.marca ?: "—"}" + (i.entrada?.let { " · Entrada: $it" } ?: "") +
+            " · kernel: ${i.resultado ?: "—"} · CVM: ${i.cvm ?: "—"}",
+    )
     appendLine("9F02: ${i.importeDelKernel ?: "—"} (pedido $IMPORTE): " + if (i.importeDelKernel == IMPORTE) "coincide" else "NO coincide")
     appendLine("Tags que vinieron: " + i.tagsPresentes.sorted().joinToString(" ") { "%X".format(it) })
     appendLine(

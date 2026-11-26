@@ -10,6 +10,7 @@ import com.avoqado.cobropropio.dominio.Medio
 import com.avoqado.cobropropio.dominio.MotivoNoSalio
 import com.avoqado.cobropropio.dominio.Operacion
 import com.avoqado.cobropropio.dominio.Origen
+import com.avoqado.cobropropio.dominio.ResultadoDeLectura
 import com.avoqado.cobropropio.libreta.EstadoDelIntento
 import com.avoqado.cobropropio.libreta.IntentoEntity
 import kotlinx.coroutines.flow.flowOf
@@ -93,6 +94,17 @@ class PantallaTest {
         )
         assertTrue(" · entrada SIN_CONTACTO" in texto(Entrada.SIN_CONTACTO))
         assertFalse("entrada" in texto(null))
+    }
+
+    /** La lectura seca, igual: sin entrada (nadie acercó la tarjeta y venció el sondeo) no dice «Entrada: —». */
+    @Test fun `la lectura seca ensena la entrada solo si la hay`() {
+        fun texto(entrada: Entrada?) = describir(
+            ResultadoDeLectura.Vencida,
+            Informe(folio, Causa.LEIDA, 0, Marca.VISA, entrada, null, null, null, emptySet(), Cierre.ACREDITADO, emptyList(), null),
+        )
+        assertTrue(texto(Entrada.SIN_CONTACTO), "Marca: VISA · Entrada: SIN_CONTACTO · kernel:" in texto(Entrada.SIN_CONTACTO))
+        assertTrue(texto(null), "Marca: VISA · kernel:" in texto(null))
+        assertFalse(texto(null), "Entrada" in texto(null))
     }
 
     /** El hallazgo de T5 (L-d2): en reposo, la cabeza (y su «red: sí/no») se repinta en cada latido, aunque el carril no publique. */

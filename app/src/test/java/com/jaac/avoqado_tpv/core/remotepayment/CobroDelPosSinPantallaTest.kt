@@ -55,33 +55,37 @@ class CobroDelPosSinPantallaTest {
     }
 
     @Test
-    fun `la espera de la ruta contesta al POS sólo sin pantalla y antes de salir`() {
+    fun `la espera de la ruta contesta al POS sólo sin pantalla, una vez y antes de salir`() {
         val espera = esperaDeLaRutaDePago()
-        val contesta = espera.indexOf("contestarCobroDelPosSinPantalla(socketManager, remotePaymentCoordinator, solicitud)")
-        val salida = espera.indexOf("navController.safePopBackStack()")
-        assertThat(contesta).isAtLeast(0)
-        assertThat(contesta).isLessThan(salida)
         // Con la pantalla ya mostrada contesta ella al morir (D26); sólo un cobro de la tablet trae `socketRequestId`.
-        val guarda = espera.substring(0, contesta)
-        assertThat(guarda).contains("if (!yaSalio.compareAndSet(false, true)) return@salir")
-        assertThat(guarda).contains("if (!pantallaYaMostrada)")
-        assertThat(guarda).contains("argumentosDelCobro.get<String>(\"socketRequestId\")")
+        assertThat(espera).contains(
+            "val cobroDelPosSinPantalla = if (pantallaYaMostrada) null else argumentosDelCobro.get<String>(\"socketRequestId\")",
+        )
+        assertThat(espera).contains("if (cobroDelPosSinPantalla != null && yaContesto.compareAndSet(false, true)) {")
+        val noListo = espera.indexOf("if (!ready) {")
+        val contesta = espera.indexOf("contestarAlPos()", noListo)
+        val salida = espera.indexOf("navController.safePopBackStack()", noListo)
+        assertThat(noListo).isAtLeast(0)
+        assertThat(contesta).isGreaterThan(noListo)
+        assertThat(contesta).isLessThan(salida)
     }
 
     @Test
-    fun `el lector que no se prepara y Atras durante la espera salen por el mismo camino`() {
+    fun `Atras durante la espera contesta sólo en el cobro de la tablet sin pantalla`() {
         val espera = esperaDeLaRutaDePago()
-        assertThat(espera).contains("androidx.activity.compose.BackHandler { salirDeLaEspera() }")
-        assertThat(espera).contains("if (!ready) salirDeLaEspera()")
-        assertThat(espera.indexOf("awaitPaxPaymentReady(context, initializationManager, \"Payment route\")"))
-            .isGreaterThan(espera.indexOf("val salirDeLaEspera"))
+        val atras = espera.indexOf("androidx.activity.compose.BackHandler(enabled = cobroDelPosSinPantalla != null) {")
+        assertThat(atras).isAtLeast(0)
+        val cuerpo = espera.substring(atras, espera.indexOf("LaunchedEffect(Unit) {", atras))
+        // Codex r2 #2: sin el filtro de toques de safePopBackStack (con él saltaba a Inicio); el mismo regreso que el NavHost.
+        assertThat(cuerpo.indexOf("contestarAlPos()")).isLessThan(cuerpo.indexOf("navController.popBackStack()"))
+        assertThat(cuerpo).doesNotContain("NavRoute.Home.route")
     }
 
     private val navegacion =
         File("src/main/java/com/jaac/avoqado_tpv/core/presentation/navigation/AppNavigation.kt").readText()
 
     private fun esperaDeLaRutaDePago(): String {
-        val inicio = navegacion.indexOf("val yaSalio = remember { java.util.concurrent.atomic.AtomicBoolean(false) }")
+        val inicio = navegacion.indexOf("val yaContesto = remember { java.util.concurrent.atomic.AtomicBoolean(false) }")
         require(inicio >= 0) { "No encontré la espera del lector de la ruta de pago" }
         return navegacion.substring(inicio, navegacion.indexOf("AvoqadoLoadingOverlay(message = \"Preparando sistema de pagos...\")", inicio))
     }

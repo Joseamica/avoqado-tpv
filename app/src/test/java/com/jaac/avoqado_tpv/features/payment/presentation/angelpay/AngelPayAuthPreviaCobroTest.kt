@@ -926,4 +926,411 @@ class AngelPayAuthPreviaCobroTest {
         errorDuranteLibretaNoLanza(cierrePermitido = false)
     }
 
+
+    // ── hz:2c70dfc6:D2 (N86 de la oficina, 25-nov): «Método de pago» quieta ~8 min y luego «Tarjeta» ──
+    // La sesión parecía viva al tocar (no hay auth previa), pero la auth de startSdkCardPayment ya no la
+    // pudo usar: logout + login nuevo, y una cuenta con varios comercios contesta «elige comercio». Antes
+    // el candado de alineación cortaba con «La sesión de AngelPay quedó en otro comercio». Ahora se vuelve
+    // a elegir el MISMO comercio (como al entrar al cobro) y el candado se revisa otra vez, sin aflojarse.
+
+    /** Tres comercios de la misma cuenta, como la cuenta QA de la oficina. */
+    private val tresComercios = listOf(
+        MerchantOption(id = 11, name = "Comercio uno", afiliationNumber = "1001"),
+        MerchantOption(id = 12, name = "Otro", afiliationNumber = "1002"),
+        MerchantOption(id = 13, name = "Tercero", afiliationNumber = "1003"),
+    )
+
+    /** La sesión se ve viva y en el elegido; la auth de startSdkCardPayment la rehace y queda pidiendo elegir comercio. */
+    private fun sesionVencidaTrasOchoMinutos(cuentaTrasElLogin: String = "acc-A") {
+        sesionViva = true
+        authStateFlow.value = AngelPayAuthState.Authenticated
+        activeMerchantIdFlow.value = 11
+        var logins = 0
+        coEvery { angelPayAuthRepository.ensureAuthenticatedAs("acc-A") } answers {
+            // Tras volver a elegir, la sesión ya está viva y es de esta cuenta: la auth sólo revalida (no rehace el login).
+            if (logins++ > 0 && authStateFlow.value !is AngelPayAuthState.SelectingMerchant) return@answers Result.success(Unit)
+            // logout + authenticateSimple → MerchantSelectionRequired (lo que dice el log de la N86)
+            activeMerchantIdFlow.value = null
+            every { angelPayAuthRepository.getCurrentAngelPayAccountId() } returns cuentaTrasElLogin
+            authStateFlow.value = AngelPayAuthState.SelectingMerchant(merchants = tresComercios, temporaryToken = "TOKEN-8MIN")
+            Result.success(Unit)
+        }
+    }
+
+    @Test
+    fun `D2 tras 8 min la auth pide elegir comercio y se vuelve a elegir el MISMO y cobra ahi`() = runTest(testDispatcher) {
+        sesionVencidaTrasOchoMinutos()
+        coEvery { angelPayAuthRepository.completeMerchantSelection(11, "TOKEN-8MIN") } answers {
+            authStateFlow.value = AngelPayAuthState.Authenticated
+            activeMerchantIdFlow.value = 11
+            Result.success(Unit)
+        }
+        val vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            runCurrent()
+
+            coVerify(exactly = 1) { angelPayAuthRepository.completeMerchantSelection(11, "TOKEN-8MIN") }
+            coVerify(exactly = 0) { angelPayAuthRepository.completeMerchantSelection(12, any()) }
+            coVerify(exactly = 0) { angelPayAuthRepository.completeMerchantSelection(13, any()) }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+            coVerify(exactly = 1) { paymentAttemptLedger.markAuthorizing(any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D2 si volver a elegir el comercio falla queda el error de hoy y no se abre la libreta`() = runTest(testDispatcher) {
+        sesionVencidaTrasOchoMinutos()
+        coEvery { angelPayAuthRepository.completeMerchantSelection(11, "TOKEN-8MIN") } returns
+            Result.failure(IllegalStateException("El token de selección ha expirado"))
+        val vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            runCurrent()
+
+            coVerify(exactly = 1) { angelPayAuthRepository.completeMerchantSelection(11, "TOKEN-8MIN") }
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("quedó en otro comercio")
+            coVerify(exactly = 0) { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+            verify(exactly = 0) { sdkGateway.buildPaymentRequest(any(), any(), any(), any()) }
+            assertThat(candado.isLocked).isFalse()
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D2 si tras volver a elegir la sesion VIVA quedo en otro comercio queda el error de hoy`() = runTest(testDispatcher) {
+        sesionVencidaTrasOchoMinutos()
+        coEvery { angelPayAuthRepository.completeMerchantSelection(11, "TOKEN-8MIN") } answers {
+            authStateFlow.value = AngelPayAuthState.Authenticated
+            activeMerchantIdFlow.value = 11 // la marca en memoria dice «el elegido»…
+            // …pero la sesión viva del SDK quedó en el 12.
+            coEvery { sdkGateway.getUserMerchants() } returns Result.success(
+                listOf(MerchantSummary(id = 12, name = "Otro", affiliationNumber = "1002", isActive = true)),
+            )
+            Result.success(Unit)
+        }
+        val vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            runCurrent()
+
+            // Codex r1: sin esto la prueba pasaría también sin el arreglo.
+            coVerify(exactly = 1) { angelPayAuthRepository.completeMerchantSelection(11, "TOKEN-8MIN") }
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("quedó en otro comercio")
+            coVerify(exactly = 0) { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+            verify(exactly = 0) { sdkGateway.buildPaymentRequest(any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D2 si el login nuevo quedo en OTRA cuenta no se elige nada y queda el error de hoy`() = runTest(testDispatcher) {
+        sesionVencidaTrasOchoMinutos(cuentaTrasElLogin = "acc-B")
+        val vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            runCurrent()
+
+            coVerify(exactly = 0) { angelPayAuthRepository.completeMerchantSelection(any(), any()) }
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("quedó en otro comercio")
+            coVerify(exactly = 0) { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D2 si la cuenta del login nuevo no ofrece el comercio elegido no se elige nada`() = runTest(testDispatcher) {
+        sesionVencidaTrasOchoMinutos()
+        coEvery { angelPayAuthRepository.ensureAuthenticatedAs("acc-A") } answers {
+            activeMerchantIdFlow.value = null
+            authStateFlow.value = AngelPayAuthState.SelectingMerchant(
+                merchants = tresComercios.filter { it.id != 11 },
+                temporaryToken = "TOKEN-8MIN",
+            )
+            Result.success(Unit)
+        }
+        val vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            runCurrent()
+
+            coVerify(exactly = 0) { angelPayAuthRepository.completeMerchantSelection(any(), any()) }
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("quedó en otro comercio")
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+
+    private fun reeleccionExitosa(despues: () -> Unit = {}) {
+        coEvery { angelPayAuthRepository.completeMerchantSelection(11, "TOKEN-8MIN") } answers {
+            authStateFlow.value = AngelPayAuthState.Authenticated
+            activeMerchantIdFlow.value = 11
+            despues()
+            Result.success(Unit)
+        }
+    }
+
+    private fun AngelPayPaymentViewModel.ponerCampo(nombre: String, valor: Any?) {
+        AngelPayPaymentViewModel::class.java.getDeclaredField(nombre).apply { isAccessible = true }.let { campo ->
+            @Suppress("UNCHECKED_CAST")
+            if (MutableStateFlow::class.java.isAssignableFrom(campo.type)) {
+                (campo.get(this) as MutableStateFlow<Any?>).value = valor
+            } else {
+                campo.set(this, valor)
+            }
+        }
+    }
+
+    @Test
+    fun `D2 Codex r1 2 un comercio legacy sin cuenta ligada no se vuelve a elegir`() = runTest(testDispatcher) {
+        sesionViva = true
+        authStateFlow.value = AngelPayAuthState.Authenticated
+        activeMerchantIdFlow.value = 11
+        coEvery { angelPayAuthRepository.ensureAuthenticated(any()) } answers {
+            activeMerchantIdFlow.value = null
+            authStateFlow.value = AngelPayAuthState.SelectingMerchant(merchants = tresComercios, temporaryToken = "TOKEN-8MIN")
+            Result.success(Unit)
+        }
+        val vm = createViewModel(comercio.copy(angelpayUserAccountId = null))
+        try {
+            vm.startCardPayment()
+            runCurrent()
+
+            coVerify(exactly = 0) { angelPayAuthRepository.completeMerchantSelection(any(), any()) }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            coVerify(exactly = 0) { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D2 Codex r1 3 si tras volver a elegir Avoqado ya no tiene ese comercio no se cobra`() = runTest(testDispatcher) {
+        sesionVencidaTrasOchoMinutos()
+        coEvery { angelPayAuthRepository.completeMerchantSelection(11, "TOKEN-8MIN") } answers {
+            activeMerchantIdFlow.value = 11
+            authStateFlow.value = AngelPayAuthState.ConfigMismatchBanner(onlyInSdk = setOf(11), onlyInAvoqado = emptySet())
+            Result.success(Unit)
+        }
+        val vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            runCurrent()
+
+            coVerify(exactly = 1) { angelPayAuthRepository.completeMerchantSelection(11, "TOKEN-8MIN") }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            coVerify(exactly = 0) { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+            verify(exactly = 0) { sdkGateway.buildPaymentRequest(any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D2 un banner que no toca el comercio elegido si deja cobrar tras volver a elegir`() = runTest(testDispatcher) {
+        sesionVencidaTrasOchoMinutos()
+        coEvery { angelPayAuthRepository.completeMerchantSelection(11, "TOKEN-8MIN") } answers {
+            activeMerchantIdFlow.value = 11
+            authStateFlow.value = AngelPayAuthState.ConfigMismatchBanner(onlyInSdk = setOf(13), onlyInAvoqado = emptySet())
+            Result.success(Unit)
+        }
+        val vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D2 Codex r1 1 si la regla excluye la cuenta mientras se vuelve a elegir no se cobra`() = runTest(testDispatcher) {
+        sesionVencidaTrasOchoMinutos()
+        val otra = comercio.copy(id = "merchant_b", merchantAccountId = "cma-002", externalMerchantId = "12", displayName = "Otra")
+        lateinit var vm: AngelPayPaymentViewModel
+        reeleccionExitosa {
+            // La regla llega en este instante: esta venta sólo se cobra en «Otra».
+            vm.ponerCampo(
+                "_merchantRouting",
+                com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility(
+                    evaluated = true, routingFeatureActive = true, eligibleMerchantAccountIds = setOf("cma-002"),
+                    autoSelectMerchantAccountId = "cma-002", fallbackAll = false,
+                ),
+            )
+        }
+        vm = createViewModel()
+        try {
+            merchantsFlow.value = listOf(comercio, otra)
+            runCurrent()
+            vm.startCardPayment()
+            runCurrent()
+
+            coVerify(exactly = 1) { angelPayAuthRepository.completeMerchantSelection(11, "TOKEN-8MIN") }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            verify(exactly = 0) { sdkGateway.buildPaymentRequest(any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D2 Codex r1 1 si volver a elegir falla pero el comercio quedo activo la regla se revisa igual`() = runTest(testDispatcher) {
+        sesionVencidaTrasOchoMinutos()
+        val otra = comercio.copy(id = "merchant_b", merchantAccountId = "cma-002", externalMerchantId = "12", displayName = "Otra")
+        lateinit var vm: AngelPayPaymentViewModel
+        coEvery { angelPayAuthRepository.completeMerchantSelection(11, "TOKEN-8MIN") } answers {
+            // D7: el login nuevo ya no pidió elegir y dejó el 11 activo, pero el repositorio devuelve el fallo original.
+            authStateFlow.value = AngelPayAuthState.Authenticated
+            activeMerchantIdFlow.value = 11
+            vm.ponerCampo(
+                "_merchantRouting",
+                com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility(
+                    evaluated = true, routingFeatureActive = true, eligibleMerchantAccountIds = setOf("cma-002"),
+                    autoSelectMerchantAccountId = "cma-002", fallbackAll = false,
+                ),
+            )
+            Result.failure(IllegalStateException("El token de selección ha expirado"))
+        }
+        vm = createViewModel()
+        try {
+            merchantsFlow.value = listOf(comercio, otra)
+            runCurrent()
+            vm.startCardPayment()
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            verify(exactly = 0) { sdkGateway.buildPaymentRequest(any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D2 Codex r1 4 si el POS cancela mientras se vuelve a elegir no se pisa el Cancelado`() = runTest(testDispatcher) {
+        sesionVencidaTrasOchoMinutos()
+        lateinit var vm: AngelPayPaymentViewModel
+        reeleccionExitosa {
+            vm.ponerCampo("cobroCanceladoPorElPos", true)
+            vm.ponerCampo("_state", AngelPayPaymentState.Cancelled)
+        }
+        vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            runCurrent()
+
+            assertThat(vm.state.value).isEqualTo(AngelPayPaymentState.Cancelled)
+            coVerify(exactly = 0) { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+            verify(exactly = 0) { sdkGateway.buildPaymentRequest(any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+
+    @Test
+    fun `D2 Codex r2 4 si el POS cancela mientras se lee la sesion viva no se pisa el Cancelado`() = runTest(testDispatcher) {
+        sesionVencidaTrasOchoMinutos()
+        lateinit var vm: AngelPayPaymentViewModel
+        reeleccionExitosa {
+            // La lectura de la sesión viva (candado de alineación) tarda; en ese rato el POS cancela y la lectura falla.
+            coEvery { sdkGateway.getUserMerchants() } answers {
+                vm.ponerCampo("cobroCanceladoPorElPos", true)
+                vm.ponerCampo("_state", AngelPayPaymentState.Cancelled)
+                Result.failure(IllegalStateException("sin respuesta"))
+            }
+        }
+        vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            runCurrent()
+
+            assertThat(vm.state.value).isEqualTo(AngelPayPaymentState.Cancelled)
+            coVerify(exactly = 0) { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D2 Codex r2 5 una excepcion al volver a elegir no tumba el cobro y queda el error de hoy`() = runTest(testDispatcher) {
+        sesionVencidaTrasOchoMinutos()
+        coEvery { angelPayAuthRepository.completeMerchantSelection(11, "TOKEN-8MIN") } throws IllegalStateException("Room no guardó")
+        val vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            runCurrent()
+
+            assertThat((vm.state.value as AngelPayPaymentState.Error).message).contains("quedó en otro comercio")
+            assertThat(candado.isLocked).isFalse()
+            coVerify(exactly = 0) { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+
+    @Test
+    fun `D2 Codex r3 tras volver a elegir se revalida la config y un comercio que Avoqado quito no se cobra`() = runTest(testDispatcher) {
+        sesionVencidaTrasOchoMinutos()
+        reeleccionExitosa()
+        var llamadas = 0
+        coEvery { angelPayAuthRepository.ensureAuthenticatedAs("acc-A") } answers {
+            if (llamadas++ == 0) {
+                activeMerchantIdFlow.value = null
+                authStateFlow.value = AngelPayAuthState.SelectingMerchant(merchants = tresComercios, temporaryToken = "TOKEN-8MIN")
+            } else {
+                // La segunda validación sí lee el SDK: ningún comercio de este login sigue en Avoqado (HardBlock).
+                authStateFlow.value = AngelPayAuthState.AuthError("Config inválida", AuthErrorKind.OTHER)
+            }
+            Result.success(Unit)
+        }
+        val vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            runCurrent()
+
+            coVerify(exactly = 1) { angelPayAuthRepository.completeMerchantSelection(11, "TOKEN-8MIN") }
+            coVerify(exactly = 2) { angelPayAuthRepository.ensureAuthenticatedAs("acc-A") }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            coVerify(exactly = 0) { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D2 Codex r3 si el POS cancela durante la eleccion no se lee la sesion viva`() = runTest(testDispatcher) {
+        sesionVencidaTrasOchoMinutos()
+        lateinit var vm: AngelPayPaymentViewModel
+        var lecturasTrasCancelar = 0
+        reeleccionExitosa {
+            vm.ponerCampo("cobroCanceladoPorElPos", true)
+            vm.ponerCampo("_state", AngelPayPaymentState.Cancelled)
+            coEvery { sdkGateway.getUserMerchants() } answers {
+                lecturasTrasCancelar++
+                Result.success(listOf(MerchantSummary(id = 11, name = "Comercio uno", affiliationNumber = "1001", isActive = true)))
+            }
+        }
+        vm = createViewModel()
+        try {
+            vm.startCardPayment()
+            runCurrent()
+            assertThat(vm.state.value).isEqualTo(AngelPayPaymentState.Cancelled)
+            // Tras cancelar no se lee la sesión viva (es red y retendría el candado).
+            assertThat(lecturasTrasCancelar).isEqualTo(0)
+            coVerify(exactly = 0) { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+            assertThat(candado.isLocked).isFalse()
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
 }

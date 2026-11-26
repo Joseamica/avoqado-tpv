@@ -2554,7 +2554,21 @@ class AngelPayPaymentViewModel @Inject constructor(
         // pudo re-establecer la sesión — NUNCA entregarle un cobro al SDK con su sesión
         // en un merchant distinto al seleccionado. Fail-closed: una sesión no verificable
         // no mueve dinero.
-        if (!sessionAlignedWithSelectedMerchant()) {
+        // hz:2c70dfc6:D2: si esa auth rehízo el login y la cuenta pide elegir comercio, se vuelve a elegir el MISMO
+        // (como al entrar al cobro) y el candado de abajo se revisa igual, sin aflojarse.
+        val reeleccionIntentada = reelegirComercioTrasLoginNuevo()
+        // Codex r3: si el POS ya canceló, ni siquiera se lee la sesión viva (es red y retendría el candado).
+        val sesionCobrable = !(reeleccionIntentada && cobroCanceladoPorElPos) &&
+            sessionAlignedWithSelectedMerchant() &&
+            (!reeleccionIntentada || comercioReelegidoSigueCobrable())
+        if (reeleccionIntentada && cobroCanceladoPorElPos) {
+            // Codex r1 #4 / r2 #4: el POS canceló mientras se elegía o se leía la sesión viva: la pantalla ya dice
+            // «Cancelado» y la bandeja ya escribió el desenlace; nada que pisar ni lanzar.
+            Timber.w("🛑 [AngelPay] El POS canceló mientras se volvía a elegir el comercio: no se lanza el SDK")
+            clearChargingOnTerminal()
+            return
+        }
+        if (!sesionCobrable) {
             // 📡 T36: antes de la libreta y del SDK — mismo camino que la auth previa (retenido + reloj de abandono).
             fallaAntesDeAutorizar(
                 base = "La sesión de AngelPay quedó en otro comercio. Vuelve a seleccionar el comercio.",
@@ -2596,7 +2610,10 @@ class AngelPayPaymentViewModel @Inject constructor(
         )
 
         if (validation.isSuccess) {
-            lanzarSdkConCuentaAcreditada(primaryRequest, usedQaTipFallback = false, intentoNoLanzado = paymentAttemptId)
+            lanzarSdkConCuentaAcreditada(
+                primaryRequest, usedQaTipFallback = false, intentoNoLanzado = paymentAttemptId,
+                revisarRegla = reeleccionIntentada,
+            )
             return
         }
 
@@ -2628,7 +2645,10 @@ class AngelPayPaymentViewModel @Inject constructor(
             )
 
             if (fallbackValidation.isSuccess) {
-                lanzarSdkConCuentaAcreditada(fallbackRequest, usedQaTipFallback = true, intentoNoLanzado = paymentAttemptId)
+                lanzarSdkConCuentaAcreditada(
+                    fallbackRequest, usedQaTipFallback = true, intentoNoLanzado = paymentAttemptId,
+                    revisarRegla = reeleccionIntentada,
+                )
                 return
             }
         }
@@ -2702,6 +2722,8 @@ class AngelPayPaymentViewModel @Inject constructor(
         request: PaymentRequest,
         usedQaTipFallback: Boolean,
         intentoNoLanzado: String,
+        /** hz:2c70dfc6:D2 (Codex r1 #1): tras volver a elegir el comercio, la regla de cuentas se revisa otra vez aquí. */
+        revisarRegla: Boolean = false,
     ) {
         val alineada = try {
             sessionAlignedWithSelectedMerchant()
@@ -2711,6 +2733,10 @@ class AngelPayPaymentViewModel @Inject constructor(
             throw cancelled
         }
         if (!alineada) {
+            fallarIdentidadAntesDeLanzar(intentoNoLanzado = intentoNoLanzado)
+            return
+        }
+        if (revisarRegla && !comercioReelegidoSigueCobrable()) {
             fallarIdentidadAntesDeLanzar(intentoNoLanzado = intentoNoLanzado)
             return
         }
@@ -5089,6 +5115,92 @@ class AngelPayPaymentViewModel @Inject constructor(
             ),
         )
         return false
+    }
+
+    /**
+     * hz:2c70dfc6:D2 (N86 de la oficina, 25-nov): con «Método de pago» quieta ~8 min, la auth de [startSdkCardPayment]
+     * ya no puede usar la sesión, hace logout + login nuevo, y una cuenta con varios comercios contesta «elige comercio»
+     * (la auth queda en [AngelPayAuthState.SelectingMerchant]). Antes el candado de alineación cortaba con «quedó en otro
+     * comercio». Aquí se elige otra vez el comercio YA elegido, con el mismo camino de la entrada al cobro
+     * ([AngelPayAuthRepository.completeMerchantSelection], que rehace el login si su token venció).
+     *
+     * Sólo actúa si la sesión pide elegir, el comercio elegido es de AngelPay con id válido, el login nuevo es de la
+     * cuenta de ese comercio (nunca otra cuenta: incidente del 29-jul) y esa cuenta lo ofrece. No decide nada: quien decide si
+     * se cobra sigue siendo [sessionAlignedWithSelectedMerchant] (y la regla de cuentas), justo después.
+     *
+     * Un comercio legacy sin cuenta ligada ([MerchantAccount.angelpayUserAccountId] nulo) no se re-elige (Codex r1 #2): el
+     * login genérico puede caer en otra cuenta que comparta el comercio, y un comercio compartido no acredita un login.
+     *
+     * @return true si se INTENTÓ elegir (con éxito o no): desde ahí la regla de cuentas y la config de Avoqado se revisan otra
+     *   vez antes de lanzar ([comercioReelegidoSigueCobrable]); false si no aplicaba (el candado da el error de hoy).
+     */
+    private suspend fun reelegirComercioTrasLoginNuevo(): Boolean {
+        val pide = angelPayAuthRepository.state.value as? AngelPayAuthState.SelectingMerchant ?: return false
+        val merchant = _currentMerchant.value ?: return false
+        if (merchant.processorType != ProcessorType.ANGELPAY) return false
+        val targetId = runCatching { merchant.requireAngelpayMerchantId() }.getOrNull() ?: return false
+        val cuentaObjetivo = merchant.angelpayUserAccountId
+        if (cuentaObjetivo == null) {
+            Timber.w("🔶 [AngelPay] El login nuevo pide elegir comercio y el comercio no tiene cuenta ligada: no se elige nada")
+            return false
+        }
+        if (angelPayAuthRepository.getCurrentAngelPayAccountId() != cuentaObjetivo) {
+            Timber.w("🔶 [AngelPay] El login nuevo pide elegir comercio pero no es de la cuenta elegida: no se elige nada")
+            return false
+        }
+        if (pide.merchants.none { it.id == targetId }) {
+            Timber.w("🔶 [AngelPay] El login nuevo pide elegir comercio y no ofrece el elegido ($targetId): no se elige nada")
+            return false
+        }
+        Timber.i("🔶 [AngelPay] La auth antes de cobrar pidió elegir comercio: vuelvo a elegir el $targetId")
+        // Codex r2 #5: una falla fuera del Result (p. ej. Room al guardar el comercio activo) no tumba el cobro: es un fallo más
+        // y el candado da el error de hoy, con su final retenido (H.3).
+        val elegido = try {
+            angelPayAuthRepository.completeMerchantSelection(targetId, pide.temporaryToken)
+        } catch (cancelada: CancellationException) {
+            throw cancelada
+        } catch (error: Exception) {
+            Result.failure(error)
+        }
+        if (elegido.isFailure) {
+            Timber.e(elegido.exceptionOrNull(), "❌ [AngelPay] No se pudo volver a elegir el comercio $targetId antes de cobrar")
+            return true
+        }
+        // Codex r3 (r2 #3): la validación de la config dentro de la selección pudo no poder leer el SDK y dejar «Authenticated».
+        // Como origin/main, que en este punto vuelve a validar (la auth de arriba con la sesión ya viva corre la validación de
+        // config: un comercio que Avoqado ya quitó termina en AuthError y el candado lo frena). Con la sesión viva y de esta
+        // cuenta no rehace el login.
+        val revalidada = try {
+            angelPayAuthRepository.ensureAuthenticatedAs(cuentaObjetivo)
+        } catch (cancelada: CancellationException) {
+            throw cancelada
+        } catch (error: Exception) {
+            Result.failure(error)
+        }
+        if (revalidada.isFailure) {
+            Timber.e(revalidada.exceptionOrNull(), "❌ [AngelPay] Tras volver a elegir el $targetId no se pudo validar la sesión")
+        }
+        return true
+    }
+
+    /**
+     * hz:2c70dfc6:D2: tras volver a elegir el comercio, lo que pudo cambiar mientras tanto. Falla CERRADO:
+     *  - la regla de cuentas ya no permite la elegida (Codex r1 #1; «nunca se cobra en una cuenta que la regla excluye»);
+     *  - la config recién leída dice que ese comercio sólo está en AngelPay, ya no en Avoqado (Codex r1 #3: el banner deja
+     *    cobrar y no distingue el comercio).
+     */
+    private fun comercioReelegidoSigueCobrable(): Boolean {
+        if (!selectorActual().elegidaPermitida) {
+            Timber.w("🧭 [AngelPay] Tras volver a elegir el comercio, la regla ya no permite la cuenta elegida: no se cobra")
+            return false
+        }
+        val targetId = _currentMerchant.value?.let { runCatching { it.requireAngelpayMerchantId() }.getOrNull() } ?: return false
+        val banner = angelPayAuthRepository.state.value as? AngelPayAuthState.ConfigMismatchBanner
+        if (banner != null && targetId in banner.onlyInSdk) {
+            Timber.w("🔶 [AngelPay] Tras volver a elegir el comercio $targetId, Avoqado ya no lo tiene: no se cobra")
+            return false
+        }
+        return true
     }
 
     /** T26: el comercio activo según la sesión VIVA del SDK; null si no se puede saber (fail-closed). */

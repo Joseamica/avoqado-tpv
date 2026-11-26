@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Changed**
+- **Interno, sin efecto en la app · `cobropropio`, bloque S de la fase 3 del SDK propio**: cuando se pierde la respuesta de una venta, el motor manda el reverso en cuanto vence la espera, sin pedirle permiso al SERVIDOR (antes lo esperaba hasta 11 s y, con varias de sus respuestas, no reversaba). Un reverso que Blumon confirma es «no se cobró» en ese instante, también en una venta de la tablet (antes esperaba el acuse del SERVIDOR hasta 30 s y, sin él, quedaba «por confirmar»); el reporte al SERVIDOR sigue guardado en la libreta, se intenta enseguida y `recuperar()` lo repite, y su acuse sólo cierra el reporte: ya no cambia lo que la terminal dijo. El módulo sigue sin conectarse (`:app` no depende de él).
+
 ---
 
 ## [2.22.4] - 2026-11-25
@@ -26,7 +29,6 @@
 - **Tarjeta aprobada tarde en Pago rápido (D7, encargo a25cd7)**: cuando la libreta registra sola un «Aprobado» que quedó por confirmar, manda cuánto tiempo pasó desde que se abrió el intento (`edadDelIntentoMs`, medido con el reloj de la terminal). El SERVIDOR la usa para avisar al dueño (`LATE_CARD_RECORDED`) que esa tarjeta se confirmó tarde, por si la venta se cobró también de otra forma. No cambia el cobro ni la pantalla; un SERVIDOR viejo ignora el campo.
 
 ### **Changed**
-- **Interno, sin efecto en la app · `cobropropio`, bloque S de la fase 3 del SDK propio**: cuando se pierde la respuesta de una venta, el motor manda el reverso en cuanto vence la espera, sin pedirle permiso al SERVIDOR (antes lo esperaba hasta 11 s y, con varias de sus respuestas, no reversaba). Un reverso que Blumon confirma es «no se cobró» en ese instante, también en una venta de la tablet (antes esperaba el acuse del SERVIDOR hasta 30 s y, sin él, quedaba «por confirmar»); el reporte al SERVIDOR sigue guardado en la libreta, se intenta enseguida y `recuperar()` lo repite, y su acuse sólo cierra el reporte: ya no cambia lo que la terminal dijo. El módulo sigue sin conectarse (`:app` no depende de él).
 - **Nexgo (AngelPay) · SDK 1.0.24** (el que AngelPay publicó el 24-nov; re-auditado en el binario contra el 1.0.23): cuando la respuesta de un cobro llega pero no se puede leer, el SDK ya no contesta «rechazado» a ciegas: la busca en su historial y devuelve aprobado o «no concluyente». Al cancelar o devolver desde otra terminal con la respuesta perdida, busca la venta por la terminal que la cobró. La pantalla de cobro del SDK y las reglas de la terminal no cambian; un `G500` sin datos del banco se sigue tratando como duda.
 - **[Caja] [PAX/Nexgo] «Efectivo: ya lo revisé» ya no se borra en cada parpadeo del WiFi (C7 opción B, founder 25-nov)**: cuando el gerente revisa una venta en efectivo que no subió y la terminal la reintenta sola al volver la red, la revisión se conserva. Mientras la venta sube, la Caja la sigue esperando como hoy; si vuelve a fallar igual, la Caja ya no pide revisarla otra vez. Sólo un desenlace distinto la vuelve a pedir: el servidor la rechaza para siempre o sube con una diferencia de importe nueva. Sin pantallas ni botones nuevos.
 - **Interno, sin efecto en la app · `cobropropio`, bloque 1 de la fase 3 del SDK propio**: el módulo sigue sin conectarse (`:app` no depende de él).

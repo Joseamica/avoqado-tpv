@@ -46,9 +46,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
-import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
-import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
@@ -68,14 +66,14 @@ import javax.crypto.spec.SecretKeySpec
 import kotlin.time.Duration
 
 /**
- * r2 familia B y R1-3, la carrera REAL (tiempo de verdad, OkHttp y MockWebServer) con el cliente PROPIO del SERVIDOR: llega el
- * 409 «ya está cobrado» con el cuerpo atorado. Con dos relojes (o un interceptor que lee el cuerpo antes de `onResponse`), el
- * de afuera vencía primero y el motor reversaba un cobro que el SERVIDOR ya registró; con uno solo, el código que llegó veta.
+ * Las carreras del motor con tiempo REAL: hilos de verdad, Room de verdad y el cliente propio del SERVIDOR (OkHttp contra
+ * MockWebServer). `fondo` cancelado con Room ocupado, `cortar` contra la cancelación de `fondo`, y un alta contra la foto de
+ * `recuperar()`. (Hasta el bloque S aquí vivía también la carrera del permiso del reverso, que ya no existe.)
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [28])
 @ConscryptMode(ConscryptMode.Mode.OFF)
-class CarreraDelPermisoTest {
+class CarrerasEnTiempoRealTest {
 
     @get:Rule val carpeta = TemporaryFolder()
 
@@ -117,44 +115,6 @@ class CarreraDelPermisoTest {
         ): Respuesta = throw UnsupportedOperationException()
     }
 
-    @Test(timeout = 30_000) fun `un 409 con el cuerpo atorado en el cliente propio no reversa`() = runBlocking {
-        val relojes = Relojes(
-            esperaSesion = 5_000, esperaLectura = 5_000, esperaRespuesta = 300, peorCasoCajera = 8_000, esperaPermiso = 3_000,
-            esperaReverso = 1_000, pausaEntreReversos = 200, techoDelReverso = 9_000,
-        )
-        val yaCobrado = """{"payment":{"paymentId":"cpay123","amountCents":10000},"success":false,"code":"ATTEMPT_ALREADY_RECORDED"}"""
-        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
-            override fun dispatch(request: RecordedRequest): MockResponse = when {
-                request.path!!.endsWith("/intencion") -> MockResponse().setResponseCode(409).setHeader("Content-Type", "application/json")
-                    .setBody(yaCobrado).throttleBody(4, 1, TimeUnit.SECONDS)
-                else -> MockResponse().setResponseCode(500)
-            }
-        }
-        server.arrancarEnIpv4()
-        val servidor = ReversoDelServidorHttp(server.baseLiteral(), object : CredencialDelServidor {
-            override fun vigente() = "jwt"
-            override suspend fun renovar(rechazado: String, espera: Duration): String? = null
-        })
-        val blumon = BlumonMudo()
-        val libreta = Libreta(LibretaDatabase.constructor(context, File(carpeta.root, "carrera.db")).allowMainThreadQueries().build().also { db = it }, ahora, Instant::now)
-        val lector = object : LectorDeTarjeta {
-            override suspend fun leer(operacion: Operacion, importeCentavos: Long, espera: Long) =
-                ResultadoDeLectura.Leida(LecturasDePrueba.visaPlasticoVenta(importeCentavos))
-        }
-        val motor = MotorDeCobro(
-            Identidad("AVOQADO", "388", "1234567890", "9000000001", "A910S", "fase2", Ambiente.SANDBOX), lector,
-            object : Red { override fun hayRed() = true }, blumon, servidor, libreta, ColaDeResultados(libreta, servidor),
-            HuellaHmac(SecretKeySpec(ByteArray(32) { 3 }, "HmacSHA256")), CatalogoDeRechazos.BLUMON, relojes, fondo, ahora, Instant::now,
-        )
-        val s = SolicitudDeVenta(AttemptId.nuevo(), "venue-1", 10_000, Origen.VINCULADO_AL_POS)
-
-        val eventos = motor.cobrar(s).toList()
-
-        assertEquals(PorConfirmar(s.importeCentavos), eventos.last())
-        assertEquals("el 409 que llegó veta: nunca se reversa", 0, blumon.reversos.get())
-        assertEquals(EstadoDelIntento.NO_SE, libreta.buscar(s.id)?.estado)
-    }
-
     private class Mundo(val motor: MotorDeCobro, val blumon: BlumonMudo, val libreta: Libreta)
 
     /** Tiempo real, el `fondo` de la clase y Room de verdad; [antesDelCommit] corre DENTRO de cada transacción. */
@@ -164,7 +124,7 @@ class CarreraDelPermisoTest {
         esperaLibreta: Long = 1_000,
     ): Mundo {
         val relojes = Relojes(
-            esperaSesion = 5_000, esperaLectura = 5_000, esperaRespuesta = 300, peorCasoCajera = 8_000, esperaPermiso = 3_000,
+            esperaSesion = 5_000, esperaLectura = 5_000, esperaRespuesta = 300, peorCasoCajera = 8_000,
             esperaReverso = 1_000, pausaEntreReversos = 200, techoDelReverso = 9_000, esperaLibreta = esperaLibreta,
         )
         server.arrancarEnIpv4()
@@ -187,7 +147,7 @@ class CarreraDelPermisoTest {
         }
         val motor = MotorDeCobro(
             Identidad("AVOQADO", "388", "1234567890", "9000000001", "A910S", "fase2", Ambiente.SANDBOX), lector,
-            object : Red { override fun hayRed() = true }, blumon, servidor, libreta, ColaDeResultados(libreta, servidor),
+            object : Red { override fun hayRed() = true }, blumon, libreta, ColaDeResultados(libreta, servidor),
             HuellaHmac(SecretKeySpec(ByteArray(32) { 3 }, "HmacSHA256")), CatalogoDeRechazos.BLUMON, relojes, fondo, ahora, Instant::now,
         )
         return Mundo(motor, blumon, libreta)

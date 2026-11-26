@@ -29,13 +29,12 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
-import kotlin.time.TimeSource
 
 /**
- * Las dos rutas del reverso del SERVIDOR (CON §2). Arma su PROPIO cliente con `OkHttpClient.Builder()` nuevo (R1-3, R3-3):
- * nunca el de la app ni un `newBuilder()` de uno ajeno, que en OkHttp 4.12.0 hereda `Dispatcher`, `EventListener`,
+ * La ruta del reverso del SERVIDOR, `/resultado` (CON §2.2). Arma su PROPIO cliente con `OkHttpClient.Builder()` nuevo (R1-3,
+ * R3-3): nunca el de la app ni un `newBuilder()` de uno ajeno, que en OkHttp 4.12.0 hereda `Dispatcher`, `EventListener`,
  * `CookieJar`, interceptores (el log `BODY`) y el autenticador. El JWT lo pone [credencial]. `baseUrl` es el origen
- * (`https://api.avoqado.io/`); las rutas `api/v1/tpv/…` se agregan aquí. Nunca registra URL ni cuerpos, y de las respuestas
+ * (`https://api.avoqado.io/`); la ruta `api/v1/tpv/…` se agrega aquí. Nunca registra URL ni cuerpos, y de las respuestas
  * sólo saca campos con forma verificada.
  *
  * @param pinner el de la app (`NetworkModule.provideCertificatePinner`), para que la fase 3 conserve el pinning.
@@ -68,8 +67,8 @@ internal class ReversoDelServidorHttp(
         .build()
 
     /**
-     * Ola final, 4ª parte · 5 (r25): una credencial que LANZA es lo mismo que ninguna (`null`). Si la excepción salía, el motor
-     * la volvía `SinRespuesta` y reversaba sin haberle preguntado al SERVIDOR. La cancelación no se traga.
+     * Ola final, 4ª parte · 5 (r25): una credencial que LANZA es lo mismo que ninguna (`null`): la entrega se reintenta. La
+     * cancelación no se traga.
      */
     private fun vigente(): String? = try {
         credencial.vigente()
@@ -77,61 +76,6 @@ internal class ReversoDelServidorHttp(
         throw e
     } catch (e: Exception) {
         null
-    }
-
-    /**
-     * Un solo reloj para todo el permiso: el POST, la renovación del JWT tras un 401 y el segundo POST cuentan contra el mismo
-     * `espera`. Un código que llegó y no es un «sí» definitivo veta: después de un 401 nunca sale `SinRespuesta`.
-     */
-    override suspend fun pedirPermiso(venueId: String, id: AttemptId, espera: Duration): PermisoDeReverso {
-        val fin = TimeSource.Monotonic.markNow() + espera
-        val url = ruta(venueId, id, "intencion")
-        val token = vigente() ?: return PermisoDeReverso.SinCredencial
-        val c = post(url, "{}", token, espera) ?: return PermisoDeReverso.SinRespuesta
-        if (c.http != 401) return permiso(c, id)
-        val vetado = PermisoDeReverso.Invalido(401, runCatching { c.json.codigo() }.getOrNull())
-        val nuevo = (-fin.elapsedNow()).takeIf { it.isPositive() }
-            ?.let { r -> renovado(token, r) } ?: return vetado
-        val restante = (-fin.elapsedNow()).takeIf { it.isPositive() } ?: return vetado
-        val otra = post(url, "{}", nuevo, restante) ?: return vetado
-        return permiso(otra, id).takeUnless { it == PermisoDeReverso.SinRespuesta } ?: vetado
-    }
-
-    /** R6-2: un campo PRESENTE con forma inválida invalida la respuesta entera ([CampoInvalido]): veta, nunca vale cero. */
-    private fun permiso(c: Contestacion, id: AttemptId): PermisoDeReverso = try {
-        permisoSinTocar(c, id)
-    } catch (_: CampoInvalido) {
-        PermisoDeReverso.ErrorDelServidor
-    }
-
-    private fun permisoSinTocar(c: Contestacion, id: AttemptId): PermisoDeReverso {
-        val code = c.json.codigo()
-        return when {
-            c.http == 200 -> {
-                val estado = c.json.estado()
-                val evento = c.json?.texto("eventLogId", ID)
-                when {
-                    estado == null || evento == null || c.json?.texto("attemptId", ID) != id.valor -> PermisoDeReverso.ErrorDelServidor
-                    estado == EstadoDelReversoEnServidor.REVERSING -> PermisoDeReverso.Concedido(evento)
-                    else -> PermisoDeReverso.YaResuelto(estado, evento)
-                }
-            }
-            c.http == 409 && code == "ATTEMPT_ALREADY_RECORDED" -> {
-                val p = c.json?.objeto("payment") ?: return PermisoDeReverso.ErrorDelServidor
-                val pago = p.texto("paymentId", ID) ?: return PermisoDeReverso.ErrorDelServidor
-                PermisoDeReverso.YaCobrado(pago, p.entero("amountCents"), p.entero("tipCents"), p.texto("authorizationNumber", AUTORIZACION))
-            }
-            c.http == 409 && code == "ATTEMPT_HAS_PENDING_EVIDENCE" -> {
-                val e = c.json?.objeto("evidencia")
-                PermisoDeReverso.EvidenciaPendiente(e?.texto("paymentStatus", CODIGO), e?.texto("tipo", CODIGO))
-            }
-            c.http == 409 && code == "ATTEMPT_NOT_BLUMON" -> PermisoDeReverso.NoEsBlumon
-            c.http == 404 && code == "ATTEMPT_NOT_FOUND" -> PermisoDeReverso.NoEncontrado
-            c.http == 404 && code == null -> PermisoDeReverso.ServidorSinSdkPropio
-            c.http == 503 && code == "REVERSO_NO_DISPONIBLE" -> PermisoDeReverso.SinRespuesta
-            c.http >= 500 -> PermisoDeReverso.ErrorDelServidor
-            else -> PermisoDeReverso.Invalido(c.http, code)
-        }
     }
 
     /** El 401 renueva el JWT (la app lo guarda) y la entrega SIGUIENTE ya sale con él; el mapeo de lo demás no cambia. */
@@ -198,7 +142,7 @@ internal class ReversoDelServidorHttp(
     /**
      * Con `espera`, UN solo reloj decide (r2 familia B): el de esta corrutina, que arranca al pedir. El de OkHttp (`timeout()`)
      * queda sólo de red de seguridad. Lo que llegó se guarda en [llegada] ANTES de leer el cuerpo: si el reloj vence con las
-     * cabeceras ya aquí, sale el código sin cuerpo (un 409 o un 500 así vetan); sin cabeceras, `null` = no hubo respuesta.
+     * cabeceras ya aquí, sale el código sin cuerpo; sin cabeceras, `null` = no hubo respuesta.
      * El cuerpo es de un solo uso: OkHttp nunca lo repite (un 503 con `Retry-After: 0` da UN POST).
      */
     private suspend fun post(url: HttpUrl, cuerpo: String, token: String, espera: Duration): Contestacion? {
@@ -214,7 +158,7 @@ internal class ReversoDelServidorHttp(
                     override fun onFailure(call: Call, e: IOException) = cont.resume(null)
 
                     override fun onResponse(call: Call, response: Response) {
-                        // Hubo HTTP: el código cuenta aunque el cuerpo no se pueda leer (un 409 sin cuerpo nunca autoriza).
+                        // Hubo HTTP: el código cuenta aunque el cuerpo no se pueda leer.
                         llegada.set(Contestacion(response.code, null))
                         val json = runCatching { response.use { leer(it.peekBody(MAXIMO_CUERPO).string()) } }.getOrNull()
                         val c = Contestacion(response.code, json)
@@ -236,8 +180,7 @@ internal class ReversoDelServidorHttp(
         /** Lo que espera `/resultado` a que la app renueve el JWT tras un 401; la entrega siguiente lo usa. */
         val ESPERA_DE_RENOVAR = 10.seconds
         val ID = Regex("^[A-Za-z0-9_-]{1,64}$")
-        val AUTORIZACION = Regex("^[A-Za-z0-9]{1,12}$")
-        /** Los `code` del SERVIDOR (`ATTEMPT_NOT_FOUND`…) y los enums de la evidencia: sólo letras y guiones bajos. */
+        /** Los `code` del SERVIDOR (`REVERSAL_RESULT_CONFLICT`…): sólo letras y guiones bajos. */
         val CODIGO = Regex("^[A-Z_]{1,64}$")
 
         fun leer(s: String): JsonObject? = runCatching { JsonParser.parseString(s).takeIf { it.isJsonObject }?.asJsonObject }.getOrNull()
@@ -258,16 +201,7 @@ internal class ReversoDelServidorHttp(
             return lector(e) ?: throw CampoInvalido()
         }
 
-        fun JsonObject.objeto(campo: String): JsonObject? = siEsta(campo) { it.takeIf(JsonElement::isJsonObject)?.asJsonObject }
-
         fun JsonObject.texto(campo: String, forma: Regex): String? =
             siEsta(campo) { e -> e.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString?.takeIf(forma::matches) }
-
-        /** Un entero CRUDO (R5-2): `12000`, nunca `12000.0` ni `1.2e4` convertidos al mismo valor. */
-        fun JsonObject.entero(campo: String): Long? = siEsta(campo) { e ->
-            e.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asString?.takeIf(ENTERO::matches)?.toLong()
-        }
-
-        val ENTERO = Regex("^(?:0|[1-9][0-9]{0,15})$")
     }
 }

@@ -65,9 +65,6 @@ internal enum class EscenarioDeBlumon(val centavos: Int) {
     /** La venta contesta APROBADA cuando la prueba la suelta: DESPUÉS del arbitraje. El reverso, `REVERSADA`. */
     APROBADO_TARDIO_DESPUES_DEL_ARBITRAJE(55),
 
-    /** Silencio, como [SILENCIO_Y_REVERSADA]; va con [EscenarioDelServidor.YA_COBRADO]. */
-    SILENCIO_Y_SERVIDOR_YA_COBRADO(60),
-
     /** Silencio; el primer reverso sale y se corta sin respuesta, el segundo contesta `TX_007`. */
     REVERSO_SIN_RESPUESTA_Y_TX007(70),
 
@@ -90,18 +87,18 @@ internal enum class EscenarioDeBlumon(val centavos: Int) {
 }
 
 /**
- * Lo que contesta el SERVIDOR simulado en `…/reverso/intencion` y `…/reverso/resultado`, elegido por el FINAL del `AttemptId`
- * (cuatro hexadecimales con letras, así que nunca arma una racha de dígitos; un folio al azar cae en uno de éstos 1 de cada
- * 65,536 veces). Cualquier otro folio ⇒ [CONCEDE_Y_ACUSA].
+ * Lo que contesta el SERVIDOR simulado en `…/reverso/resultado`, elegido por el FINAL del `AttemptId` (cuatro hexadecimales
+ * con letras, así que nunca arma una racha de dígitos; un folio al azar cae en uno de éstos 1 de cada 65,536 veces).
+ * Cualquier otro folio ⇒ [CONCEDE_Y_ACUSA].
  */
 internal enum class EscenarioDelServidor(val sufijo: String?) {
-    /** Concede (`reversing`) y acusa lo reportado: `REVERSADA` ⇒ `reversed`, `SIN_RESPUESTA` ⇒ `reversing`, otro código ⇒ `reverse_failed`. */
+    /**
+     * Acusa lo reportado: `REVERSADA` ⇒ `reversed`, `SIN_RESPUESTA` ⇒ `reversing`, otro código ⇒ `reverse_failed`. (El nombre
+     * viene de cuando también concedía el permiso, que ya no existe desde el bloque S.)
+     */
     CONCEDE_Y_ACUSA(null),
 
-    /** 409 `ATTEMPT_ALREADY_RECORDED`: el cobro ya está registrado en el SERVIDOR, con el total de la venta. */
-    YA_COBRADO("c0b0"),
-
-    /** Concede, y a cualquier reporte acusa `contradiction`. */
+    /** A cualquier reporte acusa `contradiction`. */
     ACUSA_CONTRADICCION("c047"),
     ;
 

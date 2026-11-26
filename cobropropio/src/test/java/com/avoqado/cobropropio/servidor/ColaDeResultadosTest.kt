@@ -34,7 +34,6 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.ConscryptMode
 import java.io.File
 import java.time.Instant
-import kotlin.time.Duration
 
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [28])
@@ -61,8 +60,6 @@ class ColaDeResultadosTest {
         val reportados = mutableListOf<ResultadoDelReverso>()
         var durante: () -> Unit = {}
 
-        override suspend fun pedirPermiso(venueId: String, id: AttemptId, espera: Duration) = error("la cola no pide permiso")
-
         override suspend fun reportarResultado(venueId: String, id: AttemptId, r: ResultadoDelReverso): AcuseDelResultado {
             reportados += r
             durante()
@@ -70,13 +67,15 @@ class ColaDeResultadosTest {
         }
     }
 
-    /** Una venta con un reverso cerrado y su reporte `PENDIENTE`, como la deja el motor. */
+    /** Una venta con un reverso cerrado y su reporte `PENDIENTE`, como la deja el motor: confirmado ⇒ `NO_SE_COBRO`, si no `NO_SE`. */
     private fun conReporte(
         clase: ClaseDelReverso = ClaseDelReverso.Confirmado(pared),
         reportar: ResultadoParaReportar = ResultadoParaReportar.CONFIRMADO,
         origen: Origen = Origen.VINCULADO_AL_POS,
+        /** Una fila vieja con `vinculoAcreditadoPorPermiso` en true: la columna ya no tiene escritor (bloque S). */
         permiso: Boolean = false,
     ): AttemptId {
+        val estado = if (clase is ClaseDelReverso.Confirmado) EstadoDelIntento.NO_SE_COBRO else EstadoDelIntento.NO_SE
         val v = IntentoEntity(
             attemptId = AttemptId.nuevo().valor, operacion = Operacion.VENTA, venueId = "venue-1", importeCentavos = 12_300,
             vinculado = origen == Origen.VINCULADO_AL_POS, posId = "1001", serieBlumon = "9000000001", ambiente = Ambiente.SANDBOX,
@@ -86,9 +85,9 @@ class ColaDeResultadosTest {
         assertTrue(libreta.anotar(v))
         assertTrue(libreta.marcarEnviado(id, 1_000, DatosDelEnvio(null, null, null, null, null, null, null, null, v.attemptId)))
         assertEquals(Arbitraje.Comprometido, libreta.comprometerAReversar(id))
-        if (permiso) assertTrue(libreta.guardarPermisoConcedido(id))
+        if (permiso) assertTrue(libreta.transicionar(id, EstadoDelIntento.ENVIADO) { it.copy(vinculoAcreditadoPorPermiso = true) } != null)
         assertTrue(libreta.reclamarReverso(id))
-        assertTrue(libreta.cerrarVuelta(id, clase, reportar, EstadoDelIntento.NO_SE))
+        assertTrue(libreta.cerrarVuelta(id, clase, reportar, estado))
         assertEquals(EstadoDelReporte.PENDIENTE, libreta.buscar(id)!!.reporte)
         return id
     }
@@ -124,18 +123,18 @@ class ColaDeResultadosTest {
         assertEquals("TX_008", servidor.reportados.single().codigo)
     }
 
-    @Test fun `contradiction deja el intento por confirmar`() {
+    @Test fun `contradiction se guarda y el intento sigue no se cobro`() {
         val f = entregar(conReporte(), AcuseDelResultado.Guardado(EstadoDelReversoEnServidor.CONTRADICTION, "cevt1", "cpay9"))
         assertEquals(EstadoDelReporte.ENTREGADO, f.reporte)
         assertEquals(EstadoDelReversoEnServidor.CONTRADICTION, f.estadoEnServidor)
-        assertEquals(EstadoDelIntento.NO_SE, f.estado)
+        assertEquals(EstadoDelIntento.NO_SE_COBRO, f.estado)
     }
 
-    @Test fun `conflicto deja el intento por confirmar con el estado guardado`() {
+    @Test fun `conflicto guarda el estado del SERVIDOR y el intento sigue no se cobro`() {
         val f = entregar(conReporte(), AcuseDelResultado.Conflicto(EstadoDelReversoEnServidor.REVERSE_FAILED))
         assertEquals(EstadoDelReporte.ENTREGADO, f.reporte)
         assertEquals(EstadoDelReversoEnServidor.REVERSE_FAILED, f.estadoEnServidor)
-        assertEquals(EstadoDelIntento.NO_SE, f.estado)
+        assertEquals(EstadoDelIntento.NO_SE_COBRO, f.estado)
     }
 
     @Test fun `reversing y reverse_unconfirmed son el acuse del pudo entrar`() {
@@ -152,7 +151,40 @@ class ColaDeResultadosTest {
     @Test fun `reversing para un confirmado no lo da por entregado`() {
         val f = entregar(conReporte(), guardado(EstadoDelReversoEnServidor.REVERSING))
         assertEquals(EstadoDelReporte.CONCILIAR, f.reporte)
-        assertEquals(EstadoDelIntento.NO_SE, f.estado)
+        assertEquals(EstadoDelIntento.NO_SE_COBRO, f.estado)
+    }
+
+    /**
+     * Bloque S (D-4): el acuse sólo cierra el reporte y guarda lo que dijo el SERVIDOR; el estado del intento nunca cambia.
+     * `reporte` y `estadoEnServidor` siguen la tabla de `entregar` (filas vinculadas, ningún acuse de un `PUDO_ENTRAR`).
+     */
+    @Test fun `ningun acuse cambia el estado del intento`() {
+        val acuses = EstadoDelReversoEnServidor.values().map(::guardado) + listOf(
+            AcuseDelResultado.Conflicto(EstadoDelReversoEnServidor.REVERSE_FAILED), AcuseDelResultado.NoEncontrado,
+            AcuseDelResultado.Final(403, null), AcuseDelResultado.Reintentar,
+        )
+        fun tabla(a: AcuseDelResultado): Pair<EstadoDelReporte, EstadoDelReversoEnServidor?> = when (a) {
+            is AcuseDelResultado.Guardado -> when (a.estado) {
+                EstadoDelReversoEnServidor.REVERSING, EstadoDelReversoEnServidor.REVERSE_UNCONFIRMED -> EstadoDelReporte.CONCILIAR
+                else -> EstadoDelReporte.ENTREGADO
+            } to a.estado
+            is AcuseDelResultado.Conflicto -> EstadoDelReporte.ENTREGADO to a.estadoGuardado
+            AcuseDelResultado.NoEncontrado, is AcuseDelResultado.Final -> EstadoDelReporte.CONCILIAR to null
+            AcuseDelResultado.Reintentar -> EstadoDelReporte.PENDIENTE to null
+        }
+        val filas = listOf<Pair<String, () -> AttemptId>>(
+            "NO_SE_COBRO + CONFIRMADO" to { conReporte() },
+            "NO_SE + RECHAZADO" to { conReporte(ClaseDelReverso.Rechazado("TX_007", pared), ResultadoParaReportar.RECHAZADO) },
+        )
+        val cambios = mutableListOf<String>()
+        for ((nombre, nueva) in filas) for (acuse in acuses) {
+            val id = nueva()
+            val antes = libreta.buscar(id)!!.estado
+            val f = entregar(id, acuse)
+            if (f.estado != antes) cambios += "$nombre con $acuse: $antes → ${f.estado}"
+            assertEquals("$nombre con $acuse", tabla(acuse), f.reporte to f.estadoEnServidor)
+        }
+        assertEquals(emptyList<String>(), cambios)
     }
 
     // ---- V = vínculo efectivo durable ----
@@ -160,14 +192,14 @@ class ColaDeResultadosTest {
     @Test fun `404 vinculado queda conciliar`() {
         val f = entregar(conReporte(), AcuseDelResultado.NoEncontrado)
         assertEquals(EstadoDelReporte.CONCILIAR, f.reporte)
-        assertEquals(EstadoDelIntento.NO_SE, f.estado)
+        assertEquals(EstadoDelIntento.NO_SE_COBRO, f.estado)
         assertNull(f.estadoEnServidor)
     }
 
     @Test fun `404 sin vinculo queda final`() {
         val f = entregar(conReporte(origen = Origen.LOCAL_SIN_SOLICITUD), AcuseDelResultado.NoEncontrado)
         assertEquals(EstadoDelReporte.FINAL_SIN_ENTREGAR, f.reporte)
-        assertEquals(EstadoDelIntento.NO_SE, f.estado)
+        assertEquals(EstadoDelIntento.NO_SE_COBRO, f.estado)
     }
 
     @Test fun `404 local con permiso acreditado queda conciliar`() {
@@ -195,7 +227,7 @@ class ColaDeResultadosTest {
         servidor.acuses += AcuseDelResultado.Reintentar
         assertEquals(mapOf(id to AcuseDelResultado.Reintentar), runBlocking { cola.entregarPendientes() })
         assertEquals(EstadoDelReporte.PENDIENTE, libreta.buscar(id)!!.reporte)
-        assertEquals(EstadoDelIntento.NO_SE, libreta.buscar(id)!!.estado)
+        assertEquals(EstadoDelIntento.NO_SE_COBRO, libreta.buscar(id)!!.estado)
 
         servidor.acuses += guardado(EstadoDelReversoEnServidor.REVERSED)
         assertEquals(mapOf(id to guardado(EstadoDelReversoEnServidor.REVERSED)), runBlocking { cola.entregarPendientes() })
@@ -250,7 +282,7 @@ class ColaDeResultadosTest {
         // Mientras el PUDO_ENTRAR va en camino, otra vuelta confirma el reverso y deja una obligación nueva (CONFIRMADO).
         servidor.durante = {
             assertTrue(libreta.reclamarReverso(id))
-            assertTrue(libreta.cerrarVuelta(id, ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, null))
+            assertTrue(libreta.cerrarVuelta(id, ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE_COBRO))
         }
         servidor.acuses += guardado(EstadoDelReversoEnServidor.REVERSING)
         val e = runBlocking { cola.entregar(id) }

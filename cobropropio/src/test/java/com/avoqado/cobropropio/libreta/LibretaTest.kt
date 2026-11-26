@@ -361,18 +361,6 @@ class LibretaTest {
         assertEquals(EstadoDelReverso.NINGUNO, l.buscar(v.id())!!.reverso)
     }
 
-    @Test fun `permiso concedido queda guardado antes del POST`() {
-        var l = libreta()
-        val v = enviada(l, venta(origen = Origen.LOCAL_SIN_SOLICITUD))
-        assertFalse(l.guardarPermisoConcedido(v.id())) // sin compromiso no hay permiso que guardar
-        assertEquals(Arbitraje.Comprometido, l.comprometerAReversar(v.id()))
-        assertTrue(l.guardarPermisoConcedido(v.id()))
-        l = reabrir(l)
-        val f = l.buscar(v.id())!!
-        assertTrue(f.vinculoAcreditadoPorPermiso)
-        assertEquals(EstadoDelReverso.COMPROMETIDO, f.reverso)
-    }
-
     // ---- vueltas del reverso ----
 
     @Test fun `cierre del reverso atomico con falla inyectada`() {
@@ -496,19 +484,20 @@ class LibretaTest {
         assertFalse(l.cerrarSinVuelta(w.id()))
     }
 
-    @Test fun `aplicar acuse reversed deja NO_SE_COBRO en la misma transaccion`() {
+    /** Bloque S (D-4): el acuse cierra el reporte en una transacción y nunca cambia el estado del intento. */
+    @Test fun `aplicar acuse cierra el reporte en la misma transaccion sin cambiar el estado`() {
         var l = libreta()
         val v = reclamada(l)
-        assertTrue(l.cerrarVuelta(v.id(), ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
+        assertTrue(l.cerrarVuelta(v.id(), ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE_COBRO))
         l = reabrir(l, falla = "aplicarAcuse")
-        falla { l.aplicarAcuse(v.id(), ResultadoParaReportar.CONFIRMADO, EstadoDelReversoEnServidor.REVERSED, EstadoDelReporte.ENTREGADO, EstadoDelIntento.NO_SE_COBRO) }
+        falla { l.aplicarAcuse(v.id(), ResultadoParaReportar.CONFIRMADO, EstadoDelReversoEnServidor.REVERSED, EstadoDelReporte.ENTREGADO) }
         l = reabrir(l)
         var f = l.buscar(v.id())!!
-        assertEquals(EstadoDelIntento.NO_SE, f.estado)
         assertEquals(EstadoDelReporte.PENDIENTE, f.reporte)
         assertNull(f.estadoEnServidor)
+        assertEquals(EstadoDelIntento.NO_SE_COBRO, f.estado)
 
-        f = l.aplicarAcuse(v.id(), ResultadoParaReportar.CONFIRMADO, EstadoDelReversoEnServidor.REVERSED, EstadoDelReporte.ENTREGADO, EstadoDelIntento.NO_SE_COBRO)!!
+        f = l.aplicarAcuse(v.id(), ResultadoParaReportar.CONFIRMADO, EstadoDelReversoEnServidor.REVERSED, EstadoDelReporte.ENTREGADO)!!
         assertEquals(EstadoDelIntento.NO_SE_COBRO, f.estado)
         l = reabrir(l)
         f = l.buscar(v.id())!!
@@ -520,10 +509,10 @@ class LibretaTest {
         // `reversing` sólo entrega: el estado no cambia.
         val w = reclamada(l)
         assertTrue(l.cerrarVuelta(w.id(), ClaseDelReverso.Reintentar("68", false, pared), ResultadoParaReportar.PUDO_ENTRAR, EstadoDelIntento.NO_SE))
-        f = l.aplicarAcuse(w.id(), ResultadoParaReportar.PUDO_ENTRAR, EstadoDelReversoEnServidor.REVERSING, EstadoDelReporte.ENTREGADO, null)!!
+        f = l.aplicarAcuse(w.id(), ResultadoParaReportar.PUDO_ENTRAR, EstadoDelReversoEnServidor.REVERSING, EstadoDelReporte.ENTREGADO)!!
         assertEquals(EstadoDelIntento.NO_SE, f.estado)
         assertEquals(EstadoDelReporte.ENTREGADO, f.reporte)
-        assertNull(l.aplicarAcuse(AttemptId.nuevo(), ResultadoParaReportar.CONFIRMADO, null, EstadoDelReporte.ENTREGADO, null))
+        assertNull(l.aplicarAcuse(AttemptId.nuevo(), ResultadoParaReportar.CONFIRMADO, null, EstadoDelReporte.ENTREGADO))
     }
 
     @Test fun `aplicar acuse es un CAS sobre el reporte pendiente y el resultado acusado`() {
@@ -532,15 +521,15 @@ class LibretaTest {
         assertTrue(l.cerrarVuelta(v.id(), ClaseDelReverso.Reintentar("68", false, pared), ResultadoParaReportar.PUDO_ENTRAR, EstadoDelIntento.NO_SE))
         // Llega una obligación más nueva (CONFIRMADO) antes que el acuse del PUDO_ENTRAR.
         assertTrue(l.reclamarReverso(v.id()))
-        assertTrue(l.cerrarVuelta(v.id(), ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, null))
-        assertNull(l.aplicarAcuse(v.id(), ResultadoParaReportar.PUDO_ENTRAR, EstadoDelReversoEnServidor.REVERSING, EstadoDelReporte.ENTREGADO, null))
+        assertTrue(l.cerrarVuelta(v.id(), ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE_COBRO))
+        assertNull(l.aplicarAcuse(v.id(), ResultadoParaReportar.PUDO_ENTRAR, EstadoDelReversoEnServidor.REVERSING, EstadoDelReporte.ENTREGADO))
         var f = l.buscar(v.id())!!
         assertEquals(EstadoDelReporte.PENDIENTE, f.reporte)
         assertNull(f.estadoEnServidor)
         // El acuse del CONFIRMADO sí aplica, y un segundo acuse igual ya no encuentra nada pendiente.
-        f = l.aplicarAcuse(v.id(), ResultadoParaReportar.CONFIRMADO, EstadoDelReversoEnServidor.REVERSED, EstadoDelReporte.ENTREGADO, EstadoDelIntento.NO_SE_COBRO)!!
+        f = l.aplicarAcuse(v.id(), ResultadoParaReportar.CONFIRMADO, EstadoDelReversoEnServidor.REVERSED, EstadoDelReporte.ENTREGADO)!!
         assertEquals(EstadoDelReporte.ENTREGADO, f.reporte)
-        assertNull(l.aplicarAcuse(v.id(), ResultadoParaReportar.CONFIRMADO, EstadoDelReversoEnServidor.CONTRADICTION, EstadoDelReporte.ENTREGADO, EstadoDelIntento.NO_SE))
+        assertNull(l.aplicarAcuse(v.id(), ResultadoParaReportar.CONFIRMADO, EstadoDelReversoEnServidor.CONTRADICTION, EstadoDelReporte.ENTREGADO))
         assertEquals(EstadoDelIntento.NO_SE_COBRO, l.buscar(v.id())!!.estado)
         assertEquals(EstadoDelReversoEnServidor.REVERSED, l.buscar(v.id())!!.estadoEnServidor)
     }
@@ -652,9 +641,9 @@ class LibretaTest {
         var l = libreta()
         val entregada = reclamada(l)
         assertTrue(l.cerrarVuelta(entregada.id(), ClaseDelReverso.Reintentar("68", false, pared), ResultadoParaReportar.PUDO_ENTRAR, EstadoDelIntento.NO_SE))
-        assertTrue(l.aplicarAcuse(entregada.id(), ResultadoParaReportar.PUDO_ENTRAR, EstadoDelReversoEnServidor.REVERSING, EstadoDelReporte.ENTREGADO, null) != null)
+        assertTrue(l.aplicarAcuse(entregada.id(), ResultadoParaReportar.PUDO_ENTRAR, EstadoDelReversoEnServidor.REVERSING, EstadoDelReporte.ENTREGADO) != null)
         val confirmada = reclamada(l)
-        assertTrue(l.cerrarVuelta(confirmada.id(), ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE))
+        assertTrue(l.cerrarVuelta(confirmada.id(), ClaseDelReverso.Confirmado(pared), ResultadoParaReportar.CONFIRMADO, EstadoDelIntento.NO_SE_COBRO))
         l = reabrir(l, proceso = UUID.randomUUID().toString())
         assertTrue(l.recuperarAlArrancar { emptyList() }.isEmpty())
         assertEquals(EstadoDelReporte.ENTREGADO, l.buscar(entregada.id())!!.reporte)

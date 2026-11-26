@@ -22,6 +22,7 @@ public enum class EstadoDelReporte { NO_APLICA, PENDIENTE, ENTREGADO, CONCILIAR,
 
 public enum class ResultadoParaReportar { CONFIRMADO, RECHAZADO, PUDO_ENTRAR }
 
+/** `SERVIDOR` ya no tiene escritor (bloque S); se queda porque es un valor guardado: una fila vieja debe seguir leyéndose. */
 public enum class OrigenDeLaAprobacion { BANCO, SERVIDOR }
 
 /** Lo que el SERVIDOR dice del reverso en su acuse (la Tarea 6 traduce su respuesta a esto). */
@@ -58,7 +59,7 @@ public data class IntentoEntity(
     val horaObservadaIso: String? = null,
     val estadoEnServidor: EstadoDelReversoEnServidor? = null,
     val origenDeLaAprobacion: OrigenDeLaAprobacion? = null,
-    /** Se guarda en la misma transacción que el `Concedido`, antes del primer POST de reverso (r4 R4-08). */
+    // ponytail: sin escritor desde el bloque S; se quita con la siguiente migración del esquema
     val vinculoAcreditadoPorPermiso: Boolean = false,
     /** Hora de pared del último reclamo del reverso: la hora observada del aviso `PUDO_ENTRAR` tras un apagón. */
     val reclamadoEnIso: String? = null,
@@ -75,6 +76,7 @@ public data class IntentoEntity(
     /** La aprobación recibida DESPUÉS del arbitraje: sólo se guarda (la fase 3 la muestra para conciliar). */
     val evidenciaTardiaOperacion: Long? = null,
     val evidenciaTardiaAutorizacion: String? = null,
+    // ponytail: sin escritor desde el bloque S; se quita con la siguiente migración del esquema
     val paymentId: String? = null,
     /** En una cancelación, el `attemptId` de la venta original. */
     val operacionOriginal: String? = null,

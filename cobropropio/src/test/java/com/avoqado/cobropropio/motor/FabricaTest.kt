@@ -74,7 +74,7 @@ class FabricaTest {
         assertSame(CatalogoDeRechazos.BLUMON, m.catalogo)
         assertSame(Libreta.abrir(context), m.libreta)
         assertTrue(m.blumon is ClienteBlumon)
-        assertTrue(m.servidor is ReversoDelServidorHttp)
+        assertTrue(m.cola.campo("servidor") is ReversoDelServidorHttp) // bloque S: el SERVIDOR sólo lo usa la cola
     }
 
     /** Un campo privado de lo armado. Sólo pruebas: así se ve lo que la fábrica ARMA sin abrir nada en producción. */
@@ -95,7 +95,7 @@ class FabricaTest {
             val delMotor = m.campo("identidad") as Identidad
             assertEquals(ambiente, delMotor.ambiente)
             assertSame("la misma identidad en el motor y en Blumon", delMotor, blumon.campo("identidad"))
-            assertEquals(ambiente.name, pines.pins, (m.servidor as ReversoDelServidorHttp).cliente.certificatePinner.pins)
+            assertEquals(ambiente.name, pines.pins, (m.cola.campo("servidor") as ReversoDelServidorHttp).cliente.certificatePinner.pins)
             Libreta.abrir(context).cerrar() // una fábrica por proceso: la siguiente vuelta abre otra libreta
         }
     }

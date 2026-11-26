@@ -41,7 +41,8 @@ import javax.inject.Singleton
  * Edgardo's literal recommendation: **"recorrer el init y realizar el stop card"**. This
  * scheduler runs that recipe **only when idle**:
  *
- * 1. Every hour, check if the last successful init is older than [STALE_THRESHOLD_HOURS] (23h)
+ * 1. Every hour — or exactly at [STALE_THRESHOLD_HOURS], and every 2 min after a skip ([nextCheckDelayMs], D2) — check if
+ *    the last successful init is older than [STALE_THRESHOLD_HOURS] (23h)
  *    and the in-memory flag is still `true`.
  * 2. If stale AND no critical operation in progress (no payment, no merchant switch, no init),
  *    run `StopDetectCardUseCase` to clear the EMV kernel state.
@@ -85,6 +86,8 @@ class SdkTokenRefreshScheduler @Inject constructor(
         /** Interval at which the scheduler wakes up and evaluates the threshold. */
         const val CHECK_INTERVAL_MS = 60L * 60L * 1000L // 1 hour
         const val STALE_THRESHOLD_MS = STALE_THRESHOLD_HOURS * 60L * 60L * 1000L
+        /** D2: tras saltarse una revisión por una operación en curso, se vuelve a mirar a los 2 min, no en una hora. */
+        const val RETRY_AFTER_SKIP_MS = 2L * 60L * 1000L
     }
 
     private val _lastRefreshOutcome = MutableStateFlow<RefreshOutcome?>(null)
@@ -106,10 +109,34 @@ class SdkTokenRefreshScheduler @Inject constructor(
         Timber.i("⏰ [SdkTokenRefreshScheduler] Starting periodic check (every ${CHECK_INTERVAL_MS / 60_000L} min, threshold ${STALE_THRESHOLD_HOURS}h)")
         schedulerJob = scope.launch {
             while (isActive) {
-                delay(CHECK_INTERVAL_MS)
+                delay(nextCheckDelayMs())
                 runCheck()
             }
         }
+    }
+
+    /**
+     * 🔑 hz:1450a1e9:D2: cuándo toca la siguiente revisión. Antes era siempre una hora. Si la revisión que caía a las 23 h se
+     * saltaba por un cobro en curso, la siguiente podía caer después de las 24 h, cuando Blumon ya venció la llave, y el siguiente
+     * cobro con tarjeta salía rechazado (`invalid_token`). Ahora:
+     *  - tras saltarse por una operación en curso: [RETRY_AFTER_SKIP_MS] (2 min);
+     *  - con la bandera ya abajo (nada que renovar) o recién invalidada: [CHECK_INTERVAL_MS], como antes;
+     *  - en lo demás, justo cuando la llave cumple [STALE_THRESHOLD_HOURS] (23 h), entre 2 min y una hora. Así queda una hora
+     *    entera de reintentos de 2 min antes de las 24 h.
+     * La renovación sigue siendo sólo con la terminal quieta: el cobro no se toca (la inicialización de Blumon tarda ~10 s y falla
+     * seguido; hacerla a media venta arriesgaba cobros que sí pasaban, Codex r2 de D2).
+     */
+    internal fun nextCheckDelayMs(now: Long = System.currentTimeMillis()): Long {
+        when (_lastRefreshOutcome.value) {
+            RefreshOutcome.SkippedCriticalInProgress, RefreshOutcome.SkippedRaceLost -> return RETRY_AFTER_SKIP_MS
+            RefreshOutcome.SkippedFlagAlreadyFalse, is RefreshOutcome.Invalidated -> return CHECK_INTERVAL_MS
+            else -> Unit
+        }
+        // Codex r3 #2: fuera de `runCheck` nada atrapaba un error de las preferencias cifradas, y mataba el programador.
+        val lastInit = runCatching { secureStorage.getLastBlumonInitTimestamp() }
+            .onFailure { Timber.w(it, "⏰ [SdkTokenRefreshScheduler] No se pudo leer el sello; se revisa en una hora") }
+            .getOrNull()?.takeIf { it > 0 } ?: return CHECK_INTERVAL_MS
+        return (STALE_THRESHOLD_MS - (now - lastInit)).coerceIn(RETRY_AFTER_SKIP_MS, CHECK_INTERVAL_MS)
     }
 
     /**
@@ -162,6 +189,17 @@ class SdkTokenRefreshScheduler @Inject constructor(
             stopDetectCardUseCase.runInfallible(StopDetectCardParams())
         } catch (e: Exception) {
             Timber.w(e, "⏰ [SdkTokenRefreshScheduler] StopDetectCard threw — continuing with invalidation")
+        }
+
+        // Codex r3 #1 (D2): StopDetectCard puede suspender, y un cobro o un cambio de comercio pudo empezar mientras tanto. Se
+        // vuelve a mirar antes de bajar la bandera: si ya hay alguien, se deja para la siguiente revisión (2 min).
+        if (criticalNetworkOperationManager.isAnyCriticalOperationInProgress()) {
+            return RefreshOutcome.SkippedRaceLost
+        }
+        // Codex r4 #2: y si mientras tanto alguien ya reinicializó (un cambio de comercio que empezó y terminó), su sello es otro:
+        // la llave es nueva y bajar la bandera sólo forzaría otra inicialización en el siguiente cobro.
+        if (secureStorage.getLastBlumonInitTimestamp() != lastInit) {
+            return RefreshOutcome.SkippedFresh(ageHours = 0)
         }
 
         // Step 2: invalidate the in-memory flag. Next call to awaitInitialization() /

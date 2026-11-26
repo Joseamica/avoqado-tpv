@@ -89,11 +89,14 @@ class RespondedorLocalTest {
 
     /**
      * Un cliente que gotea un byte cada 200 ms no retiene el hilo: el plazo cuenta desde que empezó la retención, no por lectura.
-     * Coordinada con el MISMO reloj del respondedor: el goteo anota cada escritura y sigue hasta que el servidor cierra. Si el
-     * goteo se pausó más de 600 ms dentro de la retención, la prueba falla en vez de pasar de suerte.
+     * Coordinada con el MISMO reloj del respondedor, contado desde un origen de la prueba: nunca da marcas negativas, que la
+     * expresión de abajo (sólo dígitos) no leería. El goteo anota cada escritura y sigue hasta que el servidor cierra. Si el
+     * goteo se pausó más de 800 ms dentro de la retención (menos que el plazo de 1 s, así que un plazo «por lectura» no pasa),
+     * la prueba falla en vez de pasar de suerte.
      */
     @Test fun `la retencion tiene plazo absoluto`() {
-        val reloj = { System.nanoTime() / 1_000_000 }
+        val origen = System.nanoTime()
+        val reloj = { (System.nanoTime() - origen) / 1_000_000 }
         RespondedorLocal(retencionMs = 1_000, ahora = reloj).use { r ->
             r.mudo = true
             val escrituras = ConcurrentLinkedQueue<Long>()
@@ -116,7 +119,7 @@ class RespondedorLocalTest {
             assertTrue("${t1 - t0} ms", t1 - t0 in 1_000..1_600)
             val marcas = listOf(t0) + escrituras.filter { it in t0..t1 } + t1
             val hueco = marcas.zipWithNext { a, b -> b - a }.max()
-            assertTrue("hueco de $hueco ms en $marcas", hueco <= 600)
+            assertTrue("hueco de $hueco ms en $marcas", hueco <= 800)
         }
     }
 

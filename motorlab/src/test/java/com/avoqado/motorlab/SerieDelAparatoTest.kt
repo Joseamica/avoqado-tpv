@@ -3,6 +3,7 @@ package com.avoqado.motorlab
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -56,5 +57,10 @@ class SerieDelAparatoTest {
         assertEquals("AB12345678", conPlazo(1_000) { "AB12345678" }())
         val adentro = IllegalStateException()
         assertSame(adentro, runCatching { conPlazo(1_000) { throw adentro }() }.exceptionOrNull())
+    }
+
+    /** `join(0)` sería esperar sin tope: un plazo no positivo se rechaza al armar la vía. */
+    @Test fun `conPlazo exige plazo positivo`() {
+        assertThrows(IllegalArgumentException::class.java) { conPlazo(0) { "x" } }
     }
 }

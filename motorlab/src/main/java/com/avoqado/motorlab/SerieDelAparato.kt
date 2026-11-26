@@ -33,21 +33,25 @@ internal class SinRespuesta : Exception()
 /**
  * [via] con plazo: corre en su propio hilo daemon y se espera hasta [ms]. Si sigue viva, lanza [SinRespuesta]; si terminó, da
  * su valor o relanza lo que lanzó, sea lo que sea. Así un DAL colgado sale «ilegible (SinRespuesta)» y las demás vías se miden.
+ * [ms] debe ser positivo: `join(0)` es esperar sin tope.
  *
  * ponytail: el hilo colgado se abandona (daemon, muere con el proceso); si algún día se mide seguido, interrumpirlo.
  */
-internal fun conPlazo(ms: Long, via: () -> String?): () -> String? = {
-    var valor: String? = null
-    var falla: Throwable? = null
-    val hilo = thread(isDaemon = true, name = "motorlab-serie-via") {
-        try {
-            valor = via()
-        } catch (t: Throwable) {
-            falla = t
+internal fun conPlazo(ms: Long, via: () -> String?): () -> String? {
+    require(ms > 0)
+    return {
+        var valor: String? = null
+        var falla: Throwable? = null
+        val hilo = thread(isDaemon = true, name = "motorlab-serie-via") {
+            try {
+                valor = via()
+            } catch (t: Throwable) {
+                falla = t
+            }
         }
+        hilo.join(ms) // al terminar el hilo, lo que escribió ya se ve aquí
+        if (hilo.isAlive) throw SinRespuesta()
+        falla?.let { throw it }
+        valor
     }
-    hilo.join(ms) // al terminar el hilo, lo que escribió ya se ve aquí
-    if (hilo.isAlive) throw SinRespuesta()
-    falla?.let { throw it }
-    valor
 }

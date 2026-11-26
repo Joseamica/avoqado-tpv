@@ -249,5 +249,14 @@ class SdkTokenRefreshSchedulerTest {
 
         assertThat(scheduler.nextCheckDelayMs()).isEqualTo(SdkTokenRefreshScheduler.CHECK_INTERVAL_MS)
     }
+    @Test
+    fun `D2 si alguien reinicializo mientras se paraba la tarjeta, no se baja la bandera (Codex r4 2)`() = runTest {
+        val viejo = aLongTimeAgo()
+        every { secureStorage.getLastBlumonInitTimestamp() } returnsMany listOf(viejo, System.currentTimeMillis())
+
+        scheduler.runCheck()
+
+        verify(exactly = 0) { initManager.invalidateForRefresh() }
+    }
 }
 

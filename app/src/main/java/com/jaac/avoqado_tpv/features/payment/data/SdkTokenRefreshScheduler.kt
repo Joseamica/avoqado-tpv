@@ -196,6 +196,11 @@ class SdkTokenRefreshScheduler @Inject constructor(
         if (criticalNetworkOperationManager.isAnyCriticalOperationInProgress()) {
             return RefreshOutcome.SkippedRaceLost
         }
+        // Codex r4 #2: y si mientras tanto alguien ya reinicializó (un cambio de comercio que empezó y terminó), su sello es otro:
+        // la llave es nueva y bajar la bandera sólo forzaría otra inicialización en el siguiente cobro.
+        if (secureStorage.getLastBlumonInitTimestamp() != lastInit) {
+            return RefreshOutcome.SkippedFresh(ageHours = 0)
+        }
 
         // Step 2: invalidate the in-memory flag. Next call to awaitInitialization() /
         // ensureInitialized() will run the full init sequence (the same path used at

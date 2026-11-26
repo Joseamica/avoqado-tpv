@@ -98,7 +98,7 @@ private fun describir(r: ResultadoDeLectura, i: Informe?): String = buildString 
         return@buildString
     }
     appendLine("Causa: ${i.causa} · código: ${i.codigo ?: "—"}")
-    appendLine("Marca: ${i.marca ?: "—"} · kernel: ${i.resultado ?: "—"} · CVM: ${i.cvm ?: "—"}")
+    appendLine("Marca: ${i.marca ?: "—"} · Entrada: ${i.entrada ?: "—"} · kernel: ${i.resultado ?: "—"} · CVM: ${i.cvm ?: "—"}")
     appendLine("9F02: ${i.importeDelKernel ?: "—"} (pedido $IMPORTE): " + if (i.importeDelKernel == IMPORTE) "coincide" else "NO coincide")
     appendLine("Tags que vinieron: " + i.tagsPresentes.sorted().joinToString(" ") { "%X".format(it) })
     appendLine(

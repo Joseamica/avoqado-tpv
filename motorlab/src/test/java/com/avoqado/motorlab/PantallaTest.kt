@@ -2,6 +2,7 @@ package com.avoqado.motorlab
 
 import com.avoqado.cobropropio.dominio.Ambiente
 import com.avoqado.cobropropio.dominio.AttemptId
+import com.avoqado.cobropropio.dominio.Entrada
 import com.avoqado.cobropropio.dominio.EventoDeCobro
 import com.avoqado.cobropropio.dominio.Identidad
 import com.avoqado.cobropropio.dominio.Marca
@@ -17,6 +18,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Bloque 4-L · L-d1: los textos, sin traducir y sin datos de la tarjeta ni de la identidad. */
@@ -71,7 +73,7 @@ class PantallaTest {
     /** Cada cierre se dice TAL CUAL y distinto (Ruling 8): el reposo de las tandas exige «lector cerrado», y sólo ACREDITADO lo dice. */
     @Test fun `el informe dice su cierre tal cual`() {
         fun texto(causa: Causa, cierre: Cierre, fallas: List<String> = emptyList(), error: String? = null) =
-            textoDelInforme(Informe(folio, causa, null, null, null, null, null, emptySet(), cierre, fallas, error))
+            textoDelInforme(Informe(folio, causa, null, null, null, null, null, null, emptySet(), cierre, fallas, error))
         assertEquals("lector: LEIDA · este intento no abrió el lector", texto(Causa.LEIDA, Cierre.NO_SE_ABRIO))
         assertEquals("lector: LEIDA · lector cerrado", texto(Causa.LEIDA, Cierre.ACREDITADO))
         assertEquals(
@@ -82,6 +84,15 @@ class PantallaTest {
             "lector: ERROR · este intento no abrió el lector · error IllegalStateException",
             texto(Causa.ERROR, Cierre.NO_SE_ABRIO, error = "IllegalStateException"),
         )
+    }
+
+    /** La entrada va después de la marca; sin entrada (no se leyó tarjeta) no se menciona. */
+    @Test fun `el informe ensena la entrada`() {
+        fun texto(entrada: Entrada?) = textoDelInforme(
+            Informe(folio, Causa.LEIDA, 0, Marca.VISA, entrada, null, null, null, emptySet(), Cierre.ACREDITADO, emptyList(), null),
+        )
+        assertTrue(" · entrada SIN_CONTACTO" in texto(Entrada.SIN_CONTACTO))
+        assertFalse("entrada" in texto(null))
     }
 
     /** El hallazgo de T5 (L-d2): en reposo, la cabeza (y su «red: sí/no») se repinta en cada latido, aunque el carril no publique. */

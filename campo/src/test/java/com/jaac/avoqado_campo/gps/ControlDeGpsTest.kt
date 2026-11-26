@@ -425,7 +425,7 @@ class ControlDeGpsTest {
         assertEquals(1, esperas)
     }
 
-    @Test fun `bucle - con un arranque nuevo durante la lectura, la siguiente es ya, no en 30 min (Codex r3 3)`() = runBlocking<Unit> {
+    @Test fun `bucle - un arranque durante una lectura que sigue no lee otra vez - la espera decide (D1, Codex r1 4)`() = runBlocking<Unit> {
         var arranques = 0
         val respuestas = ArrayDeque(listOf(true, true, false))
         var esperas = 0
@@ -433,7 +433,28 @@ class ControlDeGpsTest {
             tomarUno = { respuestas.removeFirst().also { if (respuestas.size == 2) arranques++ } },
             arranques = { arranques },
         ) { esperas++ }
-        assertEquals(1, esperas) // sólo después de la 2ª (la del arranque nuevo no esperó)
+        // Antes (Codex r3 3) se volvía a leer sin esperar, y una entrada nueva que ya había despertado la espera tomaba dos
+        // ubicaciones. Ahora espera, y la espera regresa de inmediato si el turno cambió (pruebas «D1 - …»).
+        assertEquals(2, esperas)
+    }
+
+    @Test fun `D1 - una entrada nueva marcada mientras se leia despierta la espera de inmediato (Codex r1 3)`() = runBlocking<Unit> {
+        abrirTurno()
+        coEvery { ubicacion.leer(any()) } coAnswers {
+            db.piezaDao().guardarTurno(TurnoLocal(staffId = "s1", llaveEntrada = "e2", timeEntryId = null, venueId = "v1", abiertoAt = AHORA - 1_000L))
+            Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
+        }
+        val s = seguimiento()
+        assertTrue(s.tomarUno()) // la lectura era de la entrada vieja: no se guarda
+        assertTrue(db.pingDao().todos().isEmpty())
+        withTimeout(5_000) { s.esperar(30 * 60_000L) } // antes: dormía 30 min con la entrada nueva sin ubicación
+        coEvery { ubicacion.leer(any()) } returns Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
+        assertTrue(s.tomarUno())
+        assertEquals(1, db.pingDao().todos().size)
+        val espera = async { s.esperar(30 * 60_000L) }
+        delay(300)
+        assertTrue(espera.isActive) // ya la sigue: no despierta otra vez por la misma entrada
+        espera.cancel()
     }
 
     @Test fun `bucle - sin arranques nuevos para cuando ya no hay turno y un error cuenta como seguir`() = runBlocking<Unit> {

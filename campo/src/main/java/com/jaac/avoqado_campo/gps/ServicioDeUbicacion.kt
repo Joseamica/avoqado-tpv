@@ -136,7 +136,9 @@ class SeguimientoDelTurno(
             estado.publicar(ResultadoGps.NoLoUsaLaTienda)
             return false
         }
-        turnoSeguido = ClaveDelTurno.de(ahoraT)
+        // Codex r1 #3: el turno con el que EMPEZÓ esta lectura, no el de ahora. Si mientras leía se marcó otra entrada, la
+        // espera despierta de inmediato y la siguiente lectura ya es de la nueva (si no, esperaba 30 min su primera ubicación).
+        turnoSeguido = ClaveDelTurno.de(t)
         if (l == null || !mismoTurno(t, ahoraT)) return true
         val venueId = ahoraT.venueId ?: yo.sesion?.venueId ?: return true
         pings.guardarSi(Ping(venueId = venueId, lat = l.lat, lon = l.lon, precision = l.precision, capturadoAt = capturado)) {
@@ -182,11 +184,12 @@ private data class ClaveDelTurno(val staffId: String?, val venueId: String?, val
 }
 
 /**
- * El bucle del servicio: una lectura y luego [esperar] (30 min), hasta que [tomarUno] diga que ya no hay turno que seguir.
- * Codex r3 #2: un arranque nuevo (una entrada marcada) puede llegar mientras la lectura decidía con la fila vieja; entonces
- * no se para, se vuelve a decidir de inmediato con la de ahora. [arranques] lo sube `onStartCommand` en el hilo principal,
- * el mismo de este bucle, así que entre mirarlo y parar no se cuela otro arranque. Codex r3 #3: con un arranque nuevo
- * durante la lectura, la siguiente se hace ya, no en 30 min.
+ * El bucle del servicio: una lectura y luego [esperar] (30 min, o menos si el turno cambia: D1), hasta que [tomarUno] diga que
+ * ya no hay turno que seguir. Codex r3 #2: un arranque nuevo (una entrada marcada) puede llegar mientras la lectura decidía
+ * parar con la fila vieja; entonces no se para, se vuelve a decidir de inmediato con la de ahora. [arranques] lo sube
+ * `onStartCommand` en el hilo principal, el mismo de este bucle, así que entre mirarlo y parar no se cuela otro arranque.
+ * Codex r3 #3: con una entrada nueva durante la lectura, la siguiente se hace ya, no en 30 min; desde D1 lo garantiza la
+ * espera, que despierta con el cambio del turno.
  */
 internal suspend fun correrBucle(tomarUno: suspend () -> Boolean, arranques: () -> Int, esperar: suspend () -> Unit) {
     while (true) {
@@ -199,7 +202,10 @@ internal suspend fun correrBucle(tomarUno: suspend () -> Boolean, arranques: () 
             Log.w("ServicioDeUbicacion", "lectura del turno", e)
             true
         }
-        if (arranques() != visto) continue
+        // Sólo cuando la lectura decidió PARAR: un arranque que llegó mientras leía puede ser una entrada nueva, y no se para el
+        // servicio sin volver a decidir (Codex r3 #2). Si decidió seguir, la espera ya despierta sola si el turno cambió (D1); volver a
+        // leer aquí tomaba dos ubicaciones de la misma entrada nueva (D1, Codex r1 #4).
+        if (!sigue && arranques() != visto) continue
         if (!sigue) return
         esperar()
     }

@@ -160,16 +160,24 @@ class SeguimientoDelTurno(
      */
     suspend fun esperar(ms: Long) {
         val visto = turnoSeguido
-        val inicio = ahora()
-        try {
-            withTimeoutOrNull(ms) { piezas.turno().first { ClaveDelTurno.de(it) != visto } }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            // Codex r2 #3: si la base falla al observar el turno, la excepción ya no cierra el servicio. Codex r3 #5: tampoco se
-            // duerme el resto de los 30 min a ciegas: se vuelve a mirar en un minuto como mucho (una entrada nueva no espera más).
-            Log.w("ServicioDeUbicacion", "observar el turno", e)
-            delay((ms - (ahora() - inicio)).coerceIn(0L, minOf(ms, REINTENTO_SI_FALLA_LA_BASE_MS)))
+        var falta = ms
+        while (falta > 0) {
+            val inicio = ahora()
+            try {
+                withTimeoutOrNull(falta) { piezas.turno().first { ClaveDelTurno.de(it) != visto } }
+                return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Codex r2 #3: si la base falla al observar el turno, la excepción ya no cierra el servicio. Codex r3 #5: se vuelve
+                // a mirar en un minuto como mucho (una entrada nueva no espera más). Codex r4 #3: y se sigue esperando hasta el
+                // plazo: sólo un cambio del turno corta la espera, así que no se toma una ubicación de más del mismo turno.
+                Log.w("ServicioDeUbicacion", "observar el turno", e)
+                falta -= (ahora() - inicio).coerceAtLeast(0L)
+                val pausa = falta.coerceIn(0L, REINTENTO_SI_FALLA_LA_BASE_MS)
+                delay(pausa)
+                falta -= pausa
+            }
         }
     }
 

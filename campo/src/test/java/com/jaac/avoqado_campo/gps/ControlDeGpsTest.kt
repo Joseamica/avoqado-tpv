@@ -581,12 +581,31 @@ class ControlDeGpsTest {
         assertTrue(System.currentTimeMillis() - inicio >= 290L)
     }
 
-    @Test fun `D1 - con la base fallando la espera vuelve a mirar en un minuto, no en 30 (Codex r3 5)`() = kotlinx.coroutines.test.runTest {
+    @Test fun `D1 - con la base fallando, una entrada nueva se ve en un minuto, no en 30 (Codex r3 5)`() = kotlinx.coroutines.test.runTest {
         val piezas = mockk<com.jaac.avoqado_campo.cola.PiezaDao>()
-        io.mockk.every { piezas.turno() } returns kotlinx.coroutines.flow.flow { throw android.database.sqlite.SQLiteException("disco") }
+        val nueva = TurnoLocal(staffId = "s1", llaveEntrada = "e2", timeEntryId = null, venueId = "v1", abiertoAt = AHORA - 1_000L)
+        io.mockk.every { piezas.turno() } returnsMany listOf(
+            kotlinx.coroutines.flow.flow { throw android.database.sqlite.SQLiteException("disco") },
+            kotlinx.coroutines.flow.MutableStateFlow<TurnoLocal?>(nueva),
+        )
         val s = SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), piezas, quienSoy) { AHORA }
         s.esperar(30 * 60_000L)
         assertEquals(REINTENTO_SI_FALLA_LA_BASE_MS, testScheduler.currentTime) // reloj virtual: lo que de verdad durmió
+    }
+
+    @Test fun `D1 - con la base fallando y el mismo turno, la espera llega a su plazo sin lecturas de mas (Codex r4 3)`() = kotlinx.coroutines.test.runTest {
+        val turno = TurnoLocal(staffId = "s1", llaveEntrada = "e1", timeEntryId = null, venueId = "v1", abiertoAt = AHORA - 60_000L)
+        val piezas = mockk<com.jaac.avoqado_campo.cola.PiezaDao>()
+        coEvery { piezas.turnoAhora() } returns turno
+        io.mockk.every { piezas.turno() } returnsMany listOf(
+            kotlinx.coroutines.flow.flow { throw android.database.sqlite.SQLiteException("disco") },
+            kotlinx.coroutines.flow.MutableStateFlow<TurnoLocal?>(turno),
+        )
+        coEvery { ubicacion.leer(any()) } returns null // sin posición: la lectura no toca la base de pings
+        val s = SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), piezas, quienSoy) { AHORA }
+        assertTrue(s.tomarUno())
+        s.esperar(30 * 60_000L)
+        assertEquals(30 * 60_000L, testScheduler.currentTime) // la base se recuperó al minuto, pero el turno es el mismo
     }
 
     @Test fun `D1 - sin cambios la espera dura lo que se le pide`() = runBlocking<Unit> {

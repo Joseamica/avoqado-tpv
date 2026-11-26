@@ -18,7 +18,13 @@ data class AvailableDiscount(
     val value: BigDecimal,
     val requiresApproval: Boolean,
     val estimatedSavings: BigDecimal,
+    /** D51: por qué QUIEN ESTÁ EN LA TERMINAL no la puede tocar (el SERVIDOR lo marca con `missingPermission`); null = sí puede. */
+    val bloqueadaPor: String? = null,
 ) {
+    /** La razón que pinta la fila apagada; null = se puede tocar. */
+    val razonApagado: String?
+        get() = if (requiresApproval) "Requiere autorización de gerente" else bloqueadaPor
+
     val valueDisplay: String
         get() = when (type) {
             "PERCENTAGE" -> "${value.setScale(0, RoundingMode.HALF_UP).toPlainString()}%"

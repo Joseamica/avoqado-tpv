@@ -136,4 +136,9 @@ data class AvailableDiscountDto(
     val isAutomatic: Boolean = false,
     val requiresApproval: Boolean = false,
     val estimatedSavings: BigDecimal = BigDecimal.ZERO,
+    /**
+     * D51 (`hz:b37dd7ea:D51`): el permiso que le falta a QUIEN PREGUNTA para aplicarlo (hoy sólo `orders:comp` en una
+     * cortesía), calculado por el SERVIDOR con la misma regla de su candado. Ausente (servidor viejo o sí puede) = se puede tocar.
+     */
+    val missingPermission: String? = null,
 )

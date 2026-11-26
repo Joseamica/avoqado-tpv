@@ -46,7 +46,9 @@ import java.math.BigDecimal
  * sustituye a un paso de confirmación aparte (mismo espíritu que el MCP:
  * nunca aplicar dinero a ciegas). Descuentos que `requiresApproval` se ven
  * PERO deshabilitados con candado — sin flujo de autorización de gerente en
- * esta versión (gap documentado, no un olvido).
+ * esta versión (gap documentado, no un olvido). D51: una cortesía (`COMP`)
+ * que el SERVIDOR marca porque quien pregunta no tiene `orders:comp` también
+ * sale apagada con su razón ([AvailableDiscount.razonApagado]).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -98,7 +100,7 @@ fun DiscountPickerSheet(
                         items(discounts, key = { it.id }) { discount ->
                             DiscountRow(
                                 discount = discount,
-                                enabled = !discount.requiresApproval && !isApplying,
+                                enabled = discount.razonApagado == null && !isApplying,
                                 onClick = { onSelect(discount.id) },
                             )
                         }
@@ -129,7 +131,8 @@ private fun DiscountRow(discount: AvailableDiscount, enabled: Boolean, onClick: 
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (discount.requiresApproval) {
+                val razonApagado = discount.razonApagado
+                if (razonApagado != null) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             imageVector = Icons.Default.Lock,
@@ -139,7 +142,7 @@ private fun DiscountRow(discount: AvailableDiscount, enabled: Boolean, onClick: 
                         )
                         Spacer(Modifier.padding(start = 4.dp))
                         Text(
-                            text = "Requiere autorización de gerente",
+                            text = razonApagado,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.avoqadoColors.statusWarning,
                         )
@@ -185,6 +188,7 @@ private fun DiscountPickerSheetPreview() {
             discounts = listOf(
                 AvailableDiscount(id = "d1", name = "Cliente frecuente", type = "PERCENTAGE", value = BigDecimal("10"), requiresApproval = false, estimatedSavings = BigDecimal("45.00")),
                 AvailableDiscount(id = "d2", name = "Descuento gerencial", type = "FIXED_AMOUNT", value = BigDecimal("100"), requiresApproval = true, estimatedSavings = BigDecimal("100.00")),
+                AvailableDiscount(id = "d3", name = "Cortesía de la casa", type = "COMP", value = BigDecimal.ZERO, requiresApproval = false, estimatedSavings = BigDecimal("450.00"), bloqueadaPor = "Esta cortesía la da un gerente con su sesión"),
             ),
             isLoading = false,
             isApplying = false,

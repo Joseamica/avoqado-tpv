@@ -77,7 +77,6 @@ class TableCheckoutSesionNoQuedaPegadaTest {
         saldoDeMesaSinRed = SaldoDeMesaSinRed(syncOutbox),
         connectionStateManager = ConnectionStateManager(),
         dineroDeTarjeta = dineroDeTarjeta,
-        permissionsRepository = mockk(relaxed = true),
     )
 
     private val porCobrar = Result.success(OrderDetail(id = "b", total = BigDecimal("20.00"), amountLeft = BigDecimal("20.00")))

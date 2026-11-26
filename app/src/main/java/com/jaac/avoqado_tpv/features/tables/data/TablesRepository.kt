@@ -4,6 +4,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.data.network.permisoRequeridoDe
+import com.jaac.avoqado_tpv.core.data.network.textoDePermiso
 import com.jaac.avoqado_tpv.core.data.network.variantes.datosDeFamiliaDeDto
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService
@@ -808,6 +809,8 @@ class TablesRepository @Inject constructor(
                         value = it.value,
                         requiresApproval = it.requiresApproval,
                         estimatedSavings = it.estimatedSavings,
+                        // D51: el SERVIDOR dice qué permiso le falta a quien pregunta; se pinta con el texto de ese rechazo (403).
+                        bloqueadaPor = it.missingPermission?.let { p -> textoDePermiso(p, "Lo aplica alguien con otro permiso") },
                     )
                 },
             )

@@ -46,9 +46,9 @@ import java.math.BigDecimal
  * sustituye a un paso de confirmación aparte (mismo espíritu que el MCP:
  * nunca aplicar dinero a ciegas). Descuentos que `requiresApproval` se ven
  * PERO deshabilitados con candado — sin flujo de autorización de gerente en
- * esta versión (gap documentado, no un olvido). D51: una cortesía (`COMP`) a
- * quien no tiene `orders:comp` también sale apagada con su razón
- * ([AvailableDiscount.razonApagado]): el SERVIDOR la rechazaría.
+ * esta versión (gap documentado, no un olvido). D51: una cortesía (`COMP`)
+ * que el SERVIDOR marca porque quien pregunta no tiene `orders:comp` también
+ * sale apagada con su razón ([AvailableDiscount.razonApagado]).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

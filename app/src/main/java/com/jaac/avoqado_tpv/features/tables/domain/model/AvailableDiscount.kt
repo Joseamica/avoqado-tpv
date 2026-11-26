@@ -18,7 +18,7 @@ data class AvailableDiscount(
     val value: BigDecimal,
     val requiresApproval: Boolean,
     val estimatedSavings: BigDecimal,
-    /** D51: por qué QUIEN ESTÁ EN LA TERMINAL no la puede tocar (una cortesía sin `orders:comp`); null = sí puede. */
+    /** D51: por qué QUIEN ESTÁ EN LA TERMINAL no la puede tocar (el SERVIDOR lo marca con `missingPermission`); null = sí puede. */
     val bloqueadaPor: String? = null,
 ) {
     /** La razón que pinta la fila apagada; null = se puede tocar. */

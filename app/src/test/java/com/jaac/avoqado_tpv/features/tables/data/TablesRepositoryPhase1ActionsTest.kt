@@ -200,6 +200,53 @@ class TablesRepositoryPhase1ActionsTest {
         assertThat(discount.estimatedSavings).isEqualTo(BigDecimal("45.00"))
     }
 
+    // D51 (hz:b37dd7ea:D51): el SERVIDOR marca con `missingPermission` la cortesía que quien llama no puede dar (la misma regla
+    // de su candado `orders:comp`); la terminal la pinta en gris con el texto de ese rechazo. El JSON es el que manda el SERVIDOR.
+    private fun disponibles(json: String) =
+        Response.success(com.google.gson.Gson().fromJson(json, AvailableDiscountsResponse::class.java))
+
+    @Test
+    fun d51_la_cortesia_que_el_servidor_marca_sin_permiso_llega_apagada_con_su_razon() = runTest {
+        coEvery { api.getAvailableDiscounts(venueId, orderId) } returns disponibles(
+            """{"success":true,"count":2,"data":[
+              {"id":"d1","name":"Cliente frecuente","type":"PERCENTAGE","value":10,"scope":"ORDER","description":null,"isAutomatic":false,"requiresApproval":false,"estimatedSavings":45},
+              {"id":"d2","name":"Cortesía de la casa","type":"COMP","value":100,"scope":"ORDER","description":null,"isAutomatic":false,"requiresApproval":false,"estimatedSavings":450,"missingPermission":"orders:comp"}
+            ]}""",
+        )
+
+        val lista = repo.getAvailableDiscounts(venueId, orderId).getOrThrow()
+
+        assertThat(lista.map { it.id }).containsExactly("d1", "d2").inOrder()
+        assertThat(lista[0].razonApagado).isNull()
+        assertThat(lista[1].razonApagado).isEqualTo("Esta cortesía la da un gerente con su sesión")
+    }
+
+    @Test
+    fun d51_sin_la_marca_un_servidor_viejo_deja_la_cortesia_como_hoy() = runTest {
+        coEvery { api.getAvailableDiscounts(venueId, orderId) } returns disponibles(
+            """{"success":true,"count":1,"data":[
+              {"id":"d2","name":"Cortesía de la casa","type":"COMP","value":100,"scope":"ORDER","description":null,"isAutomatic":false,"requiresApproval":false,"estimatedSavings":450}
+            ]}""",
+        )
+
+        val cortesia = repo.getAvailableDiscounts(venueId, orderId).getOrThrow().single()
+
+        assertThat(cortesia.razonApagado).isNull()
+    }
+
+    @Test
+    fun d51_requiere_aprobacion_sigue_diciendo_lo_de_siempre() = runTest {
+        coEvery { api.getAvailableDiscounts(venueId, orderId) } returns disponibles(
+            """{"success":true,"count":1,"data":[
+              {"id":"d3","name":"Gerencial","type":"COMP","value":100,"scope":"ORDER","requiresApproval":true,"estimatedSavings":450,"missingPermission":"orders:comp"}
+            ]}""",
+        )
+
+        val gerencial = repo.getAvailableDiscounts(venueId, orderId).getOrThrow().single()
+
+        assertThat(gerencial.razonApagado).isEqualTo("Requiere autorización de gerente")
+    }
+
     // ══════════════════════════════════════════════════════════════════
     // removeDiscount — paridad Android 2026-08-06 (paridad-android-tpv.md,
     // Hallazgo #4): SIEMPRE online, un fallo de red NUNCA se encola — misma

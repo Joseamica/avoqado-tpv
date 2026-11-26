@@ -3,11 +3,9 @@ package com.jaac.avoqado_tpv.features.tables.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
-import com.jaac.avoqado_tpv.core.data.network.textoDePermiso
 import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
-import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.tables.data.SIN_CUENTA_SIN_RED
 import com.jaac.avoqado_tpv.features.tables.data.COBRO_CON_LO_DE_ESTA_TERMINAL
 import com.jaac.avoqado_tpv.features.tables.data.SALDO_NO_RECUPERADO
@@ -339,8 +337,6 @@ class TableCheckoutViewModel @Inject constructor(
     private val connectionStateManager: ConnectionStateManager,
     /** D9 (Codex r1 de la unión): dinero de TARJETA de esta cuenta que el SERVIDOR todavía no confirma. */
     private val dineroDeTarjeta: DineroDeTarjetaDeLaCuenta,
-    /** D51: la cortesía del catálogo sale en gris a quien no tiene `orders:comp`. */
-    private val permissionsRepository: PermissionsRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(TableCheckoutState())
@@ -1235,14 +1231,7 @@ class TableCheckoutViewModel @Inject constructor(
             repository.getAvailableDiscounts(vId, session.orderId).fold(
                 onSuccess = { discounts ->
                     if (miCarga != cargaDeDescuentos) return@fold
-                    // D51: una cortesía la rechaza el SERVIDOR sin `orders:comp` (`checkCortesiaEnDescuento`); a quien no lo tiene
-                    // se le pinta en gris. La lista de la terminal ya trae `orders:comp` si tiene `tpv-orders:comp` (dependencia
-                    // del SERVIDOR). Usa la guardada (5 min, o la vieja si no hay red); sin lista, `hasPermission` da falso: gris.
-                    val cortesiasEnGris = discounts.any { it.type == "COMP" } && !permissionsRepository.hasPermission("orders:comp")
-                    if (miCarga != cargaDeDescuentos) return@fold
-                    _availableDiscounts.value = if (!cortesiasEnGris) discounts else discounts.map {
-                        if (it.type == "COMP") it.copy(bloqueadaPor = textoDePermiso("orders:comp", "")) else it
-                    }
+                    _availableDiscounts.value = discounts
                     _discountsLoadError.value = null
                     _isLoadingDiscounts.value = false
                 },

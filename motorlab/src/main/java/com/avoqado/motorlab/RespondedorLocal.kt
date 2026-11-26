@@ -22,11 +22,12 @@ internal val LOCAL: InetAddress = InetAddress.getByAddress(byteArrayOf(127, 0, 0
  * su hilo. Cuenta lo contestado por ruta: `intencion`, `resultado` u `otra`. No guarda ni enseña nada de lo que recibe.
  *
  * Bloque P0 · el SERVIDOR colgado: con [mudo], lee la petición entera y no contesta nada; retiene la conexión hasta que el
- * cliente se va o hasta [retencionMs] desde que empezó a retener, lo que pase primero. [ahora] da los tiempos de [retencion].
+ * cliente se va o hasta [retencionMs] desde que empezó a retener, lo que pase primero. [ahora] da los tiempos de [retencion] y
+ * mide el plazo: tiene que ser monótono (por omisión, `nanoTime`; la app usa `elapsedRealtime`, el de las notas de los folios).
  */
 internal class RespondedorLocal(
     private val retencionMs: Long = RETENCION_MS,
-    private val ahora: () -> Long = System::currentTimeMillis,
+    private val ahora: () -> Long = { System.nanoTime() / 1_000_000 },
 ) : AutoCloseable {
     private val servidor = ServerSocket(0, 16, LOCAL)
     private val cuentas = ConcurrentHashMap<String, AtomicInteger>()
@@ -40,15 +41,18 @@ internal class RespondedorLocal(
     /** Prendido, la siguiente petición se lee entera y no se contesta. Apagarlo no suelta la que ya está retenida. */
     @Volatile var mudo: Boolean = false
 
-    /** La retención en curso o la última: su inicio y su fin (`null` mientras retiene), en ms de [ahora]. */
-    @Volatile private var ultima: Pair<Long, Long?>? = null
+    /** La retención en curso o la última: su ruta (`intencion`, `resultado` u `otra`), su inicio y su fin (`null` mientras retiene). */
+    @Volatile private var ultima: Triple<String, Long, Long?>? = null
 
     /** Lo contestado de [ruta]: `intencion`, `resultado` u `otra`; o lo retenido, `mudo` (se cuenta al EMPEZAR a retener). */
     fun contestadas(ruta: String): Int = cuentas[ruta]?.get() ?: 0
 
-    /** `null` si nunca retuvo; «retenida desde T» mientras retiene; «última retención T0–T1» al soltar. En ms de [ahora]. */
-    fun retencion(): String? = ultima?.let { (desde, hasta) ->
-        if (hasta == null) "retenida desde $desde" else "última retención $desde–$hasta"
+    /**
+     * `null` si nunca retuvo; «retenida (ruta) desde T» mientras retiene; «última retención (ruta) T0–T1» al soltar. En ms de
+     * [ahora]. La ruta dice de QUÉ petición fue: `resultado` es la del reporte del reverso.
+     */
+    fun retencion(): String? = ultima?.let { (ruta, desde, hasta) ->
+        if (hasta == null) "retenida ($ruta) desde $desde" else "última retención ($ruta) $desde–$hasta"
     }
 
     fun resumen(): String = RUTAS.joinToString(" · ") { "$it ${contestadas(it)}" }
@@ -81,7 +85,7 @@ internal class RespondedorLocal(
                         val ruta = leerPeticion(entrada) ?: return@use // sin forma: sin contestar
                         // ponytail: una conexión a la vez; las demás esperan en la cola del socket mientras dura la retención, y close()
                         // puede tardar hasta retencionMs
-                        if (mudo) return@use retener(c, entrada)
+                        if (mudo) return@use retener(c, entrada, tipo(ruta))
                         // Se cuenta ANTES de contestar: quien recibe el 404 ya ve su cuenta.
                         cuentas.getOrPut(tipo(ruta)) { AtomicInteger() }.incrementAndGet()
                         c.getOutputStream().apply {
@@ -101,20 +105,20 @@ internal class RespondedorLocal(
      * `inicio + retencionMs`, y nunca escribe. Cada lectura espera sólo lo que falta del plazo: un cliente que gotea bytes no
      * retiene el hilo más que eso. Al vencer, `SocketTimeoutException` sale de aquí y `use` cierra la conexión.
      */
-    private fun retener(c: Socket, entrada: InputStream) {
+    private fun retener(c: Socket, entrada: InputStream, ruta: String) {
         val inicio = ahora()
-        ultima = inicio to null // antes de contar: quien ve «mudo 1» ya ve la retención
+        ultima = Triple(ruta, inicio, null) // antes de contar: quien ve «mudo 1» ya ve la retención
         cuentas.getOrPut("mudo") { AtomicInteger() }.incrementAndGet()
         try {
             val tirar = ByteArray(512)
             while (true) {
                 val falta = inicio + retencionMs - ahora()
                 if (falta <= 0) return
-                c.soTimeout = falta.toInt() // ≥ 1 ms
+                c.soTimeout = falta.coerceAtMost(Int.MAX_VALUE.toLong()).toInt() // ≥ 1 ms, sin desbordar
                 if (entrada.read(tirar) < 0) return
             }
         } finally {
-            ultima = inicio to ahora()
+            ultima = Triple(ruta, inicio, ahora())
         }
     }
 

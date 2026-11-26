@@ -6,6 +6,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -13,6 +14,8 @@ import java.io.ByteArrayInputStream
 import java.io.InterruptedIOException
 import java.net.Proxy
 import java.net.Socket
+import java.net.SocketTimeoutException
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
@@ -81,41 +84,61 @@ class RespondedorLocalTest {
         assertEquals(1, respondedor.contestadas("mudo"))
         assertEquals(0, respondedor.contestadas("resultado"))
         val r = respondedor.retencion().toString()
-        assertTrue(r, r.startsWith("retenida desde") || r.startsWith("última retención"))
+        assertTrue(r, r.startsWith("retenida (resultado) desde") || r.startsWith("última retención (resultado)"))
     }
 
-    /** Un cliente que gotea un byte cada 200 ms no retiene el hilo: el plazo cuenta desde que empezó la retención, no por lectura. */
+    /**
+     * Un cliente que gotea un byte cada 200 ms no retiene el hilo: el plazo cuenta desde que empezó la retención, no por lectura.
+     * Coordinada con el MISMO reloj del respondedor: el goteo anota cada escritura y sigue hasta que el servidor cierra. Si el
+     * goteo se pausó más de 600 ms dentro de la retención, la prueba falla en vez de pasar de suerte.
+     */
     @Test fun `la retencion tiene plazo absoluto`() {
-        RespondedorLocal(retencionMs = 1_000).use { r ->
+        val reloj = { System.nanoTime() / 1_000_000 }
+        RespondedorLocal(retencionMs = 1_000, ahora = reloj).use { r ->
             r.mudo = true
-            val desde = System.nanoTime()
-            val crudo = crudo(r)
-            val gotero = thread(isDaemon = true) {
-                runCatching { while (true) { Thread.sleep(200); crudo.getOutputStream().apply { write('x'.code); flush() } } }
+            val escrituras = ConcurrentLinkedQueue<Long>()
+            crudo(r).use { conexion ->
+                val gotero = thread(isDaemon = true) {
+                    runCatching {
+                        while (true) {
+                            conexion.getOutputStream().apply { write('x'.code); flush() }
+                            escrituras.add(reloj())
+                            Thread.sleep(200)
+                        }
+                    }
+                }
+                gotero.join(5_000)
+                assertFalse("el goteo no tronó en 5 s: el servidor no soltó la conexión", gotero.isAlive)
             }
-            try {
-                esperaRetencion(r)
-                r.mudo = false
-                assertEquals(404 to "", post(RESULTADO, "{}", r))
-                val ms = (System.nanoTime() - desde) / 1_000_000
-                assertTrue("$ms ms", ms < 3_000)
-            } finally {
-                gotero.interrupt()
-                crudo.close()
-            }
+            val retencion = r.retencion().toString()
+            val (t0, t1) = Regex("""última retención \(resultado\) (\d+)–(\d+)""").matchEntire(retencion)
+                ?.destructured?.toList()?.map(String::toLong) ?: throw AssertionError(retencion)
+            assertTrue("${t1 - t0} ms", t1 - t0 in 1_000..1_600)
+            val marcas = listOf(t0) + escrituras.filter { it in t0..t1 } + t1
+            val hueco = marcas.zipWithNext { a, b -> b - a }.max()
+            assertTrue("hueco de $hueco ms en $marcas", hueco <= 600)
         }
     }
 
-    /** Apagar el mudo no suelta la retenida; la siguiente petición sí recibe su 404. */
-    @Test fun `quitar el mudo vuelve a contestar 404`() {
-        `mudo acepta y no contesta`()
-        respondedor.mudo = false
-        val desde = System.nanoTime()
-        assertEquals(404 to "", post(RESULTADO, "{}"))
-        val ms = (System.nanoTime() - desde) / 1_000_000
-        assertTrue("$ms ms", ms < 2_000)
-        val r = respondedor.retencion().toString()
-        assertTrue(r, r.startsWith("última retención"))
+    /** Apagar el mudo no corta la conexión ya retenida: no recibe nada; al irse ésa, la siguiente sí recibe su 404. */
+    @Test fun `apagar el mudo no corta una conexion retenida`() {
+        RespondedorLocal(retencionMs = 10_000).use { r ->
+            r.mudo = true
+            val a = crudo(r, "/api/v1/otra")
+            a.use {
+                esperaRetencion(r)
+                r.mudo = false
+                a.soTimeout = 500
+                val leido = runCatching { a.getInputStream().read() }
+                assertTrue("$leido", leido.exceptionOrNull() is SocketTimeoutException)
+            }
+            val desde = System.nanoTime()
+            assertEquals(404 to "", post(RESULTADO, "{}", r))
+            val ms = (System.nanoTime() - desde) / 1_000_000
+            assertTrue("$ms ms", ms < 2_000)
+            val retencion = r.retencion().toString()
+            assertTrue(retencion, retencion.startsWith("última retención (otra)"))
+        }
     }
 
     /** Sin carrera: el socket se cierra YA retenido; el 404 llega muy antes de los 10 s del plazo, así que lo soltó la salida. */
@@ -134,9 +157,9 @@ class RespondedorLocalTest {
     }
 
     /** Una petición completa por un socket crudo, que queda abierto. */
-    private fun crudo(r: RespondedorLocal) = Socket(LOCAL, r.puerto).apply {
+    private fun crudo(r: RespondedorLocal, ruta: String = RESULTADO) = Socket(LOCAL, r.puerto).apply {
         getOutputStream().apply {
-            write("POST $RESULTADO HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\n\r\n{}".toByteArray(Charsets.US_ASCII))
+            write("POST $ruta HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\n\r\n{}".toByteArray(Charsets.US_ASCII))
             flush()
         }
     }

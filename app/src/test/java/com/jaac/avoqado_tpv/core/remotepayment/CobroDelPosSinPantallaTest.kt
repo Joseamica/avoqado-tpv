@@ -46,6 +46,11 @@ class CobroDelPosSinPantallaTest {
         assertThat(aviso).isGreaterThan(guardar)
         assertThat(aviso).isLessThan(socket)
         assertThat(socketManager.substring(guardar, aviso)).contains("} finally {")
+        // Codex r3 #4 y r4 #1: si guardar truena, no se cierra la app y tampoco se manda nada (ni el `timeout`).
+        val falla = socketManager.substring(guardar, aviso)
+        val atrapa = falla.indexOf("} catch (error: Exception) {")
+        assertThat(atrapa).isAtLeast(0)
+        assertThat(falla.substring(atrapa)).contains("return@launch")
     }
 
     @Test

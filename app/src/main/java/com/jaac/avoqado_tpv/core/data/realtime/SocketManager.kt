@@ -2139,10 +2139,11 @@ class SocketManager @Inject constructor(
                     throw cancelled
                 } catch (error: Exception) {
                     // Codex r3 #4 (D3): con la base fallando dos veces (guardar y releer), la excepción salía de este `launch` sin
-                    // manejador y cerraba la app. No se manda nada: la bandeja sigue como estaba y la contesta la siguiente sonda o
-                    // reentrega, como cuando no hay socket.
-                    Timber.e(error, "❌ [Socket] No se pudo guardar el resultado de $requestId; contesta la siguiente sonda")
-                    null
+                    // manejador y cerraba la app. No se manda NADA, ni el aviso de `timeout` (Codex r4 #1: ese aviso abre la ventana
+                    // de 30 s del SERVIDOR, que puede liberar la venta antes de que llegue el aviso del banco). La bandeja sigue
+                    // como estaba y la contesta la siguiente sonda o reentrega, como cuando no hay socket.
+                    Timber.e(error, "❌ [Socket] No se pudo guardar el resultado de $requestId; no se manda nada, contesta la siguiente sonda")
+                    return@launch
                 } finally {
                     alGuardar?.invoke()
                 }

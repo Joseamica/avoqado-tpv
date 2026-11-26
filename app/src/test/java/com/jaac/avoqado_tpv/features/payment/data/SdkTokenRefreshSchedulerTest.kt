@@ -230,5 +230,24 @@ class SdkTokenRefreshSchedulerTest {
         scheduler.runCheck()
         assertThat(scheduler.nextCheckDelayMs()).isEqualTo(SdkTokenRefreshScheduler.RETRY_AFTER_SKIP_MS)
     }
+    @Test
+    fun `D2 si un cobro empieza mientras se para la tarjeta, no se baja la bandera (Codex r3 1)`() = runTest {
+        every { secureStorage.getLastBlumonInitTimestamp() } returns aLongTimeAgo()
+        // 1ª y 2ª revisión libres; la 3ª, después de StopDetectCard, ya ve el cobro.
+        every { critical.isAnyCriticalOperationInProgress() } returnsMany listOf(false, false, true)
+
+        scheduler.runCheck()
+
+        assertThat(scheduler.lastRefreshOutcome.value).isEqualTo(SdkTokenRefreshScheduler.RefreshOutcome.SkippedRaceLost)
+        verify(exactly = 0) { initManager.invalidateForRefresh() }
+        assertThat(scheduler.nextCheckDelayMs()).isEqualTo(SdkTokenRefreshScheduler.RETRY_AFTER_SKIP_MS)
+    }
+
+    @Test
+    fun `D2 un error al leer el sello no mata el programador (Codex r3 2)`() = runTest {
+        every { secureStorage.getLastBlumonInitTimestamp() } throws SecurityException("llavero")
+
+        assertThat(scheduler.nextCheckDelayMs()).isEqualTo(SdkTokenRefreshScheduler.CHECK_INTERVAL_MS)
+    }
 }
 

@@ -132,7 +132,10 @@ class SdkTokenRefreshScheduler @Inject constructor(
             RefreshOutcome.SkippedFlagAlreadyFalse, is RefreshOutcome.Invalidated -> return CHECK_INTERVAL_MS
             else -> Unit
         }
-        val lastInit = secureStorage.getLastBlumonInitTimestamp()?.takeIf { it > 0 } ?: return CHECK_INTERVAL_MS
+        // Codex r3 #2: fuera de `runCheck` nada atrapaba un error de las preferencias cifradas, y mataba el programador.
+        val lastInit = runCatching { secureStorage.getLastBlumonInitTimestamp() }
+            .onFailure { Timber.w(it, "⏰ [SdkTokenRefreshScheduler] No se pudo leer el sello; se revisa en una hora") }
+            .getOrNull()?.takeIf { it > 0 } ?: return CHECK_INTERVAL_MS
         return (STALE_THRESHOLD_MS - (now - lastInit)).coerceIn(RETRY_AFTER_SKIP_MS, CHECK_INTERVAL_MS)
     }
 
@@ -186,6 +189,12 @@ class SdkTokenRefreshScheduler @Inject constructor(
             stopDetectCardUseCase.runInfallible(StopDetectCardParams())
         } catch (e: Exception) {
             Timber.w(e, "⏰ [SdkTokenRefreshScheduler] StopDetectCard threw — continuing with invalidation")
+        }
+
+        // Codex r3 #1 (D2): StopDetectCard puede suspender, y un cobro o un cambio de comercio pudo empezar mientras tanto. Se
+        // vuelve a mirar antes de bajar la bandera: si ya hay alguien, se deja para la siguiente revisión (2 min).
+        if (criticalNetworkOperationManager.isAnyCriticalOperationInProgress()) {
+            return RefreshOutcome.SkippedRaceLost
         }
 
         // Step 2: invalidate the in-memory flag. Next call to awaitInitialization() /

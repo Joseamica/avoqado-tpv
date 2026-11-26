@@ -1,6 +1,7 @@
 package com.avoqado.motorlab
 
 import android.app.Application
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
@@ -19,6 +20,8 @@ import com.avoqado.cobropropio.motor.ResultadoDelCorte
 import com.avoqado.cobropropio.motor.crearMotorDeCobro
 import com.avoqado.cobropropio.servidor.CredencialDelServidor
 import com.example.clean_lib_services.shared_tools.constants.ApiConstants
+import com.pax.dal.entity.ETermInfoKey
+import com.paxsz.module.pos.Sdk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -37,10 +40,21 @@ class AppDelLaboratorio : Application() {
         private set
     private lateinit var respondedor: RespondedorLocal
     private lateinit var red: RedDelLaboratorio
+    private lateinit var serie: String
     private val alcance = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
         super.onCreate()
+        val archivo = ArchivoDeIdentidad(noBackupFilesDir)
+        // Bloque P0: la serie desde el arranque en frío, ANTES del lector y de todo `AppManager.init` (que carga los parámetros
+        // EMV; el DAL no los necesita, `Sdk.java:40`). Sin `READ_PHONE_STATE`: si `Build` no puede, eso es el dato.
+        serie = lineaDeLaSerie(
+            listOf(
+                "DAL" to { Sdk.getInstance(this).dal?.sys?.termInfo?.get(ETermInfoKey.SN) },
+                "Build" to { Build.getSerial() },
+            ),
+            archivo.leer().getOrNull()?.serieFisica,
+        )
         respondedor = RespondedorLocal(ahora = SystemClock::elapsedRealtime) // el reloj de las notas de los folios
         red = RedDelLaboratorio(this)
         val lector = LectorPax(PaxDeLaTerminal(this), red)
@@ -48,7 +62,7 @@ class AppDelLaboratorio : Application() {
         laboratorio = Laboratorio(
             historial = HistorialLocal(File(noBackupFilesDir, "historial")),
             lector = lector,
-            archivo = ArchivoDeIdentidad(noBackupFilesDir),
+            archivo = archivo,
             fabrica = { identidad ->
                 val motor = crearMotorDeCobro(
                     context = this, identidad = identidad, lector = lector, red = red,
@@ -72,10 +86,13 @@ class AppDelLaboratorio : Application() {
     /** El botón «Servidor mudo» (bloque P0): lo prende o lo apaga y da el estado nuevo. */
     internal fun alternarMudo(): Boolean = (!respondedor.mudo).also { respondedor.mudo = it }
 
-    /** Lo del proceso para la cabeza de la pantalla: con el mudo, «(mudo)» y la retención en ms del mismo reloj de los folios. */
+    /**
+     * Lo del proceso para la cabeza de la pantalla: con el mudo, «(mudo)» y la retención en ms del mismo reloj de los folios; y
+     * debajo, la serie medida al arrancar.
+     */
     internal fun cabecera(): String =
         "Proceso ${Process.myPid()} · red: ${if (red.hayRed()) "sí" else "no"} · Respondedor 127.0.0.1: ${respondedor.resumen()}" +
-            (if (respondedor.mudo) " (mudo)" else "") + (respondedor.retencion()?.let { " · $it" } ?: "")
+            (if (respondedor.mudo) " (mudo)" else "") + (respondedor.retencion()?.let { " · $it" } ?: "") + "\n" + serie
 }
 
 private const val IMPORTE = 2_550L // $25.50: distinto de $1 y dentro del tope de la tarjeta del laboratorio ($100)

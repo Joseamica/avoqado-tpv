@@ -44,7 +44,6 @@ import com.avoqado.cobropropio.privacidad.HuellaHmac
 import com.avoqado.cobropropio.red.Respuesta
 import com.avoqado.cobropropio.servidor.AcuseDelResultado
 import com.avoqado.cobropropio.servidor.ColaDeResultados
-import com.avoqado.cobropropio.servidor.PermisoDeReverso
 import com.avoqado.cobropropio.servidor.ResultadoDelReverso
 import com.avoqado.cobropropio.servidor.ReversoDelServidor
 import com.google.gson.JsonParser
@@ -185,14 +184,13 @@ class MotorDeCobroCancelacionTest {
     }
 
     private class ServidorFalso : ReversoDelServidor {
-        val permisos = mutableListOf<AttemptId>()
-        override suspend fun pedirPermiso(venueId: String, id: AttemptId, espera: Duration): PermisoDeReverso {
-            permisos += id
-            return PermisoDeReverso.Concedido("evt-1")
-        }
+        /** Cada llamada al SERVIDOR: la cancelación nunca le habla. */
+        val llamadas = mutableListOf<AttemptId>()
 
-        override suspend fun reportarResultado(venueId: String, id: AttemptId, r: ResultadoDelReverso): AcuseDelResultado =
+        override suspend fun reportarResultado(venueId: String, id: AttemptId, r: ResultadoDelReverso): AcuseDelResultado {
+            llamadas += id
             throw UnsupportedOperationException("la cancelación no reporta reversos")
+        }
     }
 
     private inner class Mundo(
@@ -213,7 +211,7 @@ class MotorDeCobroCancelacionTest {
         val blumon = BlumonFalso(ahora)
         val servidor = ServidorFalso()
         val motor = MotorDeCobro(
-            identidad, lector, object : Red { override fun hayRed() = true }, blumon, servidor, libreta,
+            identidad, lector, object : Red { override fun hayRed() = true }, blumon, libreta,
             ColaDeResultados(libreta, servidor, io), huella, CatalogoDeRechazos.BLUMON, Relojes(), fondo, ahora, { pared }, io,
         )
         val tardias = mutableListOf<Pair<AttemptId, EventoDeCobro>>()
@@ -349,7 +347,7 @@ class MotorDeCobroCancelacionTest {
         assertEquals(listOf(Operacion.VENTA, Operacion.CANCELACION), lector.operaciones)
         esperarTodo()
         assertEquals(0, blumon.reversos)
-        assertTrue(servidor.permisos.isEmpty())
+        assertTrue(servidor.llamadas.isEmpty())
         assertEquals(listOf<EventoDeCobro>(Cancelada(22222)), tardiasDe(c.id))
         // Regla 7: la fila de la venta original no cambia al cancelarla, así que su lápida sigue diciendo Aprobado.
         assertEquals(EstadoDelIntento.APROBADO, fila(v.id).estado)
@@ -564,7 +562,7 @@ class MotorDeCobroCancelacionTest {
         assertEquals(com.avoqado.cobropropio.libreta.EstadoDelReporte.NO_APLICA, f.reporte)
         assertTrue(!f.pudoEntrar)
         assertEquals(0, blumon.reversos)
-        assertTrue(servidor.permisos.isEmpty())
+        assertTrue(servidor.llamadas.isEmpty())
     }
 
     /** H: el contrato de una cancelación es su venta original: el mismo folio con OTRA original, o en otro venue, es otro contrato. */
@@ -773,7 +771,7 @@ class MotorDeCobroCancelacionTest {
         esperarTodo()
         assertEquals(EstadoDelIntento.NO_SE, fila(c.id).estado)
         assertEquals(0, blumon.reversos)
-        assertTrue(servidor.permisos.isEmpty())
+        assertTrue(servidor.llamadas.isEmpty())
         assertEquals(listOf<EventoDeCobro>(PorConfirmar(v.importeCentavos)), tardiasDe(c.id))
     }
 

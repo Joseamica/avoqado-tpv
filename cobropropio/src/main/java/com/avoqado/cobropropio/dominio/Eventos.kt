@@ -20,6 +20,7 @@ public sealed interface EventoDeCobro {
     public data class Aprobado(
         val operationNumber: Long?,
         val autorizacion: String?,
+        /** Hoy el motor siempre lo entrega `null`: su columna ya no tiene escritor desde el bloque S (la firma se conserva). */
         val paymentId: String?,
         val marca: Marca?,
         val medio: Medio?,
@@ -30,7 +31,7 @@ public sealed interface EventoDeCobro {
     public data class Cancelada(val operationNumber: Long) : EventoDeCobro
     public data class Rechazado(val codigo: String, val leyenda: String) : EventoDeCobro
     public data class NoSalioAlBanco(val motivo: MotivoNoSalio, val admision: MotivoNoAdmitida?) : EventoDeCobro
-    /** Se deshizo: sólo con el `REVERSADA` con eco de Blumon o el `REVERSED` del SERVIDOR. */
+    /** Se deshizo: sólo con el `REVERSADA` con eco de Blumon; el acuse del SERVIDOR nunca lo da ni lo quita (bloque S). */
     public data object NoSeCobro : EventoDeCobro
 
     /**

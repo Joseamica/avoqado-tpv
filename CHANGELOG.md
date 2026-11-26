@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Changed**
+- **Interno, sin efecto en la app · `cobropropio`, bloque S de la fase 3 del SDK propio**: cuando se pierde la respuesta de una venta, el motor manda el reverso en cuanto vence la espera, sin pedirle permiso al SERVIDOR (antes lo esperaba hasta 11 s y, con varias de sus respuestas, no reversaba). Un reverso que Blumon confirma es «no se cobró» en ese instante, también en una venta de la tablet (antes esperaba el acuse del SERVIDOR hasta 30 s y, sin él, quedaba «por confirmar»); el reporte al SERVIDOR sigue guardado en la libreta, se intenta enseguida y `recuperar()` lo repite, y su acuse sólo cierra el reporte: ya no cambia lo que la terminal dijo. El módulo sigue sin conectarse (`:app` no depende de él).
+
 ---
 
 ## [2.22.4] - 2026-11-25

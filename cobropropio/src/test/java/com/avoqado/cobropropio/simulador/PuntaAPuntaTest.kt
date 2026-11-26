@@ -65,8 +65,6 @@ import com.avoqado.cobropropio.simulador.BlumonSimuladoDispatcher.Companion.PREF
 import com.avoqado.cobropropio.simulador.BlumonSimuladoDispatcher.Companion.REVERSO
 import com.avoqado.cobropropio.simulador.BlumonSimuladoDispatcher.Companion.TEXTO_DEL_BANCO
 import com.avoqado.cobropropio.simulador.BlumonSimuladoDispatcher.Companion.VENTA
-import com.avoqado.cobropropio.simulador.ServidorSimuladoDispatcher.Companion.INTENCION
-import com.avoqado.cobropropio.simulador.ServidorSimuladoDispatcher.Companion.PAGO
 import com.avoqado.cobropropio.simulador.ServidorSimuladoDispatcher.Companion.RESULTADO
 import com.google.gson.JsonObject
 import kotlinx.coroutines.CompletableDeferred
@@ -143,12 +141,11 @@ import kotlin.time.Duration.Companion.seconds
  *
  * La pausa entre reversos va en 0: con el reloj quieto, cada vuelta sale en cuanto cierra la anterior, así que 21, 70 y 80
  * terminan por el `TX_007` de su segunda vuelta (rama D), no por el techo. La rama F (el techo con un reverso que pudo entrar)
- * la cubren las pruebas del motor de la Tarea 7: `tabla F pudoEntrar` y `fallback sin respuestas al techo reporta
- * PUDO_ENTRAR` (`MotorDeCobroVentaTest`).
+ * la cubre la prueba del motor de la Tarea 7 `tabla F pudoEntrar` (`MotorDeCobroVentaTest`).
  *
  * Todas corren con `Ambiente.PRODUCCION` (lo dice cada `prueba`): los éxitos «como producción» traen `simulation: false`, y
  * el 80 trae `true`. La venta es siempre vinculada al POS (V = sí). Al cerrar, cada prueba revisa la invariante de lo que
- * salió ([Mundo.revisarLoQueSalio]): ni una venta, cancelación, permiso o reverso de más.
+ * salió ([Mundo.revisarLoQueSalio]): ni una venta, cancelación o reverso de más, y al SERVIDOR sólo `/resultado`.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [28])
@@ -265,7 +262,6 @@ class PuntaAPuntaTest {
         val s = venta(20)
         assertEquals(inicio(s) + RevisandoConElBanco + NoSeCobro, esperar(callaLaVenta(s)))
         assertFalse(fila(s.id).pudoEntrar)
-        assertEquals(1, servidorSim.pedidas(INTENCION, s.id).size)
         reversadaYAcusada(s)
     }
 
@@ -291,7 +287,6 @@ class PuntaAPuntaTest {
         assertEquals("TX_007", f.ultimoCodigoReverso)
         assertEquals(EstadoDelReporte.PENDIENTE, f.reporte)
         assertEquals(1, blumonSim.pedidas(REVERSO, s.id).size)
-        assertEquals(1, servidorSim.pedidas(INTENCION, s.id).size)
         // El reporte sale por la cola, con su código.
         assertTrue(s.id in recuperar())
         assertEquals(listOf("TX_007"), servidorSim.pedidas(RESULTADO, s.id).map { it.reportado })
@@ -339,10 +334,10 @@ class PuntaAPuntaTest {
     }
 
     /**
-     * 55: el aprobado llega DESPUÉS del arbitraje (se suelta cuando el SERVIDOR recibe el pedido de permiso) y sólo se guarda
-     * como evidencia. El permiso se contesta cuando la escritura de esa evidencia ya corre (el gancho va DENTRO de su
-     * transacción, antes del commit); lo que el motor escribe después del permiso espera a ese commit, así que al terminar la
-     * evidencia ya está en la fila.
+     * 55: el aprobado llega DESPUÉS del arbitraje (se suelta cuando el POST del reverso está por escribirse, en el gancho del
+     * transporte) y sólo se guarda como evidencia. El reverso se escribe cuando la escritura de esa evidencia ya corre (el
+     * gancho de la libreta va DENTRO de su transacción, antes del commit); lo que el motor escribe después del reverso espera a
+     * ese commit, así que al terminar la evidencia ya está en la fila.
      */
     @Test(timeout = T) fun `55 aprobado tardio despues del arbitraje solo se guarda y reversa`() = tardioDespuesDelArbitraje()
 
@@ -351,12 +346,18 @@ class PuntaAPuntaTest {
         val guardado = CompletableDeferred<Unit>()
         actual.ganchos["guardarAprobacion"] = { guardado.complete(Unit) }
         val vencio = AtomicBoolean(false)
-        servidorSim.antesDeContestarLaIntencion = {
-            blumonSim.ventaTardia.complete(Unit)
-            if (runBlocking { withTimeoutOrNull(BARRERA) { guardado.await() } } == null) vencio.set(true)
+        val pendiente = cobrar(s)
+        llego(VENTA, s.id) // la venta ya se escribió: la siguiente escritura del transporte es la del reverso
+        val primera = AtomicBoolean(true)
+        envio.ganchoAntesDeEscribir = {
+            if (primera.compareAndSet(true, false)) {
+                blumonSim.ventaTardia.complete(Unit)
+                if (runBlocking { withTimeoutOrNull(BARRERA) { guardado.await() } } == null) vencio.set(true)
+            }
         }
-        val eventos = esperar(callaLaVenta(s))
-        assertFalse("la barrera «el aprobado tardío se guarda» venció a los $BARRERA ms y el permiso salió sin ella", vencio.get())
+        avanzarA(t0(s.id) + relojes.esperaRespuesta)
+        val eventos = esperar(pendiente)
+        assertFalse("la barrera «el aprobado tardío se guarda» venció a los $BARRERA ms y el reverso salió sin ella", vencio.get())
         assertEquals(inicio(s) + RevisandoConElBanco + NoSeCobro, eventos)
         assertTrue(eventos.none { it is Aprobado })
         val f = fila(s.id)
@@ -364,21 +365,6 @@ class PuntaAPuntaTest {
         assertEquals(AUTORIZACION, f.evidenciaTardiaAutorizacion)
         assertNull(f.operationNumber)
         reversadaYAcusada(s)
-    }
-
-    @Test(timeout = T) fun `60 silencio y el SERVIDOR ya cobrado da Aprobado sin reversar`() = servidorYaCobrado()
-
-    private fun servidorYaCobrado() = prueba(Ambiente.PRODUCCION) {
-        val s = venta(60, EscenarioDelServidor.YA_COBRADO)
-        val aprobado = Aprobado(null, null, PAGO, Marca.VISA, Medio.PLASTICO, "411111", "1111", "0484")
-        assertEquals(inicio(s) + RevisandoConElBanco + aprobado, esperar(callaLaVenta(s)))
-        val f = fila(s.id)
-        assertEquals(EstadoDelIntento.APROBADO, f.estado)
-        assertEquals(OrigenDeLaAprobacion.SERVIDOR, f.origenDeLaAprobacion)
-        assertEquals(PAGO, f.paymentId)
-        assertTrue(blumonSim.pedidas(REVERSO).isEmpty())
-        assertEquals(1, servidorSim.pedidas(INTENCION, s.id).size)
-        assertTrue(servidorSim.pedidas(RESULTADO).isEmpty())
     }
 
     @Test(timeout = T) fun `70 reverso sin respuesta y luego TX_007 deja por confirmar y reporta PUDO_ENTRAR`() = reversoSinRespuesta()
@@ -396,13 +382,15 @@ class PuntaAPuntaTest {
         assertEquals(EstadoDelIntento.NO_SE, f.estado)
     }
 
-    @Test(timeout = T) fun `90 REVERSADA y el SERVIDOR acusa contradiction deja por confirmar`() = contradiccion()
+    /** Bloque S (D-4): el `contradiction` del SERVIDOR se guarda como evidencia y no cambia lo que la terminal ya dijo. */
+    @Test(timeout = T) fun `90 REVERSADA y el SERVIDOR acusa contradiction sigue NoSeCobro`() = contradiccion()
 
     private fun contradiccion() = prueba(Ambiente.PRODUCCION) {
         val s = venta(90, EscenarioDelServidor.ACUSA_CONTRADICCION)
-        assertEquals(inicio(s) + RevisandoConElBanco + PorConfirmar(s.importeCentavos), esperar(callaLaVenta(s)))
+        assertEquals(inicio(s) + RevisandoConElBanco + NoSeCobro, esperar(callaLaVenta(s)))
+        reporteDeFondoCerrado(s.id)
         val f = fila(s.id)
-        assertEquals(EstadoDelIntento.NO_SE, f.estado)
+        assertEquals(EstadoDelIntento.NO_SE_COBRO, f.estado)
         assertEquals(EstadoDelReverso.CONFIRMADO, f.reverso)
         assertEquals(EstadoDelReversoEnServidor.CONTRADICTION, f.estadoEnServidor)
         assertEquals(EstadoDelReporte.ENTREGADO, f.reporte)
@@ -571,7 +559,7 @@ class PuntaAPuntaTest {
             }
         }
         val t0 = t0(s.id)
-        avanzarA(t0 + relojes.esperaRespuesta) // la venta calla: arbitraje, permiso y el POST del reverso
+        avanzarA(t0 + relojes.esperaRespuesta) // la venta calla: el arbitraje y el POST del reverso
         assertEquals("pasó el chequeo y aún no escribe", 0L, barrera("el reverso se detiene en el socket", enElSocket))
         val guardado = CompletableDeferred<Unit>()
         actual.ganchos["guardarAprobacion"] = { guardado.complete(Unit) }
@@ -593,7 +581,6 @@ class PuntaAPuntaTest {
         assertFalse(f.pudoEntrar)
         assertEquals(EstadoDelReporte.NO_APLICA, f.reporte)
         assertEquals(blumonSim.folioDe(s.id), f.evidenciaTardiaOperacion)
-        assertEquals(1, servidorSim.pedidas(INTENCION, s.id).size)
         assertTrue(servidorSim.pedidas(RESULTADO).isEmpty())
     }
 
@@ -661,7 +648,7 @@ class PuntaAPuntaTest {
         get() = listOf(
             ::aprobado, ::rechazo05, ::parcial, ::codigo68, ::simulationTrue, ::aprobadoSinEco, ::aprobadoConError,
             ::aprobadoConErrorSuelto, ::rechazoConDatos, ::rechazoConHttpDeTransporte, ::silencioYReversada, ::reversadaSinEco,
-            ::silencioYTx007, ::rq006DosVeces, ::tardioAntesDelArbitraje, ::tardioDespuesDelArbitraje, ::servidorYaCobrado,
+            ::silencioYTx007, ::rq006DosVeces, ::tardioAntesDelArbitraje, ::tardioDespuesDelArbitraje,
             ::reversoSinRespuesta, ::contradiccion, ::cancelacionExitosa, ::cancelacionNoPermitida, ::cancelacionSinRespuesta,
             ::cancelacionConEcoDeLaVenta, ::cancelacionConError, ::apagonAMediaVenta, ::unaSolaVentaPorIntento,
             ::bloqueoDespuesDelChequeo,
@@ -766,7 +753,7 @@ class PuntaAPuntaTest {
             val db = LibretaDatabase.constructor(context, archivo).allowMainThreadQueries().build()
             val libreta = Libreta(db, ahora, { PARED }, proceso) { op -> ganchos[op]?.invoke() }
             val motor = MotorDeCobro(
-                identidad, lector, CON_RED, espia, servidor, libreta, ColaDeResultados(libreta, servidor), HUELLA,
+                identidad, lector, CON_RED, espia, libreta, ColaDeResultados(libreta, servidor), HUELLA,
                 CatalogoDeRechazos.BLUMON, relojes, fondo, ahora, { PARED }, io,
             )
             private val tardias = CopyOnWriteArrayList<Pair<AttemptId, EventoDeCobro>>()
@@ -806,11 +793,8 @@ class PuntaAPuntaTest {
             }
         }
 
-        fun venta(centavos: Int, servidor: EscenarioDelServidor = EscenarioDelServidor.CONCEDE_Y_ACUSA): SolicitudDeVenta {
-            val s = SolicitudDeVenta(folio(servidor), VENUE, 10_000L + centavos, Origen.VINCULADO_AL_POS)
-            if (servidor == EscenarioDelServidor.YA_COBRADO) servidorSim.cobrosRegistrados[s.id.valor] = s.importeCentavos
-            return s
-        }
+        fun venta(centavos: Int, servidor: EscenarioDelServidor = EscenarioDelServidor.CONCEDE_Y_ACUSA): SolicitudDeVenta =
+            SolicitudDeVenta(folio(servidor), VENUE, 10_000L + centavos, Origen.VINCULADO_AL_POS)
 
         fun cancelacionDe(s: SolicitudDeVenta) = SolicitudDeCancelacion(AttemptId.nuevo(), VENUE, s.id)
 
@@ -879,7 +863,7 @@ class PuntaAPuntaTest {
 
         fun sinReversoNiServidor() {
             assertTrue("cero reversos", blumonSim.pedidas(REVERSO).isEmpty())
-            assertTrue("cero permisos y cero reportes", servidorSim.registro.value.isEmpty())
+            assertTrue("cero reportes", servidorSim.registro.value.isEmpty())
         }
 
         /** Exactamente UNA petición a cancelar: el folio bancario de la venta en la ruta, el de la CANCELACIÓN en el cuerpo, y la contestó [escenario]. */
@@ -888,15 +872,27 @@ class PuntaAPuntaTest {
             assertEquals(listOf(BlumonSimuladoDispatcher.Pedida(ruta, c.id.valor, escenario)), blumonSim.pedidas(CANCELACION))
         }
 
-        /** E con V: el `REVERSADA` y el acuse `reversed` del SERVIDOR, en una sola fila, tras un permiso y una lectura. */
+        /**
+         * Bloque S: el reporte de un reverso confirmado sale en `fondo` después del `NoSeCobro`; aquí se espera a que su acuse
+         * cierre la obligación (con tope de pared [BARRERA], como las barreras).
+         */
+        fun reporteDeFondoCerrado(id: AttemptId) {
+            val limite = System.nanoTime() + BARRERA * 1_000_000
+            while (fila(id).reporte == EstadoDelReporte.PENDIENTE) {
+                if (System.nanoTime() > limite) throw AssertionError("la barrera «el reporte de fondo se cierra» no se liberó en $BARRERA ms")
+                Thread.sleep(10)
+            }
+        }
+
+        /** E: el `REVERSADA` y, después, el acuse `reversed` del SERVIDOR del reporte de fondo, en una sola fila, tras una lectura. */
         fun reversadaYAcusada(s: SolicitudDeVenta, reversos: Int = 1) {
+            reporteDeFondoCerrado(s.id)
             val f = fila(s.id)
             assertEquals(EstadoDelIntento.NO_SE_COBRO, f.estado)
             assertEquals(EstadoDelReverso.CONFIRMADO, f.reverso)
             assertEquals(EstadoDelReversoEnServidor.REVERSED, f.estadoEnServidor)
             assertEquals(EstadoDelReporte.ENTREGADO, f.reporte)
             assertEquals(reversos, blumonSim.pedidas(REVERSO, s.id).size)
-            assertEquals(1, servidorSim.pedidas(INTENCION, s.id).size)
             assertEquals(listOf("REVERSADA"), servidorSim.pedidas(RESULTADO, s.id).map { it.reportado })
             assertEquals(listOf(Operacion.VENTA), lector.lecturas)
         }
@@ -911,7 +907,6 @@ class PuntaAPuntaTest {
             assertEquals(EstadoDelReporte.PENDIENTE, f.reporte)
             assertEquals("TX_007", f.ultimoCodigoReverso)
             assertEquals(reversos, blumonSim.pedidas(REVERSO, s.id).size)
-            assertEquals(1, servidorSim.pedidas(INTENCION, s.id).size)
         }
 
         /** Barrido: las respuestas de la sesión que `ClienteBlumon` consume adentro, por el MISMO transporte y simulador. */
@@ -960,9 +955,10 @@ class PuntaAPuntaTest {
         }
 
         /**
-         * La invariante de TODA prueba (revisor I1, Codex 1 y 2): por folio, a lo más UNA venta, UNA cancelación y UN permiso, y
-         * a lo más 3 reversos (lo más que pide un escenario); las ventas que salieron son las que se pidieron (atrapa también un
-         * segundo envío con OTRO folio); nadie habló con otro verbo; y ninguna excepción escapó de `fondo`.
+         * La invariante de TODA prueba (revisor I1, Codex 1 y 2): por folio, a lo más UNA venta y UNA cancelación, y a lo más 3
+         * reversos (lo más que pide un escenario); las ventas que salieron son las que se pidieron (atrapa también un segundo
+         * envío con OTRO folio); al SERVIDOR sólo le llega `/resultado` (bloque S: nada de permiso); nadie habló con otro verbo;
+         * y ninguna excepción escapó de `fondo`.
          */
         fun revisarLoQueSalio() {
             fun porFolio(ruta: String) = blumonSim.pedidas(ruta).groupingBy { it.reference }.eachCount()
@@ -971,8 +967,7 @@ class PuntaAPuntaTest {
             porFolio(REVERSO).forEach { (ref, n) -> assertTrue("reversos del folio $ref: $n", n <= 3) }
             assertEquals("ventas que salieron contra ventas pedidas", ventasPedidas.size, blumonSim.pedidas(VENTA).size)
             assertEquals("folios de las ventas que salieron", ventasPedidas.toSet(), blumonSim.pedidas(VENTA).map { it.reference }.toSet())
-            servidorSim.pedidas(INTENCION).groupingBy { it.attemptId }.eachCount()
-                .forEach { (id, n) -> assertEquals("permisos del folio $id", 1, n) }
+            assertTrue("al SERVIDOR sólo le llega /resultado", servidorSim.registro.value.all { it.ruta == RESULTADO })
             assertEquals("peticiones con otro verbo", 0, blumonSim.verbosIncorrectos.get() + servidorSim.verbosIncorrectos.get())
             assertTrue("excepciones que escaparon de fondo: ${excepciones.size}", excepciones.isEmpty())
         }

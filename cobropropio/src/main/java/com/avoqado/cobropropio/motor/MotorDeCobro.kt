@@ -38,7 +38,6 @@ import com.avoqado.cobropropio.libreta.ResultadoDeEnviarCancelacion
 import com.avoqado.cobropropio.privacidad.HuellaHmac
 import com.avoqado.cobropropio.red.Respuesta
 import com.avoqado.cobropropio.servidor.ColaDeResultados
-import com.avoqado.cobropropio.servidor.ReversoDelServidor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
@@ -84,7 +83,7 @@ import kotlin.time.Duration.Companion.milliseconds
 public enum class ResultadoDelCorte { CORTADO, YA_SALIO, SIN_CONFIRMAR, SIN_INTENTO_VIVO }
 
 /**
- * El motor de la venta: cobra, espera, pide permiso al SERVIDOR y reversa, EXACTAMENTE según la tabla de decisiones (secciones
+ * El motor de la venta: cobra, espera y reversa, EXACTAMENTE según la tabla de decisiones (secciones
  * A-H, rediseño v3 y parada 2). A los 30 s de t0 termina la transmisión en vivo del intento (`PorConfirmar` si el motor todavía
  * no decidió un final); lo que ve la pantalla lo decide quien usa el motor. La cancelación con la tarjeta (T9) entra por la
  * MISMA puerta, el mismo `Registro`, el mismo corte y las mismas salidas; sólo cambia lo de en medio, y nunca se reversa. Sólo
@@ -119,7 +118,6 @@ public class MotorDeCobro internal constructor(
     private val lector: LectorDeTarjeta,
     private val red: Red,
     internal val blumon: PuertoBlumon,
-    internal val servidor: ReversoDelServidor,
     internal val libreta: Libreta,
     internal val cola: ColaDeResultados,
     private val huella: HuellaHmac,
@@ -224,9 +222,6 @@ public class MotorDeCobro internal constructor(
 
         /** El de la venta; el de una cancelación sale de la fila de su original al anotarla (0 mientras no se sabe). */
         @Volatile var importeCentavos: Long = (solicitud as? SolicitudDeVenta)?.importeCentavos ?: 0
-
-        /** Sólo en los caminos de la venta (el reverso): una cancelación nunca llega ahí. */
-        val venta: SolicitudDeVenta get() = solicitud as SolicitudDeVenta
         val historia = MutableStateFlow<List<EventoDeCobro>>(emptyList())
         val reservada = AtomicBoolean(false)
         @Volatile var enviado = false
@@ -448,8 +443,8 @@ public class MotorDeCobro internal constructor(
 
     /**
      * Al arrancar y cada vez que la app la llame: cierra lo que dejó un proceso muerto y las filas de ESTE proceso sin intento
-     * vivo (sin inventar respuestas de Blumon) y entrega los reportes pendientes.
-     * Un `reversed` que llega aquí se publica tarde. Regresa los ids que cambiaron o se entregaron.
+     * vivo (sin inventar respuestas de Blumon) y entrega los reportes pendientes. Un acuse sólo cierra su reporte: no cambia el
+     * estado del intento ni publica nada (bloque S, D-4). Regresa los ids que cambiaron o se entregaron.
      *
      * Puede lanzar (la libreta o la entrega al SERVIDOR fallan): la app la llama dentro de un `try` y la reintenta; lo que no
      * se cerró sigue en la libreta para la siguiente vuelta.
@@ -461,12 +456,6 @@ public class MotorDeCobro internal constructor(
         antesDeRecuperar()
         val cerrados = enLibreta { libreta.recuperarAlArrancar(::idsVivos) }
         val entregados = cola.entregarPendientes().keys
-        for (id in entregados) {
-            if (enLibreta { libreta.buscar(id) }?.estado != EstadoDelIntento.NO_SE_COBRO) continue
-            // Un solo embudo (r2 familia D): si el folio está en memoria (vivo o lápida), por su `Registro`; sin él, directo.
-            val r = intentos[id]
-            if (r != null) r.emitir(EventoDeCobro.NoSeCobro) else publicarTardia(id, EventoDeCobro.NoSeCobro)
-        }
         return (cerrados + entregados).distinct()
     }
 
@@ -507,8 +496,9 @@ public class MotorDeCobro internal constructor(
     }
 
     /**
-     * R10-1: una lápida en duda lee su fila en `fondo`, sin que nadie la espere, por si un acuse ya guardado la resolvió; el
-     * definitivo sale por el `Registro` (a `resolucionesTardias` y como `actual` para quien reabra). Uno en vuelo por lápida.
+     * R10-1: una lápida en duda lee su fila en `fondo`, sin que nadie la espere, por si un definitivo se guardó en la libreta y
+     * su publicación falló (también en la devolución, Codex r1); el definitivo sale por el `Registro` (a `resolucionesTardias` y
+     * como `actual` para quien reabra). Uno en vuelo por lápida.
      */
     private fun refrescarDesdeLaFila(r: Registro) {
         if (!r.refrescando.compareAndSet(false, true)) return

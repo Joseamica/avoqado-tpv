@@ -23,6 +23,7 @@ import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
 import com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableDiscount
 import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableServiceCharge
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
@@ -72,6 +73,7 @@ class TableCheckoutViewModelTest {
     private val deviceInfoManager = mockk<DeviceInfoManager>()
     private val syncOutbox = mockk<SyncOutbox>()
     private val dineroDeTarjeta = mockk<DineroDeTarjetaDeLaCuenta>()
+    private val permisos = mockk<PermissionsRepository>()
     private val cambiosDeLaCola = kotlinx.coroutines.flow.MutableStateFlow(0)
     private lateinit var tableSession: TableSession
     private lateinit var letrero: ConnectionStateManager
@@ -95,6 +97,7 @@ class TableCheckoutViewModelTest {
         coEvery { syncOutbox.aperturasConfirmadasConResultado(any(), any()) } returns emptyList()
         every { syncOutbox.observarCambios(any()) } returns cambiosDeLaCola
         coEvery { dineroDeTarjeta.motivo(any(), any()) } returns null
+        coEvery { permisos.hasPermission(any()) } returns true
     }
 
     @After
@@ -111,6 +114,7 @@ class TableCheckoutViewModelTest {
         saldoDeMesaSinRed = saldo,
         connectionStateManager = letrero,
         dineroDeTarjeta = dineroDeTarjeta,
+        permissionsRepository = permisos,
     )
 
     // region — el cobro con TARJETA apunta a la orden EXISTENTE, nunca crea una nueva
@@ -1006,6 +1010,78 @@ class TableCheckoutViewModelTest {
         assertThat(viewModel.availableDiscounts.value).isEqualTo(discounts)
         assertThat(viewModel.isLoadingDiscounts.value).isFalse()
         assertThat(viewModel.discountsLoadError.value).isNull()
+    }
+
+    // D51 (hz:b37dd7ea:D51): una cortesía del catálogo la rechaza el SERVIDOR sin `orders:comp`; a quien no lo tiene, sale en gris
+    // con su razón (la misma que el 403), y los demás descuentos no cambian.
+    private val porcentaje = AvailableDiscount(id = "d1", name = "Cliente frecuente", type = "PERCENTAGE", value = BigDecimal("10"), requiresApproval = false, estimatedSavings = BigDecimal("45.00"))
+    private val cortesia = AvailableDiscount(id = "d2", name = "Cortesía de la casa", type = "COMP", value = BigDecimal.ZERO, requiresApproval = false, estimatedSavings = BigDecimal("450.00"))
+
+    @Test
+    fun d51_sin_permiso_de_cortesias_la_cortesia_del_catalogo_sale_en_gris_con_su_razon() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { permisos.hasPermission("orders:comp") } returns false
+        coEvery { repository.getAvailableDiscounts(venueId, "orden-1") } returns Result.success(listOf(porcentaje, cortesia))
+        val viewModel = createViewModel()
+
+        viewModel.loadAvailableDiscounts()
+
+        val lista = viewModel.availableDiscounts.value
+        assertThat(lista.map { it.id }).containsExactly("d1", "d2").inOrder()
+        assertThat(lista[0].razonApagado).isNull()
+        assertThat(lista[1].razonApagado).isEqualTo("Esta cortesía la da un gerente con su sesión")
+        assertThat(viewModel.isLoadingDiscounts.value).isFalse()
+    }
+
+    @Test
+    fun d51_con_permiso_de_cortesias_la_cortesia_se_puede_tocar() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { permisos.hasPermission("orders:comp") } returns true
+        coEvery { repository.getAvailableDiscounts(venueId, "orden-1") } returns Result.success(listOf(porcentaje, cortesia))
+        val viewModel = createViewModel()
+
+        viewModel.loadAvailableDiscounts()
+
+        assertThat(viewModel.availableDiscounts.value).isEqualTo(listOf(porcentaje, cortesia))
+        assertThat(viewModel.availableDiscounts.value.map { it.razonApagado }).containsExactly(null, null)
+    }
+
+    @Test
+    fun d51_sin_cortesias_en_la_lista_no_pregunta_por_el_permiso() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.getAvailableDiscounts(venueId, "orden-1") } returns Result.success(listOf(porcentaje))
+        val viewModel = createViewModel()
+
+        viewModel.loadAvailableDiscounts()
+
+        assertThat(viewModel.availableDiscounts.value).isEqualTo(listOf(porcentaje))
+        coVerify(exactly = 0) { permisos.hasPermission(any()) }
+    }
+
+    // La pregunta del permiso es una espera más: una carga vieja que la termina tarde no pisa la lista de la vigente.
+    @Test
+    fun d51_una_carga_vieja_que_termina_de_preguntar_el_permiso_tarde_no_pisa_a_la_vigente() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.getAvailableDiscounts(venueId, "orden-1") } returnsMany listOf(
+            Result.success(listOf(cortesia)),
+            Result.success(listOf(porcentaje, cortesia)),
+        )
+        val permisoViejo = CompletableDeferred<Boolean>()
+        val respuestas = ArrayDeque(listOf(permisoViejo, CompletableDeferred(true)))
+        coEvery { permisos.hasPermission("orders:comp") } coAnswers { respuestas.removeFirst().await() }
+        val viewModel = createViewModel()
+
+        viewModel.loadAvailableDiscounts()
+        viewModel.loadAvailableDiscounts()
+        assertThat(viewModel.availableDiscounts.value).isEqualTo(listOf(porcentaje, cortesia))
+        permisoViejo.complete(false)
+
+        assertThat(viewModel.availableDiscounts.value).isEqualTo(listOf(porcentaje, cortesia))
+        assertThat(viewModel.isLoadingDiscounts.value).isFalse()
     }
 
     // D2 (hz:6884f503:D2, N86 17-nov): sin red la hoja decía «No hay descuentos disponibles para esta cuenta», que es otra

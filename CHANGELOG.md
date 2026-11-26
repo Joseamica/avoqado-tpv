@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### **Added**
+- **Interno, sin efecto en la app · `motorlab`, bloque P0 de la fase 3 del SDK propio**: botón «Servidor mudo» en la app de laboratorio de sandbox: el servidor local recibe el reporte completo y nunca contesta, como un SERVIDOR colgado, y suelta la conexión cuando el cliente se va o a los 15 s; la cabecera dice «(mudo)», cuántas retuvo y desde cuándo. `:app` y `:cobropropio` no cambian.
+
 ### **Changed**
 - **Interno, sin efecto en la app · `cobropropio`, bloque S de la fase 3 del SDK propio**: cuando se pierde la respuesta de una venta, el motor manda el reverso en cuanto vence la espera, sin pedirle permiso al SERVIDOR (antes lo esperaba hasta 11 s y, con varias de sus respuestas, no reversaba). Un reverso que Blumon confirma es «no se cobró» en ese instante, también en una venta de la tablet (antes esperaba el acuse del SERVIDOR hasta 30 s y, sin él, quedaba «por confirmar»); el reporte al SERVIDOR sigue guardado en la libreta, se intenta enseguida y `recuperar()` lo repite, y su acuse sólo cierra el reporte: ya no cambia lo que la terminal dijo. El módulo sigue sin conectarse (`:app` no depende de él).
 

@@ -68,11 +68,16 @@ class MainActivity : Activity() {
             lab.orden(centavosDe(importe.text.toString())?.let { Orden.Cobrar(it) } ?: Orden.Aviso("importe sin forma: de 0.01 a 100.00 pesos"))
         }
         val cancelar = boton("Cancelar") { lab.orden(Orden.Cancelar) }
+        // Bloque P0: el SERVIDOR colgado. El texto sale del respondedor, no de la pantalla: recrearla no lo pierde.
+        val mudo = Button(this).apply {
+            text = textoDelMudo(app.mudo)
+            setOnClickListener { text = textoDelMudo(app.alternarMudo()) }
+        }
         folios = TextView(this) // al final: crecen
         val columna = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
-            listOf(cabeza, lecturaSeca, resultado, serie, posId, fisica, guardar, importe, cobrar, cancelar, folios).forEach { addView(it) }
+            listOf(cabeza, lecturaSeca, resultado, serie, posId, fisica, guardar, importe, cobrar, cancelar, mudo, folios).forEach { addView(it) }
         }
         setContentView(ScrollView(this).apply { addView(columna) })
         pintar() // este hilo ES el carril: el primer cuadro ya trae el estado vigente, no una pantalla vacía con «Cobrar» encendido
@@ -133,6 +138,8 @@ class MainActivity : Activity() {
         transformationMethod = PasswordTransformationMethod.getInstance()
         importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
     }
+
+    private fun textoDelMudo(prendido: Boolean) = "Servidor mudo: ${if (prendido) "sí" else "no"}"
 
     private companion object {
         /** Cuántas veces se creó la pantalla en este proceso (sólo en el hilo de la pantalla): «Pantalla n.º». */

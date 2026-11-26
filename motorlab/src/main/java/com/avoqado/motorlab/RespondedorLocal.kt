@@ -3,6 +3,7 @@ package com.avoqado.motorlab
 import java.io.InputStream
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
@@ -19,8 +20,14 @@ internal val LOCAL: InetAddress = InetAddress.getByAddress(byteArrayOf(127, 0, 0
  * como «sin respuesta»). Lo que el motor hace con ese `404` lo fijan sus propias pruebas: el permiso sigue al reverso y el
  * resultado queda sin entregar. Escucha sólo en 127.0.0.1, en un puerto que da el sistema, y atiende una conexión a la vez en
  * su hilo. Cuenta lo contestado por ruta: `intencion`, `resultado` u `otra`. No guarda ni enseña nada de lo que recibe.
+ *
+ * Bloque P0 · el SERVIDOR colgado: con [mudo], lee la petición entera y no contesta nada; retiene la conexión hasta que el
+ * cliente se va o hasta [retencionMs] desde que empezó a retener, lo que pase primero. [ahora] da los tiempos de [retencion].
  */
-internal class RespondedorLocal : AutoCloseable {
+internal class RespondedorLocal(
+    private val retencionMs: Long = RETENCION_MS,
+    private val ahora: () -> Long = System::currentTimeMillis,
+) : AutoCloseable {
     private val servidor = ServerSocket(0, 16, LOCAL)
     private val cuentas = ConcurrentHashMap<String, AtomicInteger>()
 
@@ -30,8 +37,19 @@ internal class RespondedorLocal : AutoCloseable {
     // Al final: el hilo arranca con todo lo de arriba ya listo.
     private val hilo = thread(isDaemon = true, name = "motorlab-respondedor") { atender() }
 
-    /** Lo contestado de [ruta]: `intencion`, `resultado` u `otra`. */
+    /** Prendido, la siguiente petición se lee entera y no se contesta. Apagarlo no suelta la que ya está retenida. */
+    @Volatile var mudo: Boolean = false
+
+    /** La retención en curso o la última: su inicio y su fin (`null` mientras retiene), en ms de [ahora]. */
+    @Volatile private var ultima: Pair<Long, Long?>? = null
+
+    /** Lo contestado de [ruta]: `intencion`, `resultado` u `otra`; o lo retenido, `mudo` (se cuenta al EMPEZAR a retener). */
     fun contestadas(ruta: String): Int = cuentas[ruta]?.get() ?: 0
+
+    /** `null` si nunca retuvo; «retenida desde T» mientras retiene; «última retención T0–T1» al soltar. En ms de [ahora]. */
+    fun retencion(): String? = ultima?.let { (desde, hasta) ->
+        if (hasta == null) "retenida desde $desde" else "última retención $desde–$hasta"
+    }
 
     fun resumen(): String = RUTAS.joinToString(" · ") { "$it ${contestadas(it)}" }
 
@@ -39,8 +57,8 @@ internal class RespondedorLocal : AutoCloseable {
      * Ya no acepta: cierra el `ServerSocket` y ESPERA a su hilo. Mientras el hilo sigue dentro de `accept`, el sistema todavía
      * acepta conexiones en ese puerto (Linux suelta el socket cuando esa llamada regresa); al volver de aquí, ya las rechaza.
      *
-     * ponytail: también espera a una conexión en curso (5 s por lectura como mucho); si algún día se cierra con clientes lentos,
-     * cerrar también la conexión en curso.
+     * ponytail: también espera a una conexión en curso (5 s por lectura como mucho; una retenida, hasta [retencionMs]); si algún
+     * día se cierra con clientes lentos, cerrar también la conexión en curso.
      */
     override fun close() {
         servidor.close()
@@ -59,7 +77,11 @@ internal class RespondedorLocal : AutoCloseable {
                 runCatching {
                     conexion.use { c ->
                         c.soTimeout = 5_000
-                        val ruta = leerPeticion(c.getInputStream().buffered()) ?: return@use // sin forma: sin contestar
+                        val entrada = c.getInputStream().buffered()
+                        val ruta = leerPeticion(entrada) ?: return@use // sin forma: sin contestar
+                        // ponytail: una conexión a la vez; las demás esperan en la cola del socket mientras dura la retención, y close()
+                        // puede tardar hasta retencionMs
+                        if (mudo) return@use retener(c, entrada)
                         // Se cuenta ANTES de contestar: quien recibe el 404 ya ve su cuenta.
                         cuentas.getOrPut(tipo(ruta)) { AtomicInteger() }.incrementAndGet()
                         c.getOutputStream().apply {
@@ -74,6 +96,28 @@ internal class RespondedorLocal : AutoCloseable {
         }
     }
 
+    /**
+     * La petición ya se leyó entera: lee y tira lo que siga llegando hasta fin de flujo o hasta el plazo ABSOLUTO
+     * `inicio + retencionMs`, y nunca escribe. Cada lectura espera sólo lo que falta del plazo: un cliente que gotea bytes no
+     * retiene el hilo más que eso. Al vencer, `SocketTimeoutException` sale de aquí y `use` cierra la conexión.
+     */
+    private fun retener(c: Socket, entrada: InputStream) {
+        val inicio = ahora()
+        ultima = inicio to null // antes de contar: quien ve «mudo 1» ya ve la retención
+        cuentas.getOrPut("mudo") { AtomicInteger() }.incrementAndGet()
+        try {
+            val tirar = ByteArray(512)
+            while (true) {
+                val falta = inicio + retencionMs - ahora()
+                if (falta <= 0) return
+                c.soTimeout = falta.toInt() // ≥ 1 ms
+                if (entrada.read(tirar) < 0) return
+            }
+        } finally {
+            ultima = inicio to ahora()
+        }
+    }
+
     private fun tipo(ruta: String) = when {
         ruta.endsWith("/reverso/intencion") -> "intencion"
         ruta.endsWith("/reverso/resultado") -> "resultado"
@@ -81,7 +125,10 @@ internal class RespondedorLocal : AutoCloseable {
     }
 
     private companion object {
-        val RUTAS = listOf("intencion", "resultado", "otra")
+        /** Más que los 10 s que el motor espera a `/resultado` (`ReversoDelServidorHttp.kt:47`): el motor se rinde primero. */
+        const val RETENCION_MS = 15_000L
+
+        val RUTAS = listOf("intencion", "resultado", "otra", "mudo")
         val NO_ENCONTRADO = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray(Charsets.US_ASCII)
     }
 }

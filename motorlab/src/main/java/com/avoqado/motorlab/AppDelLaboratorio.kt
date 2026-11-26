@@ -41,7 +41,7 @@ class AppDelLaboratorio : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        respondedor = RespondedorLocal()
+        respondedor = RespondedorLocal(ahora = SystemClock::elapsedRealtime) // el reloj de las notas de los folios
         red = RedDelLaboratorio(this)
         val lector = LectorPax(PaxDeLaTerminal(this), red)
         val principal = Handler(Looper.getMainLooper())
@@ -66,9 +66,16 @@ class AppDelLaboratorio : Application() {
         laboratorio.arrancar()
     }
 
-    /** Lo del proceso para la cabeza de la pantalla. */
+    /** Si el respondedor está mudo: el botón «Servidor mudo» lo lee al crearse la pantalla. */
+    internal val mudo: Boolean get() = respondedor.mudo
+
+    /** El botón «Servidor mudo» (bloque P0): lo prende o lo apaga y da el estado nuevo. */
+    internal fun alternarMudo(): Boolean = (!respondedor.mudo).also { respondedor.mudo = it }
+
+    /** Lo del proceso para la cabeza de la pantalla: con el mudo, «(mudo)» y la retención en ms del mismo reloj de los folios. */
     internal fun cabecera(): String =
-        "Proceso ${Process.myPid()} · red: ${if (red.hayRed()) "sí" else "no"} · Respondedor 127.0.0.1: ${respondedor.resumen()}"
+        "Proceso ${Process.myPid()} · red: ${if (red.hayRed()) "sí" else "no"} · Respondedor 127.0.0.1: ${respondedor.resumen()}" +
+            (if (respondedor.mudo) " (mudo)" else "") + (respondedor.retencion()?.let { " · $it" } ?: "")
 }
 
 private const val IMPORTE = 2_550L // $25.50: distinto de $1 y dentro del tope de la tarjeta del laboratorio ($100)

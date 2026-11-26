@@ -166,10 +166,10 @@ class SeguimientoDelTurno(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            // Codex r2 #3: si la base falla al observar el turno, se espera lo que falte, como antes de D1 (un `delay` no fallaba
-            // y la excepción cerraba el servicio).
+            // Codex r2 #3: si la base falla al observar el turno, la excepción ya no cierra el servicio. Codex r3 #5: tampoco se
+            // duerme el resto de los 30 min a ciegas: se vuelve a mirar en un minuto como mucho (una entrada nueva no espera más).
             Log.w("ServicioDeUbicacion", "observar el turno", e)
-            delay((ms - (ahora() - inicio)).coerceIn(0L, ms))
+            delay((ms - (ahora() - inicio)).coerceIn(0L, minOf(ms, REINTENTO_SI_FALLA_LA_BASE_MS)))
         }
     }
 
@@ -183,6 +183,9 @@ class SeguimientoDelTurno(
         null
     }
 }
+
+/** Codex r3 #5: con la base fallando, la espera vuelve a mirar el turno en un minuto como mucho. */
+internal const val REINTENTO_SI_FALLA_LA_BASE_MS = 60_000L
 
 /** La misma entrada (no otra marcada después): `timeEntryId` y la llave cambian al subir; la hora del toque y la sucursal no. */
 private fun mismoTurno(a: TurnoLocal, b: TurnoLocal) = a.staffId == b.staffId && a.venueId == b.venueId && a.abiertoAt == b.abiertoAt

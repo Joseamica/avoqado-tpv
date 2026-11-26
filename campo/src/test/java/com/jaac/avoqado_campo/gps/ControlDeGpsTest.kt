@@ -581,6 +581,14 @@ class ControlDeGpsTest {
         assertTrue(System.currentTimeMillis() - inicio >= 290L)
     }
 
+    @Test fun `D1 - con la base fallando la espera vuelve a mirar en un minuto, no en 30 (Codex r3 5)`() = kotlinx.coroutines.test.runTest {
+        val piezas = mockk<com.jaac.avoqado_campo.cola.PiezaDao>()
+        io.mockk.every { piezas.turno() } returns kotlinx.coroutines.flow.flow { throw android.database.sqlite.SQLiteException("disco") }
+        val s = SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), piezas, quienSoy) { AHORA }
+        s.esperar(30 * 60_000L)
+        assertEquals(REINTENTO_SI_FALLA_LA_BASE_MS, testScheduler.currentTime) // reloj virtual: lo que de verdad durmió
+    }
+
     @Test fun `D1 - sin cambios la espera dura lo que se le pide`() = runBlocking<Unit> {
         abrirTurno()
         val s = seguimiento()

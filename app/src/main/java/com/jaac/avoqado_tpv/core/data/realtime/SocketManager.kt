@@ -2135,6 +2135,14 @@ class SocketManager @Inject constructor(
             socketScope.launch {
                 val persisted = try {
                     remotePaymentInbox.persistResult(requestId, payload.toString())
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    // Codex r3 #4 (D3): con la base fallando dos veces (guardar y releer), la excepción salía de este `launch` sin
+                    // manejador y cerraba la app. No se manda nada: la bandeja sigue como estaba y la contesta la siguiente sonda o
+                    // reentrega, como cuando no hay socket.
+                    Timber.e(error, "❌ [Socket] No se pudo guardar el resultado de $requestId; contesta la siguiente sonda")
+                    null
                 } finally {
                     alGuardar?.invoke()
                 }

@@ -22,6 +22,7 @@ import com.jaac.avoqado_campo.identidad.Sesion
 import com.jaac.avoqado_campo.identidad.Sucursal
 import io.mockk.coEvery
 import io.mockk.mockk
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -424,7 +425,7 @@ class ControlDeGpsTest {
         assertEquals(1, esperas)
     }
 
-    @Test fun `bucle - con un arranque nuevo durante la lectura, la siguiente es ya, no en 30 min (Codex r3 3)`() = runBlocking<Unit> {
+    @Test fun `bucle - un arranque durante una lectura que sigue no lee otra vez - la espera decide (D1, Codex r1 4)`() = runBlocking<Unit> {
         var arranques = 0
         val respuestas = ArrayDeque(listOf(true, true, false))
         var esperas = 0
@@ -432,7 +433,28 @@ class ControlDeGpsTest {
             tomarUno = { respuestas.removeFirst().also { if (respuestas.size == 2) arranques++ } },
             arranques = { arranques },
         ) { esperas++ }
-        assertEquals(1, esperas) // sólo después de la 2ª (la del arranque nuevo no esperó)
+        // Antes (Codex r3 3) se volvía a leer sin esperar, y una entrada nueva que ya había despertado la espera tomaba dos
+        // ubicaciones. Ahora espera, y la espera regresa de inmediato si el turno cambió (pruebas «D1 - …»).
+        assertEquals(2, esperas)
+    }
+
+    @Test fun `D1 - una entrada nueva marcada mientras se leia despierta la espera de inmediato (Codex r1 3)`() = runBlocking<Unit> {
+        abrirTurno()
+        coEvery { ubicacion.leer(any()) } coAnswers {
+            db.piezaDao().guardarTurno(TurnoLocal(staffId = "s1", llaveEntrada = "e2", timeEntryId = null, venueId = "v1", abiertoAt = AHORA - 1_000L))
+            Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
+        }
+        val s = seguimiento()
+        assertTrue(s.tomarUno()) // la lectura era de la entrada vieja: no se guarda
+        assertTrue(db.pingDao().todos().isEmpty())
+        withTimeout(5_000) { s.esperar(30 * 60_000L) } // antes: dormía 30 min con la entrada nueva sin ubicación
+        coEvery { ubicacion.leer(any()) } returns Ubicacion.Lectura(19.43, -99.13, 12f, falsa = false)
+        assertTrue(s.tomarUno())
+        assertEquals(1, db.pingDao().todos().size)
+        val espera = async { s.esperar(30 * 60_000L) }
+        delay(300)
+        assertTrue(espera.isActive) // ya la sigue: no despierta otra vez por la misma entrada
+        espera.cancel()
     }
 
     @Test fun `bucle - sin arranques nuevos para cuando ya no hay turno y un error cuenta como seguir`() = runBlocking<Unit> {
@@ -500,6 +522,99 @@ class ControlDeGpsTest {
         // v9 no es suya: con el turno vivo no se sigue; olvidado, decide la sesión (v1, que sí sigue).
         assertFalse(debeSeguir(yo, viejo.copy(abiertoAt = AHORA - 60_000L), AHORA))
         assertTrue(debeSeguir(yo, viejo, AHORA))
+    }
+
+    /** Lo que `descartarConHijos` le hace al turno al quitar su ENTRADA (rechazada, o descartada por el SERVIDOR). */
+    private suspend fun quitarLaEntrada() = db.piezaDao().run { guardarTurno(turnoAhora()!!.copy(llaveEntrada = null, timeEntryId = null)) }
+
+    @Test fun `D1 - quitar la entrada despierta la espera y la siguiente lectura para el servicio`() = runBlocking<Unit> {
+        abrirTurno()
+        val s = seguimiento()
+        assertTrue(s.tomarUno())
+        val espera = async { s.esperar(30 * 60_000L) }
+        delay(200)
+        assertTrue(espera.isActive) // con el turno igual, duerme
+        quitarLaEntrada()
+        withTimeout(5_000) { espera.await() } // antes: hasta 30 min con el aviso «Turno activo» puesto
+        assertFalse(s.tomarUno())
+    }
+
+    @Test fun `D1 - una entrada nueva despierta la espera sin esperar 30 min`() = runBlocking<Unit> {
+        abrirTurno()
+        val s = seguimiento()
+        assertTrue(s.tomarUno())
+        val espera = async { s.esperar(30 * 60_000L) }
+        delay(200)
+        db.piezaDao().guardarTurno(TurnoLocal(staffId = "s1", llaveEntrada = "e2", timeEntryId = null, venueId = "v1", abiertoAt = AHORA - 1_000L))
+        withTimeout(5_000) { espera.await() }
+    }
+
+    @Test fun `D1 - la misma entrada que sube (su timeEntryId) no despierta la espera`() = runBlocking<Unit> {
+        abrirTurno()
+        val s = seguimiento()
+        assertTrue(s.tomarUno())
+        val espera = async { s.esperar(30 * 60_000L) }
+        delay(200)
+        db.piezaDao().run { guardarTurno(turnoAhora()!!.copy(timeEntryId = "te1")) }
+        delay(500)
+        assertTrue(espera.isActive) // no pide una lectura de más
+        espera.cancel()
+    }
+
+    @Test fun `D1 - si la entrada se quito entre la lectura y la espera, la espera no duerme`() = runBlocking<Unit> {
+        abrirTurno()
+        val s = seguimiento()
+        assertTrue(s.tomarUno())
+        quitarLaEntrada()
+        withTimeout(5_000) { s.esperar(30 * 60_000L) }
+    }
+
+    @Test fun `D1 - si la base falla al observar el turno, la espera no truena y dura lo pedido (Codex r2 3)`() = runBlocking<Unit> {
+        val turno = TurnoLocal(staffId = "s1", llaveEntrada = "e1", timeEntryId = null, venueId = "v1", abiertoAt = AHORA - 60_000L)
+        val piezas = mockk<com.jaac.avoqado_campo.cola.PiezaDao>()
+        coEvery { piezas.turnoAhora() } returns turno
+        io.mockk.every { piezas.turno() } returns kotlinx.coroutines.flow.flow { throw android.database.sqlite.SQLiteException("disco") }
+        val s = SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), piezas, quienSoy) { AHORA }
+        assertTrue(s.tomarUno())
+        val inicio = System.currentTimeMillis()
+        s.esperar(300L) // antes del arreglo, la excepción salía de aquí y cerraba el servicio
+        assertTrue(System.currentTimeMillis() - inicio >= 290L)
+    }
+
+    @Test fun `D1 - con la base fallando, una entrada nueva se ve en un minuto, no en 30 (Codex r3 5)`() = kotlinx.coroutines.test.runTest {
+        val piezas = mockk<com.jaac.avoqado_campo.cola.PiezaDao>()
+        val nueva = TurnoLocal(staffId = "s1", llaveEntrada = "e2", timeEntryId = null, venueId = "v1", abiertoAt = AHORA - 1_000L)
+        io.mockk.every { piezas.turno() } returnsMany listOf(
+            kotlinx.coroutines.flow.flow { throw android.database.sqlite.SQLiteException("disco") },
+            kotlinx.coroutines.flow.MutableStateFlow<TurnoLocal?>(nueva),
+        )
+        val s = SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), piezas, quienSoy) { AHORA }
+        s.esperar(30 * 60_000L)
+        assertEquals(REINTENTO_SI_FALLA_LA_BASE_MS, testScheduler.currentTime) // reloj virtual: lo que de verdad durmió
+    }
+
+    @Test fun `D1 - con la base fallando y el mismo turno, la espera llega a su plazo sin lecturas de mas (Codex r4 3)`() = kotlinx.coroutines.test.runTest {
+        val turno = TurnoLocal(staffId = "s1", llaveEntrada = "e1", timeEntryId = null, venueId = "v1", abiertoAt = AHORA - 60_000L)
+        val piezas = mockk<com.jaac.avoqado_campo.cola.PiezaDao>()
+        coEvery { piezas.turnoAhora() } returns turno
+        io.mockk.every { piezas.turno() } returnsMany listOf(
+            kotlinx.coroutines.flow.flow { throw android.database.sqlite.SQLiteException("disco") },
+            kotlinx.coroutines.flow.MutableStateFlow<TurnoLocal?>(turno),
+        )
+        coEvery { ubicacion.leer(any()) } returns null // sin posición: la lectura no toca la base de pings
+        val s = SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), piezas, quienSoy) { AHORA }
+        assertTrue(s.tomarUno())
+        s.esperar(30 * 60_000L)
+        assertEquals(30 * 60_000L, testScheduler.currentTime) // la base se recuperó al minuto, pero el turno es el mismo
+    }
+
+    @Test fun `D1 - sin cambios la espera dura lo que se le pide`() = runBlocking<Unit> {
+        abrirTurno()
+        val s = seguimiento()
+        assertTrue(s.tomarUno())
+        val inicio = System.currentTimeMillis()
+        s.esperar(300L)
+        assertTrue(System.currentTimeMillis() - inicio >= 290L)
     }
 
     @Test fun `bateria - sin la pantalla directa abre la lista de ajustes, y sin ninguna no hay boton`() {

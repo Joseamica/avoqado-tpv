@@ -588,7 +588,7 @@ fun AppNavigation(
                         requestId = durableRequestId,
                         errorMessage = if (admission == com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.VENUE_CHANGED)
                             "La terminal cambió de sede antes de iniciar el cobro"
-                        else "Sistema de pagos no inicializado en el terminal",
+                        else com.jaac.avoqado_tpv.core.remotepayment.LECTOR_NO_LISTO_EN_LA_TERMINAL,
                     )
                     return@collect
                 }
@@ -1974,6 +1974,13 @@ fun AppNavigation(
                     if (!ready) {
                         // D36 (Codex r2 #1): aquí NO se pide retirar. Esta espera también vuelve a salir DESPUÉS de tocar Tarjeta (la
                         // reparación del lector lo marca «no listo» antes de escribir la libreta): la venta queda como hoy.
+                        // 📡 hz:1450a1e9:D3: un cobro de la tablet que se va SIN pantalla no tiene ViewModel que conteste al morir (D26):
+                        // se contesta aquí, como la admisión con el lector no listo. Con la pantalla ya mostrada contesta ella.
+                        if (!pantallaYaMostrada) {
+                            argumentosDelCobro.get<String>("socketRequestId")?.let { solicitud ->
+                                com.jaac.avoqado_tpv.core.remotepayment.contestarCobroDelPosSinPantalla(socketManager, remotePaymentCoordinator, solicitud)
+                            }
+                        }
                         val popped = navController.safePopBackStack()
                         if (!popped) {
                             navController.navigate(NavRoute.Home.route) {

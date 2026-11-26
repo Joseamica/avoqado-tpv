@@ -588,7 +588,7 @@ fun AppNavigation(
                         requestId = durableRequestId,
                         errorMessage = if (admission == com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.VENUE_CHANGED)
                             "La terminal cambió de sede antes de iniciar el cobro"
-                        else "Sistema de pagos no inicializado en el terminal",
+                        else com.jaac.avoqado_tpv.core.remotepayment.LECTOR_NO_LISTO_EN_LA_TERMINAL,
                     )
                     return@collect
                 }
@@ -1969,11 +1969,28 @@ fun AppNavigation(
                     yaCobro = cobroHechoEnEstaEntrada || cobroHechoAhora,
                 )
             ) {
+                // D36 (Codex r2 #1): al salir de aquí NO se pide retirar. Esta espera también vuelve a salir DESPUÉS de tocar Tarjeta
+                // (la reparación del lector lo marca «no listo» antes de escribir la libreta): la venta queda como hoy.
+                // 📡 hz:1450a1e9:D3: un cobro de la tablet que se va SIN pantalla (el lector no se preparó, o «Atrás» mientras se
+                // preparaba: Codex r1 #2) no tiene ViewModel que conteste al morir (D26): se contesta aquí, como la admisión con el
+                // lector no listo. Con la pantalla ya mostrada contesta ella.
+                val yaContesto = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+                val cobroDelPosSinPantalla = if (pantallaYaMostrada) null else argumentosDelCobro.get<String>("socketRequestId")
+                val contestarAlPos: () -> Unit = {
+                    if (cobroDelPosSinPantalla != null && yaContesto.compareAndSet(false, true)) {
+                        com.jaac.avoqado_tpv.core.remotepayment.contestarCobroDelPosSinPantalla(socketManager, remotePaymentCoordinator, cobroDelPosSinPantalla)
+                    }
+                }
+                // Codex r2 #2: sólo en ese cobro. En los demás (TPV SOLA, o la espera que vuelve tras tocar Tarjeta) «Atrás» sigue
+                // siendo el del NavHost.
+                androidx.activity.compose.BackHandler(enabled = cobroDelPosSinPantalla != null) {
+                    contestarAlPos()
+                    navController.popBackStack()
+                }
                 LaunchedEffect(Unit) {
                     val ready = awaitPaxPaymentReady(context, initializationManager, "Payment route")
                     if (!ready) {
-                        // D36 (Codex r2 #1): aquí NO se pide retirar. Esta espera también vuelve a salir DESPUÉS de tocar Tarjeta (la
-                        // reparación del lector lo marca «no listo» antes de escribir la libreta): la venta queda como hoy.
+                        contestarAlPos()
                         val popped = navController.safePopBackStack()
                         if (!popped) {
                             navController.navigate(NavRoute.Home.route) {

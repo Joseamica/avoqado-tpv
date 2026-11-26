@@ -40,6 +40,7 @@ internal fun textoDelInforme(i: Informe): String = buildString {
     append("lector: ${i.causa}")
     i.codigo?.let { append(" · código $it") }
     i.marca?.let { append(" · $it") }
+    i.entrada?.let { append(" · entrada $it") }
     i.importeDelKernel?.let { append(" · 9F02 $it") }
     append(
         when (i.cierre) {

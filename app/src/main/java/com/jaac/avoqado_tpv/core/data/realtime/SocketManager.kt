@@ -2105,7 +2105,9 @@ class SocketManager @Inject constructor(
         errorMessage: String? = null,
         receiptUrl: String? = null,
         receiptAccessKey: String? = null,
-        outcomeEvidence: String? = null
+        outcomeEvidence: String? = null,
+        /** D3: corre en cuanto [RemotePaymentInbox.persistResult] terminó (guardó, repitió al ganador o la libreta lo negó). */
+        alGuardar: (() -> Unit)? = null,
     ) {
         try {
             val payload = JSONObject().apply {
@@ -2131,7 +2133,20 @@ class SocketManager @Inject constructor(
             // Dinero: un resultado FINAL va a disco ANTES del socket. Si el proceso muere
             // entre ambos, la reentrega del mismo requestId reproduce este JSON.
             socketScope.launch {
-                val persisted = remotePaymentInbox.persistResult(requestId, payload.toString())
+                val persisted = try {
+                    remotePaymentInbox.persistResult(requestId, payload.toString())
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    // Codex r3 #4 (D3): con la base fallando dos veces (guardar y releer), la excepción salía de este `launch` sin
+                    // manejador y cerraba la app. No se manda NADA, ni el aviso de `timeout` (Codex r4 #1: ese aviso abre la ventana
+                    // de 30 s del SERVIDOR, que puede liberar la venta antes de que llegue el aviso del banco). La bandeja sigue
+                    // como estaba y la contesta la siguiente sonda o reentrega, como cuando no hay socket.
+                    Timber.e(error, "❌ [Socket] No se pudo guardar el resultado de $requestId; no se manda nada, contesta la siguiente sonda")
+                    return@launch
+                } finally {
+                    alGuardar?.invoke()
+                }
                 if (persisted == null) {
                     if (status == "timeout") {
                         // Incertidumbre es un AVISO, nunca un cierre de la bandeja/libreta.

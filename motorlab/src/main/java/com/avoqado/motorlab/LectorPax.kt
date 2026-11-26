@@ -72,6 +72,8 @@ internal data class Informe(
     /** El de la preparación que falló o el del kernel. */
     val codigo: Int?,
     val marca: Marca?,
+    /** Por dónde entró la tarjeta: null si el kernel no leyó una. */
+    val entrada: Entrada?,
     val resultado: ResultadoKernel?,
     val cvm: Cvm?,
     /** El 9F02 que puso el kernel, en centavos: así se ve que es el importe real. */
@@ -181,6 +183,7 @@ internal class LectorPax(private val pax: Pax, private val red: Red) : LectorDeT
         var causa = Causa.ERROR
         var codigo: Int? = null
         var marca: Marca? = null
+        var entrada: Entrada? = null
         var resultado: ResultadoKernel? = null
         var cvm: Cvm? = null
         var importeDelKernel: Long? = null
@@ -191,7 +194,7 @@ internal class LectorPax(private val pax: Pax, private val red: Red) : LectorDeT
         var error: String? = null
 
         fun informe(folio: AttemptId?) =
-            Informe(folio, causa, codigo, marca, resultado, cvm, importeDelKernel, tagsPresentes, cierre, fallasDelCierre, error)
+            Informe(folio, causa, codigo, marca, entrada, resultado, cvm, importeDelKernel, tagsPresentes, cierre, fallasDelCierre, error)
     }
 
     /** En el hilo del lector. Nunca lanza: pase lo que pase, el lector se cierra, el informe sale y el dueño se suelta. */
@@ -267,6 +270,7 @@ internal class LectorPax(private val pax: Pax, private val red: Red) : LectorDeT
         // anterior (`ClssProcess.java:115-119`, `:206-211`): no se leen tags. Toda venta medida trae 0 (`Perfiles.kt`).
         if (k.codigo != RetCode.EMV_OK) return sale(Causa.KERNEL, ResultadoDeLectura.Cortada(k.codigo))
         h.marca = marcaDe(k.tipo)
+        h.entrada = Entrada.SIN_CONTACTO // sólo se sondea el lector sin contacto
         h.resultado = resultadoDe(k.resultado)
         h.cvm = cvmDe(k.cvm)
         val tags = leerTags(pax)
@@ -274,7 +278,7 @@ internal class LectorPax(private val pax: Pax, private val red: Red) : LectorDeT
         h.tagsPresentes = tags.keys.toSet()
         h.importeDelKernel = tags[0x9F02]?.toLongOrNull()
         if (0x57 !in tags) return sale(Causa.SIN_BANDA, ResultadoDeLectura.Cortada(k.codigo))
-        val lectura = Lectura(h.marca, Entrada.SIN_CONTACTO, h.resultado!!, k.codigo, h.cvm!!, tags)
+        val lectura = Lectura(h.marca, h.entrada!!, h.resultado!!, k.codigo, h.cvm!!, tags)
         return sale(Causa.LEIDA, ResultadoDeLectura.Leida(lectura))
     }
 

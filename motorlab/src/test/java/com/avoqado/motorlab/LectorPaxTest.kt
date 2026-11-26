@@ -134,6 +134,16 @@ class LectorPaxTest {
         assertFalse("tagsPresentes no puede ser una vista del mapa de tags", dueno != null && Map::class.java.isAssignableFrom(dueno))
     }
 
+    /** El informe dice por dónde entró la tarjeta; un sondeo que vence no leyó nada, así que no dice entrada. */
+    @Test fun `el informe de una lectura dice su entrada`() {
+        val leida = lector(PaxDeMentira())
+        assertTrue(leida.leerYa() is ResultadoDeLectura.Leida)
+        assertEquals(Entrada.SIN_CONTACTO, leida.informes.value!!.entrada)
+        val vencida = lector(PaxDeMentira().apply { sondeo = { Sondeo.VENCIO } })
+        assertEquals(ResultadoDeLectura.Vencida, vencida.leerYa())
+        assertNull(vencida.informes.value!!.entrada)
+    }
+
     /** Un solo dueño: mientras A es dueño, B se rechaza y A queda intacto; A se suelta al cerrar, o la app lo suelta si el motor no leyó. */
     @Test fun `un solo dueno del lector desde que se apunta el folio`() {
         val pax = PaxDeMentira()

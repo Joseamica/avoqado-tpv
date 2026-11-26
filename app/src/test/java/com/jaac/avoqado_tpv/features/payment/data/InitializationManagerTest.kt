@@ -686,4 +686,78 @@ class InitializationManagerTest {
 
         coVerify(exactly = 0) { mockInitializerUseCase.run(any()) }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // D2 (25-nov): la renovación de 23 h se saltó (terminal ocupada) y el cobro salía con la llave ya vencida
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /** La llave con [edadMs] de vida; una inicialización buena guarda su sello y la deja nueva (como en el aparato). */
+    private fun llaveCon(edadMs: Long) {
+        var sello = System.currentTimeMillis() - edadMs
+        every { mockSecureStorage.getLastBlumonInitTimestamp() } answers { sello }
+        every { mockSecureStorage.saveLastBlumonInitTimestamp(any()) } answers { sello = firstArg() }
+    }
+
+    @Test
+    fun `D2 con la llave vencida el cobro la renueva antes de usar el lector, una sola vez`() = runTest {
+        val manager = inicializadoConComercio()
+        llaveCon(TWENTY_FOUR_HOURS_MS + 60_000L)
+
+        assertThat(manager.awaitInitialization(antesDeUsarElLector = true).isSuccess).isTrue()
+        coVerify(exactly = 1) { mockInitializerUseCase.run(any()) }
+
+        // Ya renovada: el cobro siguiente no vuelve a llamar a Blumon.
+        assertThat(manager.awaitInitialization(antesDeUsarElLector = true).isSuccess).isTrue()
+        coVerify(exactly = 1) { mockInitializerUseCase.run(any()) }
+    }
+
+    @Test
+    fun `D2 con la llave todavia viva no se toca el lector, aunque tenga mas de 23 h`() = runTest {
+        val manager = inicializadoConComercio()
+        llaveCon(TWENTY_FOUR_HOURS_MS - 30 * 60_000L) // la renovación de 23 h es del programador, con la terminal quieta
+
+        assertThat(manager.awaitInitialization(antesDeUsarElLector = true).isSuccess).isTrue()
+
+        coVerify(exactly = 0) { mockInitializerUseCase.run(any()) }
+    }
+
+    @Test
+    fun `D2 quien no va a usar el lector no renueva la llave`() = runTest {
+        val manager = inicializadoConComercio()
+        llaveCon(TWENTY_FOUR_HOURS_MS + 60_000L)
+
+        manager.awaitInitialization()
+
+        coVerify(exactly = 0) { mockInitializerUseCase.run(any()) }
+    }
+
+    @Test
+    fun `D2 con un cambio de comercio en curso la llave vencida espera al siguiente intento`() = runTest {
+        val manager = inicializadoConComercio()
+        llaveCon(TWENTY_FOUR_HOURS_MS + 60_000L)
+        val estado = kotlinx.coroutines.flow.MutableStateFlow(
+            com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationState(merchantSwitchInProgress = true),
+        )
+        every { mockCriticalNetworkOperationManager.state } returns estado
+
+        manager.awaitInitialization(antesDeUsarElLector = true)
+        coVerify(exactly = 0) { mockInitializerUseCase.run(any()) }
+
+        estado.value = com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationState()
+        manager.awaitInitialization(antesDeUsarElLector = true)
+        coVerify(exactly = 1) { mockInitializerUseCase.run(any()) }
+    }
+
+    @Test
+    fun `D2 si la renovacion falla el cobro recibe el error sin seguir al lector`() = runTest {
+        val manager = inicializadoConComercio()
+        llaveCon(TWENTY_FOUR_HOURS_MS + 60_000L)
+        val falla = mockk<Either<InitializerFailure, InitializerResponse>>(relaxed = true)
+        every { falla.isLeft } returns true
+        every { falla.isRight } returns false
+        coEvery { mockInitializerUseCase.run(any<InitializerParams>()) } returns falla
+
+        assertThat(manager.awaitInitialization(antesDeUsarElLector = true).isFailure).isTrue()
+        assertThat(manager.isInitialized.value).isFalse()
+    }
 }

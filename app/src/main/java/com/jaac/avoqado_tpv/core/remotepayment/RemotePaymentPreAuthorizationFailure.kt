@@ -21,13 +21,16 @@ internal fun rejectRemotePaymentBeforeAuthorization(
  *
  * Ahora se contesta como la admisión con el lector no listo, y se suelta la propiedad como al morir una pantalla (D26). El «no se
  * cobró» sólo se guarda y sale si la libreta acredita que no hubo intento (`RemotePaymentInbox.persistResult`). Si no lo acredita,
- * no sale nada y contesta la siguiente sonda.
+ * no sale nada y contesta la siguiente sonda. La propiedad se suelta DESPUÉS de guardar (Codex r1 #1): una sonda que llegara entre
+ * las dos se quedaba con «Cancelado por conciliación» y la tablet perdía la razón.
  */
 internal fun contestarCobroDelPosSinPantalla(
     socketManager: SocketManager,
     coordinador: RemotePaymentCoordinator,
     requestId: String,
 ) {
-    rejectRemotePaymentBeforeAuthorization(socketManager, requestId, LECTOR_NO_LISTO_EN_LA_TERMINAL)
-    coordinador.soltarPropiedad(requestId)
+    socketManager.emitTerminalPaymentResult(
+        requestId, "failed", errorMessage = LECTOR_NO_LISTO_EN_LA_TERMINAL, outcomeEvidence = "PRE_AUTHORIZATION",
+        alGuardar = { coordinador.soltarPropiedad(requestId) },
+    )
 }

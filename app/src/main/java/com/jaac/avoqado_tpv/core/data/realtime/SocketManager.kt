@@ -2105,7 +2105,9 @@ class SocketManager @Inject constructor(
         errorMessage: String? = null,
         receiptUrl: String? = null,
         receiptAccessKey: String? = null,
-        outcomeEvidence: String? = null
+        outcomeEvidence: String? = null,
+        /** D3: corre en cuanto [RemotePaymentInbox.persistResult] terminó (guardó, repitió al ganador o la libreta lo negó). */
+        alGuardar: (() -> Unit)? = null,
     ) {
         try {
             val payload = JSONObject().apply {
@@ -2131,7 +2133,11 @@ class SocketManager @Inject constructor(
             // Dinero: un resultado FINAL va a disco ANTES del socket. Si el proceso muere
             // entre ambos, la reentrega del mismo requestId reproduce este JSON.
             socketScope.launch {
-                val persisted = remotePaymentInbox.persistResult(requestId, payload.toString())
+                val persisted = try {
+                    remotePaymentInbox.persistResult(requestId, payload.toString())
+                } finally {
+                    alGuardar?.invoke()
+                }
                 if (persisted == null) {
                     if (status == "timeout") {
                         // Incertidumbre es un AVISO, nunca un cierre de la bandeja/libreta.

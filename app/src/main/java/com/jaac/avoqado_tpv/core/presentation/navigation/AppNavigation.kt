@@ -1969,26 +1969,31 @@ fun AppNavigation(
                     yaCobro = cobroHechoEnEstaEntrada || cobroHechoAhora,
                 )
             ) {
-                LaunchedEffect(Unit) {
-                    val ready = awaitPaxPaymentReady(context, initializationManager, "Payment route")
-                    if (!ready) {
-                        // D36 (Codex r2 #1): aquí NO se pide retirar. Esta espera también vuelve a salir DESPUÉS de tocar Tarjeta (la
-                        // reparación del lector lo marca «no listo» antes de escribir la libreta): la venta queda como hoy.
-                        // 📡 hz:1450a1e9:D3: un cobro de la tablet que se va SIN pantalla no tiene ViewModel que conteste al morir (D26):
-                        // se contesta aquí, como la admisión con el lector no listo. Con la pantalla ya mostrada contesta ella.
-                        if (!pantallaYaMostrada) {
-                            argumentosDelCobro.get<String>("socketRequestId")?.let { solicitud ->
-                                com.jaac.avoqado_tpv.core.remotepayment.contestarCobroDelPosSinPantalla(socketManager, remotePaymentCoordinator, solicitud)
-                            }
-                        }
-                        val popped = navController.safePopBackStack()
-                        if (!popped) {
-                            navController.navigate(NavRoute.Home.route) {
-                                popUpTo(NavRoute.Home.route) { inclusive = false }
-                                launchSingleTop = true
-                            }
+                // D36 (Codex r2 #1): al salir de aquí NO se pide retirar. Esta espera también vuelve a salir DESPUÉS de tocar Tarjeta
+                // (la reparación del lector lo marca «no listo» antes de escribir la libreta): la venta queda como hoy.
+                // 📡 hz:1450a1e9:D3: un cobro de la tablet que se va SIN pantalla (el lector no se preparó, o «Atrás» mientras se
+                // preparaba: Codex r1 #2) no tiene ViewModel que conteste al morir (D26): se contesta aquí, como la admisión con el
+                // lector no listo. Con la pantalla ya mostrada contesta ella.
+                val yaSalio = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+                val salirDeLaEspera: () -> Unit = salir@{
+                    if (!yaSalio.compareAndSet(false, true)) return@salir
+                    if (!pantallaYaMostrada) {
+                        argumentosDelCobro.get<String>("socketRequestId")?.let { solicitud ->
+                            com.jaac.avoqado_tpv.core.remotepayment.contestarCobroDelPosSinPantalla(socketManager, remotePaymentCoordinator, solicitud)
                         }
                     }
+                    val popped = navController.safePopBackStack()
+                    if (!popped) {
+                        navController.navigate(NavRoute.Home.route) {
+                            popUpTo(NavRoute.Home.route) { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    }
+                }
+                androidx.activity.compose.BackHandler { salirDeLaEspera() }
+                LaunchedEffect(Unit) {
+                    val ready = awaitPaxPaymentReady(context, initializationManager, "Payment route")
+                    if (!ready) salirDeLaEspera()
                 }
                 AvoqadoLoadingOverlay(message = "Preparando sistema de pagos...")
                 return@composable

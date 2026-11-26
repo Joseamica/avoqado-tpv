@@ -300,7 +300,7 @@ class LaboratorioTest {
         esperar { it.trabajo == null }
         assertTrue(libre())
         val leido = historial.leer().last().folio // el informe de L-c y un final publicado, en SU folio y aparte del Flow
-        espera { lab.folios.first { "lector: LEIDA · código 0 · VISA · 9F02 2537 · lector cerrado" in it } }
+        espera { lab.folios.first { "lector: LEIDA · código 0 · VISA · entrada SIN_CONTACTO · 9F02 2537 · lector cerrado" in it } }
         espera {
             motor.tardias.subscriptionCount.first { it > 0 }
             motor.tardias.emit(leido to EventoDeCobro.NoSeCobro)

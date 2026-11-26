@@ -569,6 +569,18 @@ class ControlDeGpsTest {
         withTimeout(5_000) { s.esperar(30 * 60_000L) }
     }
 
+    @Test fun `D1 - si la base falla al observar el turno, la espera no truena y dura lo pedido (Codex r2 3)`() = runBlocking<Unit> {
+        val turno = TurnoLocal(staffId = "s1", llaveEntrada = "e1", timeEntryId = null, venueId = "v1", abiertoAt = AHORA - 60_000L)
+        val piezas = mockk<com.jaac.avoqado_campo.cola.PiezaDao>()
+        coEvery { piezas.turnoAhora() } returns turno
+        io.mockk.every { piezas.turno() } returns kotlinx.coroutines.flow.flow { throw android.database.sqlite.SQLiteException("disco") }
+        val s = SeguimientoDelTurno(puerta, estado, ubicacion, db.pingDao(), piezas, quienSoy) { AHORA }
+        assertTrue(s.tomarUno())
+        val inicio = System.currentTimeMillis()
+        s.esperar(300L) // antes del arreglo, la excepción salía de aquí y cerraba el servicio
+        assertTrue(System.currentTimeMillis() - inicio >= 290L)
+    }
+
     @Test fun `D1 - sin cambios la espera dura lo que se le pide`() = runBlocking<Unit> {
         abrirTurno()
         val s = seguimiento()

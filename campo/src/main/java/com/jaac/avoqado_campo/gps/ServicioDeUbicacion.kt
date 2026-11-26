@@ -25,6 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -159,7 +160,17 @@ class SeguimientoDelTurno(
      */
     suspend fun esperar(ms: Long) {
         val visto = turnoSeguido
-        withTimeoutOrNull(ms) { piezas.turno().first { ClaveDelTurno.de(it) != visto } }
+        val inicio = ahora()
+        try {
+            withTimeoutOrNull(ms) { piezas.turno().first { ClaveDelTurno.de(it) != visto } }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Codex r2 #3: si la base falla al observar el turno, se espera lo que falte, como antes de D1 (un `delay` no fallaba
+            // y la excepción cerraba el servicio).
+            Log.w("ServicioDeUbicacion", "observar el turno", e)
+            delay((ms - (ahora() - inicio)).coerceIn(0L, ms))
+        }
     }
 
     /** Un error del GPS (permiso quitado a media lectura, el proveedor) es «sin posición»: no salta la revisión del turno. */

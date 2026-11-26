@@ -100,6 +100,12 @@ sealed class PaymentContext {
         val isOfflineReplay: Boolean = false,
         /** Epoch ms en que la venta entró a la cola (`QueuedPayment.createdAt`); sólo lo llena el replay. Lealtad: hora de la venta. */
         val createdAtLocal: Long? = null,
+        /**
+         * D7 (encargo a25cd7): epoch ms en que se ABRIÓ el intento de tarjeta (`payment_attempts.created_at`). Sólo lo llena la
+         * recuperación de la libreta (`LedgerApprovalRecovery`): el servidor lo usa para avisar si en Pago rápido se cobró lo mismo
+         * en efectivo mientras esta tarjeta estaba por confirmar. Nunca cambia el cobro.
+         */
+        val capturadoEnAparato: Long? = null,
         override val queueClaimToken: String? = null,
         override val shiftMembership: String? = "UNKNOWN",
         override val localShiftSessionId: String? = null,
@@ -316,6 +322,12 @@ sealed class PaymentContext {
         val isOfflineReplay: Boolean = false,
         /** Epoch ms en que la venta entró a la cola (`QueuedPayment.createdAt`); sólo lo llena el replay. Lealtad: hora de la venta. */
         val createdAtLocal: Long? = null,
+        /**
+         * D7 (encargo a25cd7): epoch ms en que se ABRIÓ el intento de tarjeta (`payment_attempts.created_at`). Sólo lo llena la
+         * recuperación de la libreta (`LedgerApprovalRecovery`): el servidor lo usa para avisar si en Pago rápido se cobró lo mismo
+         * en efectivo mientras esta tarjeta estaba por confirmar. Nunca cambia el cobro.
+         */
+        val capturadoEnAparato: Long? = null,
         override val queueClaimToken: String? = null,
         override val shiftMembership: String? = "UNKNOWN",
         override val localShiftSessionId: String? = null,

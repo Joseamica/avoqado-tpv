@@ -30,6 +30,13 @@ class CashAdmissionRejectedException(error: Throwable) : IllegalStateException(e
     }
 }
 
+/**
+ * El efectivo NO tocó la red: la franja ya dice que el servidor no contesta. Es un `ConnectException`
+ * («no se conectó»), así que la cola lo trata como cualquier falla de red: Retryable, con su misma llave. Como nada salió por
+ * el cable, nada se pudo duplicar (encargo 97042c; misma idea que `RendirseRapido` de ANDROID).
+ */
+class ServidorSinContestarException : java.net.ConnectException("Sin conexión con el servidor: la venta se guardó en la terminal y se manda sola")
+
 /** No es un rechazo de admisión: el dinero existente conserva su dueño y necesita consulta. */
 class CashOwnerReviewRequiredException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)
 
@@ -89,11 +96,21 @@ class RecordPaymentUseCase @Inject constructor(
     private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
     /** «Pendientes» sin señal: la venta con SIM recién registrada se guarda en la terminal. null en pruebas viejas. */
     private val actionableSales: ActionableSalesRepository? = null,
+    /**
+     * La franja de conexión (latido HTTP, 2 fallos seguidos). null en pruebas viejas = como antes. Sólo la lee el efectivo en
+     * vivo: si ya se sabe que el servidor no contesta ([ConnectionStateManager.servidorMudo]), no se le pregunta (97042c).
+     */
+    private val conexion: com.jaac.avoqado_tpv.core.util.ConnectionStateManager? = null,
 ) {
     private suspend fun revisionDeDueno(context: PaymentContext, reference: String, cause: Throwable? = null): CashOwnerReviewRequiredException {
         val compatible = runCatching { shiftRepository.contratoDelPagoGuardadoCoincide(context, reference) }.getOrDefault(false)
-        return CashOwnerReviewRequiredException(if (compatible) "La venta ya está guardada; no vuelvas a cobrarla."
-            else "El registro previo no coincide con la referencia, el importe o el pedido. Revísalo antes de volver a cobrar.", cause)
+        // 🔴 a1ff27: si esa fila ya no se sube sola, decirlo; «ya está guardada» a secas hace creer que no falta nada.
+        val revisar = compatible && runCatching { shiftRepository.pagoGuardadoNecesitaRevision(context.venueId, reference) }.getOrDefault(false)
+        return CashOwnerReviewRequiredException(when {
+            revisar -> "La venta ya está guardada en la terminal, pero no se pudo subir: necesita revisión. Pide apoyo al gerente; no vuelvas a cobrarla."
+            compatible -> "La venta ya está guardada; no vuelvas a cobrarla."
+            else -> "El registro previo no coincide con la referencia, el importe o el pedido. Revísalo antes de volver a cobrar."
+        }, cause)
     }
 
     companion object {
@@ -253,7 +270,12 @@ class RecordPaymentUseCase @Inject constructor(
 
         // Un throw/cancel conserva SYNCING: tras vencer el claim el worker retoma esta
         // misma identidad. Nunca se borra o reinserta dinero para manejar una cancelación.
-        val result = recordPaymentWithRetry(
+        // 📴 Efectivo en vivo con la franja de «sin servidor» (hay internet, el servidor no contesta): la fila ya está guardada
+        // y reclamada; no se le pregunta y se suelta a la cola al instante. Tarjeta y replay del worker (alreadyQueued) no cambian.
+        val result = if (cashClaim != null && conexion?.servidorMudo() == true) {
+            Timber.w("📴 Efectivo con el servidor sin contestar: queda en la cola sin intentar | ref=$referenceNumber")
+            Result.failure(ServidorSinContestarException())
+        } else recordPaymentWithRetry(
             recorder = recorder,
             context = recordingContext.withQueueClaimToken(cashClaim?.claimToken ?: recordingContext.queueClaimToken),
             cardDetails = cardDetails,
@@ -333,6 +355,9 @@ class RecordPaymentUseCase @Inject constructor(
         referenceNumber: String,
     ): Result<PaymentReceipt> {
         var lastError: Exception? = null
+        // Encargo 29ef3d (Codex r1): el último error puede ser un plazo vencido aunque un intento anterior SÍ tuviera
+        // respuesta (500, 429…). Ése viaja como `suppressed` del final para que la cola cuente la pasada.
+        var ultimoConRespuesta: Throwable? = null
 
         repeat(MAX_RETRIES) { attemptIndex ->
             val attemptNumber = attemptIndex + 1
@@ -365,6 +390,9 @@ class RecordPaymentUseCase @Inject constructor(
             // ❌ Analizar el error
             val exception = result.exceptionOrNull()
             lastError = exception as? Exception
+            if (exception != null && !com.jaac.avoqado_tpv.features.payment.domain.sync.nadieContesto(exception)) {
+                ultimoConRespuesta = exception
+            }
 
             if (exception is com.jaac.avoqado_tpv.features.shift.data.repository.ShiftMappingPendingException) return result
 
@@ -381,6 +409,12 @@ class RecordPaymentUseCase @Inject constructor(
 
         // Si llegamos aquí, agotamos todos los intentos
         Timber.e("❌ Payment recording failed after $MAX_RETRIES attempts")
+        // Copias locales: `lastError` y `ultimoConRespuesta` los cambia el lambda de `repeat` (sin smart cast).
+        val errorFinal = lastError
+        val conRespuesta = ultimoConRespuesta
+        if (errorFinal != null && conRespuesta != null && conRespuesta !== errorFinal) {
+            runCatching { errorFinal.addSuppressed(conRespuesta) }
+        }
         return Result.failure(
             lastError ?: Exception("Error registrando el pago después de $MAX_RETRIES intentos")
         )

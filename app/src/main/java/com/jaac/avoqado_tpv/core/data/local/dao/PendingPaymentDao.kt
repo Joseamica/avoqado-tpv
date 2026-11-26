@@ -382,6 +382,9 @@ interface PendingPaymentDao {
      * coincide (otro worker la reclamó primero); el llamador NUNCA debe reintentar ese
      * write — la fila ya no es suya. Ver spec §4.2 F-10.
      *
+     * **C7 opción B (founder, 25-nov):** un rechazo para siempre es un desenlace DISTINTO al «no subió» que el gerente revisó:
+     * borra su revisión («Efectivo: ya lo revisé») y la venta vuelve a pedirla antes de cerrar la Caja.
+     *
      * @param id Row ID of payment
      * @param token El claim_token con el que este worker obtuvo la fila (de claimBatch)
      * @param error Razón legible (de SyncOutcome.Permanent.reason), p.ej. "HTTP 404: Order not found"
@@ -393,7 +396,10 @@ interface PendingPaymentDao {
             permanent = 1,
             last_error = :error,
             claim_token = NULL,
-            claimed_at = NULL
+            claimed_at = NULL,
+            acknowledged = 0,
+            acknowledged_by = NULL,
+            acknowledged_at = NULL
         WHERE id = :id AND claim_token = :token
     """)
     suspend fun markPermanentlyFailed(id: Long, token: String, error: String): Int
@@ -419,11 +425,16 @@ interface PendingPaymentDao {
      * [resetAllFailedIncludingPermanent] instead — see its KDoc, added fix round 1 after
      * a 401/403-misclassification bug showed this exclusion needed an escape hatch.
      *
+     * **C7 opción B (founder, 25-nov): NO borra la revisión del gerente.** Mientras la fila vuelve a PENDING/SYNCING el cierre
+     * la espera igual ([contarBloqueanCierre] no mira `acknowledged` para esos estados); si el reintento termina igual (vuelve a
+     * FAILED pasajero), la revisión sigue valiendo y no se pide otra vez en cada parpadeo del WiFi. Sólo un desenlace distinto
+     * la borra: [markPermanentlyFailed] o una diferencia nueva en [guardarOrdenDeVentaGuardada].
+     *
      * @return Number of payments reset
      */
     @Query("""
         UPDATE pending_payments
-        SET sync_status = 'PENDING', retry_count = 0, acknowledged = 0, acknowledged_by = NULL, acknowledged_at = NULL
+        SET sync_status = 'PENDING', retry_count = 0
         WHERE sync_status = 'FAILED' AND permanent = 0
     """)
     suspend fun resetAllFailed(): Int
@@ -437,12 +448,13 @@ interface PendingPaymentDao {
      * condition no longer blocks. Also resets `permanent` back to 0: if the underlying
      * problem is still there, the very next sync attempt re-marks it FAILED+permanent via
      * [markPermanentlyFailed] — this is a one-shot second chance, not blanket amnesty.
+     * Igual que [resetAllFailed], conserva la revisión del gerente (C7 opción B); el rechazo otra vez la borra.
      *
      * @return Number of payments reset (transient + permanent)
      */
     @Query("""
         UPDATE pending_payments
-        SET sync_status = 'PENDING', retry_count = 0, permanent = 0, acknowledged = 0, acknowledged_by = NULL, acknowledged_at = NULL
+        SET sync_status = 'PENDING', retry_count = 0, permanent = 0
         WHERE sync_status = 'FAILED'
     """)
     suspend fun resetAllFailedIncludingPermanent(): Int
@@ -488,11 +500,13 @@ interface PendingPaymentDao {
     """)
     suspend fun normalizarClaimsFuturos(now: Long, staleBefore: Long)
 
-    /** Incluye ventas locales: el worker las sube con su pedido antes de registrar el pago. */
+    /**
+     * Incluye ventas locales: el worker las sube con su pedido antes de registrar el pago. Conserva la revisión del gerente
+     * (C7 opción B, 25-nov): SYNCING bloquea el cierre por sí mismo y el desenlace distinto la borra al escribirse.
+     */
     @Query("""
         UPDATE pending_payments
-        SET sync_status = 'SYNCING', claim_token = :token, claimed_at = :now,
-            acknowledged = 0, acknowledged_by = NULL, acknowledged_at = NULL
+        SET sync_status = 'SYNCING', claim_token = :token, claimed_at = :now
         WHERE id IN (
             SELECT id FROM pending_payments
             WHERE (sync_status = 'PENDING'
@@ -542,7 +556,10 @@ interface PendingPaymentDao {
     @Query("UPDATE pending_payments SET exito_mostrado = 1 WHERE idempotency_key = :idempotencyKey")
     suspend fun marcarExitoMostrado(idempotencyKey: String): Int
 
-    /** Orden y evidencia de revision juntas, conservando el claim y cualquier revision previa. */
+    /**
+     * Orden y evidencia de revision juntas, conservando el claim y cualquier revision previa. Una diferencia NUEVA (`requiere_revision`
+     * pasa de 0 a 1) borra la revisión del gerente; una que ya estaba cuando él revisó no la vuelve a pedir (C7 opción B, 25-nov).
+     */
     @Query("""
         UPDATE pending_payments
         SET order_id = :orderId,

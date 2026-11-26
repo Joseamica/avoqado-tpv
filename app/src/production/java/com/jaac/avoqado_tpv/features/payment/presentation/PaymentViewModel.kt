@@ -661,6 +661,12 @@ class PaymentViewModel @Inject constructor(
     /** D666: el número de esta pantalla de cobro; al morir sólo suelta las banderas si ninguna nació después. */
     private val pantallaDeCobro = paymentStateHolder.entraPantallaDeCobro()
 
+    /**
+     * 6a2254 (founder, 24-nov: el freno mínimo): el «Error registrando pago en efectivo» que publicó [processCashPayment], con la
+     * cuenta de ese cobro. El colector del estado pone la marca en [PaymentStateHolder] mientras la pantalla muestra ESE error.
+     */
+    @Volatile private var errorDeEfectivoSinRegistro: Pair<PaymentState.Error, String>? = null
+
     init {
         Timber.d("🎬 [PaymentViewModel] Initialized")
 
@@ -732,6 +738,15 @@ class PaymentViewModel @Inject constructor(
         // Error/PrintError/Idle are genuinely terminal — no money work follows them.
         viewModelScope.launch {
             state.collect { s ->
+                // 6a2254: la marca de «error de registro del efectivo de la cuenta X» sigue a lo que la pantalla MUESTRA. Se pone
+                // ANTES de soltar la bandera de cobro activo (sin hueco entre las dos) y se quita con cualquier otro estado:
+                // Reintentar, Cancelar, reiniciar. Al morir la pantalla la quita onCleared.
+                val efectivo = errorDeEfectivoSinRegistro
+                if (efectivo != null && s == efectivo.first) {
+                    paymentStateHolder.marcarEfectivoSinRegistro(pantallaDeCobro, efectivo.second)
+                } else {
+                    paymentStateHolder.quitarEfectivoSinRegistro(pantallaDeCobro)
+                }
                 if (authorizationUnresolved && s is PaymentState.Error) {
                     // 🔓 D26 (22-nov, Testarudo): en la DUDA con el SDK ya regresado y sin aprobación conocida, la pantalla no aparta la
                     // terminal: aparta su VENTA (el SERVIDOR cerca la orden sin desenlace y la libreta la cerca con dinero conocido).
@@ -3195,6 +3210,22 @@ class PaymentViewModel @Inject constructor(
 
         if (missingRating || missingTip) {
             Timber.w("⚠️ [External Payment] Missing rating/tip for enabled screens - falling back to on-device flow")
+            // 💵 D10 (Codex r2): falta sólo la calificación y la pantalla de propina está apagada → se califica aquí y se cobra
+            // la propina del POS (mismo camino que la propina de Mesas, D9). Con submitAmount salía en $0 tras calificar.
+            if (!missingTip && !needsTip && tipCents != null && tipCents > 0L) {
+                submitAmountConPropinaYaElegida(
+                    amount = amount,
+                    propinaCents = tipCents,
+                    orderId = orderId,
+                    orderNumber = orderNumber,
+                    splitType = splitType,
+                    equalPartsPartySize = equalPartsPartySize,
+                    equalPartsPayedFor = equalPartsPayedFor,
+                    paidProductIds = paidProductIds,
+                    skipLocalOrderValidation = skipLocalOrderValidation
+                )
+                return
+            }
             submitAmount(
                 amount = amount,
                 orderId = orderId,
@@ -3210,7 +3241,10 @@ class PaymentViewModel @Inject constructor(
 
         Timber.d("🔵 [External Payment] Using external inputs | amount=$amount | tipCents=$tipCents | rating=$rating | skipReview=$skipReview")
 
-        val resolvedTip = if (needsTip && tipCents != null) formatCentsToAmountString(tipCents) else "0.00"
+        // 💵 D10 (16-nov): la propina que manda el POS se cobra SIEMPRE que venga. Apagar la «Pantalla de Propina» sólo
+        // salta la pregunta en la terminal; antes también tiraba el monto y la PAX cobraba sólo el subtotal (desde 2.7.1).
+        // La Nexgo ya la conservaba (`pendingTip`).
+        val resolvedTip = if (tipCents != null && tipCents > 0L) formatCentsToAmountString(tipCents) else "0.00"
         val resolvedRating = if (needsRating) rating else null
 
         startPaymentWithResolvedInputs(
@@ -5982,7 +6016,14 @@ class PaymentViewModel @Inject constructor(
         }
         if (!repetida) {
             val token = checkNotNull(guardada.getOrThrow().claimToken)
-            when (val resultado = subirVentaGuardadaUseCase(fila.toQueuedPayment())) {
+            // 📴 Con la franja de «sin servidor» no se sube aquí: la venta ya está guardada y la cola la manda (encargo 97042c: antes
+            // esperaba ~25 s sin respuesta en cada venta). Sin intento no se suma intento; se despierta a la cola como siempre.
+            val resultado = if (connectionStateManager.servidorMudo()) null else subirVentaGuardadaUseCase(fila.toQueuedPayment())
+            when (resultado) {
+                null -> {
+                    paymentQueueRepository.release(fila.id, token, fila.retryCount, "Sin conexión con el servidor: se manda sola al volver")
+                    runCatching { PaymentSyncScheduler.runNow(appContext) }
+                }
                 SyncOutcome.Synced -> paymentQueueRepository.markSynced(fila.id, token)
                 is SyncOutcome.Permanent -> paymentQueueRepository.markPermanentlyFailed(fila.id, token, resultado.reason)
                 SyncOutcome.Retryable -> {
@@ -6313,7 +6354,8 @@ class PaymentViewModel @Inject constructor(
                         // esta fila lleva el terminalPaymentRequestId del cobro que mandó la tablet.
                         runCatching { PaymentSyncScheduler.runNow(appContext) }
 
-                        val orderData = loadOrderData(orderIdForFlow)
+                        // 📴 El efectivo quedó EN COLA: con la franja de «sin servidor», la copia local (97042c, Codex r3 #3).
+                        val orderData = loadOrderData(orderIdForFlow, copiaLocalSiServidorMudo = true)
                         _state.value = PaymentState.Success(
                             authCode = "EFECTIVO",
                             amount = currentState.totalAmount,
@@ -6342,17 +6384,24 @@ class PaymentViewModel @Inject constructor(
                             queueError = queueError,
                             orderIdForFlow = orderIdForFlow
                         )
-                        _state.value = PaymentState.Error(
+                        val errorDelEfectivo = PaymentState.Error(
                             message = "Error registrando pago en efectivo:\n\n${error.message ?: "Error desconocido"}",
+                            // 🔴 a1ff27: «Reintentar» vuelve a REGISTRAR este efectivo (misma llave), nunca abre la
+                            // tarjeta. `amount` es el SUBTOTAL: la propina va aparte, como en cualquier RetryContext.
                             context = RetryContext(
-                                amount = currentState.totalAmount,  // ✅ FIX: Use totalAmount for consistency
+                                amount = currentState.subtotal,
                                 tipAmount = currentState.tipAmount,
                                 rating = currentState.rating,
-                                merchantAccountId = "",  // No merchant for cash
-                                flowOrigin = sessionSnapshot.flowOrigin
+                                merchantAccountId = null,  // null = efectivo (no hay comercio)
+                                flowOrigin = sessionSnapshot.flowOrigin,
+                                reintentoDeEfectivo = com.jaac.avoqado_tpv.features.payment.domain.ReintentoDeEfectivo.EFECTIVO,
                             ),
                             canRetry = true
                         )
+                        // 6a2254: mientras este error se vea, el cobro del POS de ESTA cuenta no se inicia (el efectivo pudo
+                        // entrar al cajón sin registro). Se anota ANTES de publicar: el colector del estado pone la marca.
+                        errorDeEfectivoSinRegistro = orderIdForFlow?.let { errorDelEfectivo to it }
+                        _state.value = errorDelEfectivo
                     }
                 }
 
@@ -6860,12 +6909,16 @@ class PaymentViewModel @Inject constructor(
                         )
                         _state.value = PaymentState.Error(
                             message = "Error registrando pago confirmado:\n\n${error.message ?: "Error desconocido"}",
+                            // 🔴 a1ff27: igual que el efectivo de arriba: reintentar es registrar, nunca la tarjeta.
                             context = RetryContext(
-                                amount = currentState.totalAmount,
+                                amount = currentState.subtotal,
                                 tipAmount = currentState.tipAmount,
                                 rating = currentState.rating,
-                                merchantAccountId = "",
-                                flowOrigin = sessionSnapshot.flowOrigin
+                                merchantAccountId = null,
+                                flowOrigin = sessionSnapshot.flowOrigin,
+                                orderId = currentState.orderId,
+                                orderNumber = currentState.orderNumber,
+                                reintentoDeEfectivo = com.jaac.avoqado_tpv.features.payment.domain.ReintentoDeEfectivo.KIOSCO,
                             ),
                             canRetry = true
                         )
@@ -7244,6 +7297,41 @@ class PaymentViewModel @Inject constructor(
             Timber.w("⚠️ [Retry] Context is NULL, resetting to idle")
             resetPayment()
             return
+        }
+
+        // 🔴 a1ff27: el cliente YA pagó en efectivo y lo que falló fue el REGISTRO. Reintentar es volver a
+        // registrar ese efectivo por el mismo camino de «Cobrar en efectivo» (misma llave del intento, misma
+        // referencia), nunca `startPayment`, que abre la TARJETA por el mismo importe: cobro doble.
+        // Si la venta ya quedó guardada en la terminal (el registro guarda la fila ANTES de enviar), el registro lo dice
+        // («La venta ya está guardada; no vuelvas a cobrarla») y no deja reintentar: la cola es la dueña de esa fila.
+        // Un segundo toque (o uno tardío) no puede repintar los métodos mientras el primero registra: sólo se reintenta desde
+        // el error y sin otro efectivo en camino (Codex r2). Sin esto, la tarjeta quedaba a un toque durante el registro.
+        if (context.reintentoDeEfectivo != null &&
+            (_state.value !is PaymentState.Error || cobroEnEfectivoEnVuelo.get())) {
+            Timber.w("🔄 [Smart Retry] Efectivo: toque ignorado, ya se está registrando | estado=${_state.value::class.simpleName}")
+            return
+        }
+        when (context.reintentoDeEfectivo) {
+            com.jaac.avoqado_tpv.features.payment.domain.ReintentoDeEfectivo.EFECTIVO -> {
+                Timber.i("🔄 [Smart Retry] Efectivo: se reintenta el REGISTRO, no se abre la tarjeta | attempt=${sessionSnapshot.paymentAttemptId}")
+                processCashPaymentFromError(context)
+                return
+            }
+            com.jaac.avoqado_tpv.features.payment.domain.ReintentoDeEfectivo.KIOSCO -> {
+                // El empleado ya recibió el dinero: vuelve a la confirmación (misma llave del intento), sin imprimir otra vez.
+                Timber.i("🔄 [Smart Retry] Kiosco: de vuelta a confirmar el efectivo | attempt=${sessionSnapshot.paymentAttemptId}")
+                if (!context.isValid()) { resetPayment(); return }
+                _state.value = PaymentState.AwaitingCashConfirmation(
+                    subtotal = context.amount,
+                    tipAmount = context.tipAmount,
+                    totalAmount = calculateTotal(context.amount, context.tipAmount),
+                    rating = context.rating,
+                    orderId = context.orderId,
+                    orderNumber = context.orderNumber,
+                )
+                return
+            }
+            null -> Unit
         }
 
         if (!context.isValid()) {
@@ -8444,7 +8532,11 @@ class PaymentViewModel @Inject constructor(
         val discountAmount: java.math.BigDecimal = java.math.BigDecimal.ZERO  // 🆕 Discount for receipt printing
     )
 
-    private suspend fun loadOrderData(orderId: String?): OrderData? {
+    private suspend fun loadOrderData(
+        orderId: String?,
+        /** Sólo el efectivo que quedó EN COLA: con la franja, el GET sólo esperaría su plazo (~25 s) y el servidor aún no tiene ese pago. */
+        copiaLocalSiServidorMudo: Boolean = false,
+    ): OrderData? {
         if (orderId == null) {
             Timber.d("📦 [Order Data] Skipping load - Fast payment (no order)")
             return null
@@ -8453,7 +8545,7 @@ class PaymentViewModel @Inject constructor(
         Timber.d("📦 [Order Data] Loading data for order: $orderId")
         return try {
             val venueId = currentVenueId ?: authRepository.getVenueId()
-            val backendOrder = if (!venueId.isNullOrBlank()) {
+            val backendOrder = if (!venueId.isNullOrBlank() && !(copiaLocalSiServidorMudo && connectionStateManager.servidorMudo())) {
                 val result = orderRepository.getOrder(
                     venueId = venueId,
                     orderId = orderId
@@ -10651,6 +10743,8 @@ class PaymentViewModel @Inject constructor(
         // emitir; Codex r2 #7) y la terminal le dice al SERVIDOR lo que diría la sonda (con un final ya emitido, sólo lo repite).
         // El venue del cobro se fija al empezar a cobrar; si la pantalla se fue antes (p. ej. en «Seleccionar Cuenta»), el de la sesión.
         socketManager.alMorirUnaPantallaDeCobro(solicitudVinculada, currentVenueId.ifBlank { authRepository.getVenueId() ?: secureStorage.getVenueId() })
+        // 6a2254: la pantalla que se va ya no muestra el error del efectivo. Sólo quita SU marca (D666).
+        paymentStateHolder.quitarEfectivoSinRegistro(pantallaDeCobro)
         // 🔒 The state collector died with viewModelScope — never leave the singleton flags stuck
         // true. A stuck money-window flag would refuse every future POS cancel; a stuck
         // charge-active flag would refuse every future POS CHARGE («La terminal tiene otro cobro en curso…»)

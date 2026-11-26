@@ -245,14 +245,18 @@ class DeviceInfoManager @Inject constructor(
      * @return Result.Success(ActivationStatusResponse) if API call succeeds
      * @return Result.Error on network failure or server error
      */
-    suspend fun checkActivationStatusWithBackend(): Result<ActivationStatusResponse> {
+    suspend fun checkActivationStatusWithBackend(
+        // Encargo 097e01: el logo de arranque la pide por su cliente de tope corto (ApiDelArranque); los demás, por el general.
+        consulta: (suspend (serialNumber: String, environment: String) -> retrofit2.Response<ActivationStatusResponse>)? = null
+    ): Result<ActivationStatusResponse> {
         return try {
             val serialNumber = getSerialNumber()
             Timber.d("🔍 Checking activation status with backend for serial: $serialNumber")
 
-            val response = apiService.checkActivationStatus(
+            val environment = com.jaac.avoqado_tpv.BuildConfig.BLUMON_ENV
+            val response = consulta?.invoke(serialNumber, environment) ?: apiService.checkActivationStatus(
                 serialNumber = serialNumber,
-                environment = com.jaac.avoqado_tpv.BuildConfig.BLUMON_ENV
+                environment = environment
             )
 
             if (response.isSuccessful && response.body() != null) {

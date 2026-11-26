@@ -247,7 +247,7 @@ fun AngelPayPaymentScreen(
     // recrea después de un cobro exitoso y el auto-arranque vuelve a correr, ya no se reaplica.
     var propinaDeMesaCobrada by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(state) {
-        if (state is AngelPayPaymentState.Success) propinaDeMesaCobrada = true
+        if (state is AngelPayPaymentState.Success || state is AngelPayPaymentState.Queued) propinaDeMesaCobrada = true
     }
 
     // Auto-start payment when screen opens with amount
@@ -263,7 +263,10 @@ fun AngelPayPaymentScreen(
         soloEfectivo,
         ventaLocalJson,
     ) {
-        if (initialAmount != null && state is AngelPayPaymentState.Idle) {
+        // 🪑 hz:1450a1e9:D4: la misma marca dice que esta pantalla ya cobró (también el recibo en cola). Si la pantalla se vuelve a
+        // montar tras el cobro (otra pantalla encima a media salida de Mesas y luego «atrás»), este arranque corría otra vez y ofrecía
+        // la cuenta pagada. Con un cobro hecho, Idle sólo espera la salida.
+        if (initialAmount != null && state is AngelPayPaymentState.Idle && !propinaDeMesaCobrada) {
             // 📸 Serialized inventory (SIM) proof-of-sale — no-op for a normal payment
             // (all args default off), so this doesn't change the normal charge flow.
             viewModel.setSerializedSaleInfo(
@@ -331,6 +334,27 @@ fun AngelPayPaymentScreen(
     // composition pass `state` becomes Queued — no transient frame through the
     // Scaffold. See AngelPayPaymentState.Queued kdoc for why this must never be Error.
     val queuedState = state as? AngelPayPaymentState.Queued
+
+    // 🔙 Encargo f84e3a (Codex r1 #1 y #2): con el cobro ya hecho el «atrás» del sistema NUNCA sale a la entrada anterior (desde
+    // Cobrar, el carrito lleno). Cubre todo el tramo del éxito: el primer cuadro de Success (la animación se enciende en un efecto),
+    // la animación, y la espera tras el botón principal (Mesas libera la mesa por red; mientras, la pantalla queda vacía en Idle).
+    // Con el recibo a la vista lo atiende AngelPaySuccessContent, que se registra después y por eso gana: hace lo del botón.
+    // `huboExito` (Codex r2 #1): tras el botón principal de un cobro EN COLA el estado ya es Idle y no hay banderas de animación ni
+    // de recibo; sin esto un segundo «atrás» regresaba al «Cobrar mesa» viejo mientras se libera la mesa. Después de un cobro esta
+    // pantalla sólo sale por sus botones.
+    var huboExito by rememberSaveable { mutableStateOf(false) } // sobrevive a recrear la pantalla (Codex r4 #3)
+    LaunchedEffect(state) {
+        if (state is AngelPayPaymentState.Success || state is AngelPayPaymentState.Queued) huboExito = true
+    }
+    // Registrando (RecordingPayment, ProcessingCash) también (Codex r4 #1): el éxito se publica desde ahí y, hasta que la pantalla
+    // se vuelve a pintar, ningún otro manejador lo atendería; el NavHost sacaba la pantalla y regresaba al carrito lleno.
+    BackHandler(
+        enabled = state is AngelPayPaymentState.Success || state is AngelPayPaymentState.Queued ||
+            state is AngelPayPaymentState.RecordingPayment || state is AngelPayPaymentState.ProcessingCash ||
+            showApprovedAnimation || showSuccessContent || huboExito,
+    ) {
+        Timber.d("🔙 [AngelPay] «atrás» en el tramo del éxito sin recibo a la vista: se ignora")
+    }
 
     // ── Full-screen overlays (no scaffold) ───────────────────────────
     when {
@@ -503,7 +527,8 @@ fun AngelPayPaymentScreen(
     // estados (antes salía directo a Cobrar sin pasar por `onNavigateBack` y la venta ya creada quedaba abierta para siempre). En los
     // demás estados y en los demás flujos no se toca: el atrás del sistema sigue como hoy.
     BackHandler(
-        enabled = atrasDelSistemaComoLaFlecha && (
+        // f84e3a: después de un cobro, nunca (lo atiende el manejador del tramo del éxito, arriba).
+        enabled = atrasDelSistemaComoLaFlecha && !huboExito && (
             state is AngelPayPaymentState.CollectingRating ||
                 state is AngelPayPaymentState.CollectingTip ||
                 state is AngelPayPaymentState.SelectingMerchant ||

@@ -52,6 +52,8 @@ class LedgerApprovalRecoveryTest {
         assertEquals("attempt", contexts.single().idempotencyKey)
         assertEquals("request", contexts.single().terminalPaymentRequestId)
         assertEquals(123, (contexts.single() as PaymentContext.FastPayment).blumonOperationNumber)
+        // D7: la hora en que se abrió el intento viaja con el registro tardío (el servidor avisa si en medio hubo efectivo).
+        assertEquals(1L, (contexts.single() as PaymentContext.FastPayment).capturadoEnAparato)
         coVerify(exactly = 1) { dao.completeRecovery("attempt", "venue", any(), "REGISTRADO", any(), null) }
         coVerify(exactly = 0) { dao.aplicarVeredictoDelServidor(any(), any()) }
     }
@@ -69,6 +71,7 @@ class LedgerApprovalRecoveryTest {
         assertEquals(1, LedgerApprovalRecovery(dao, fast, order).recover("venue", 1000000))
         assertEquals("attempt-ap", contexts.single().idempotencyKey)
         assertEquals("request-ap", contexts.single().terminalPaymentRequestId)
+        assertEquals(1L, (contexts.single() as PaymentContext.AngelPayPayment).capturadoEnAparato)
         val v = veredictos.single()
         assertEquals("attempt-ap", v.attemptId)
         assertEquals(VeredictoDeIntento.Fuente.REST, v.fuente)

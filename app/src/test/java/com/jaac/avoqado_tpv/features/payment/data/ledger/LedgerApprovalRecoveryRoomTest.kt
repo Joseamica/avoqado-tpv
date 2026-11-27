@@ -149,4 +149,66 @@ class LedgerApprovalRecoveryRoomTest {
         assertThat(dao.getById("legacy-tag")?.shiftMembership).isEqualTo("UNKNOWN")
     }
 
+    /**
+     * 🔴 Cobro simple · D5 mínimo (rescate de F1 `7d12a7c8`): con `verify_attempts < 5`, cinco fallos del SERVIDOR al registrar un aprobado
+     * de la PAX lo sacaban de toda pasada: cargo aprobado con cero Payment. Un aprobado nunca se abandona: seis fallos y al séptimo entra,
+     * una sola vez y con la llave del intento.
+     */
+    @Test fun `D5 minimo · un aprobado nunca se abandona - seis fallos y al septimo se registra una vez`() = runTest {
+        dao.insert(blumon("b7"))
+        var caido = true
+        val registrados = mutableListOf<String>()
+        coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } coAnswers {
+            if (caido) Result.failure(java.io.IOException("503"))
+            else { registrados += firstArg<PaymentContext>().idempotencyKey!!; Result.success(receipt) }
+        }
+        var t = System.currentTimeMillis()
+        repeat(6) { t += 3_600_000L; LedgerApprovalRecovery(dao, fast, order).recover("venue", t) }
+        assertThat(dao.getById("b7")!!.state).isEqualTo("REGISTRO_FALLIDO")
+        assertThat(dao.getById("b7")!!.verifyAttempts).isEqualTo(6)
+
+        caido = false
+        t += 3_600_000L
+        assertThat(LedgerApprovalRecovery(dao, fast, order).recover("venue", t)).isEqualTo(1)
+        LedgerApprovalRecovery(dao, fast, order).recover("venue", t + 3_600_000L)
+        assertThat(registrados).containsExactly("b7")
+        assertThat(dao.getById("b7")!!.state).isEqualTo("REGISTRADO")
+    }
+
+    /**
+     * 🔴 Cobro simple · D5 mínimo (rescate de F1 `a1cca768`): sin tope, por antigüedad 60 aprobados viejos que fallan siempre ocupaban las 50
+     * filas de cada pasada y un aprobado NUEVO no entraba nunca. Por último toque, cada fila intentada queda detrás de las que ya esperaban.
+     */
+    @Test fun `D5 minimo · la recuperacion va por el ultimo toque - los viejos que fallan no tapan a uno nuevo`() = runTest {
+        repeat(60) { i -> dao.insert(blumon("viejo-$i").copy(createdAt = now - 2_000_000L + i, updatedAt = now - 2_000_000L + i)) }
+        dao.insert(blumon("nuevo").copy(createdAt = now - 900_000L, updatedAt = now - 900_000L))
+        val registrados = mutableListOf<String>()
+        coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } coAnswers {
+            val llave = firstArg<PaymentContext>().idempotencyKey!!
+            if (llave != "nuevo") Result.failure(java.io.IOException("503")) else { registrados += llave; Result.success(receipt) }
+        }
+        var t = System.currentTimeMillis()
+        var pasadas = 0
+        while (registrados.isEmpty() && pasadas < 10) { pasadas++; t += 3_600_000L; LedgerApprovalRecovery(dao, fast, order).recover("venue", t) }
+        assertThat(registrados).containsExactly("nuevo")
+        assertThat(pasadas).isAtMost(2)
+    }
+
+    /** 🔴 Codex d5-minimo código r4 #2: el orden por último toque es sólo de la PAX; la Nexgo sigue por antigüedad, como hoy. */
+    @Test fun `D5 minimo · la Nexgo conserva su orden por antiguedad`() = runTest {
+        dao.insert(angelPay("vieja").copy(state = "REGISTRO_FALLIDO", verifyAttempts = 1, leaseUntil = now - 60_000L,
+            createdAt = now - 3_600_000L, updatedAt = now - 3_600_000L))
+        repeat(50) { i -> dao.insert(angelPay("nueva-$i").copy(createdAt = now - 180_000L, updatedAt = now - 180_000L)) }
+        assertThat(dao.getApprovalRecoveryCandidates("venue", now - LedgerApprovalRecovery.ESPERA_MS, now).first().attemptId).isEqualTo("vieja")
+    }
+
+    /** 🔴 Codex d5-minimo r1 #5: quitar el tope es sólo de la PAX. Una venta de la Nexgo con sus 5 intentos sigue como hoy (sin POST). */
+    @Test fun `D5 minimo · la Nexgo conserva su tope de cinco intentos`() = runTest {
+        dao.insert(angelPay("n5").copy(state = "REGISTRO_FALLIDO", verifyAttempts = 5))
+        coEvery { fast.recordPayment(any(), any(), any(), any()) } returns Result.success(receipt.copy(solicitudLigada = "req-n5"))
+        val t = System.currentTimeMillis() + 3_600_000L
+        assertThat(LedgerApprovalRecovery(dao, fast, order).recover("venue", t)).isEqualTo(0)
+        coVerify(exactly = 0) { fast.recordPayment(any(), any(), any(), any()) }
+    }
+
 }

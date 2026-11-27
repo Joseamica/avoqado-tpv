@@ -4372,7 +4372,17 @@ class PaymentViewModel @Inject constructor(
                     val completeResult = completeEmvTransUseCase.run(completeParams)
                     paymentPhaseTracker.exitPhase(PaymentSdkPhase.COMPLETE_EMV_TRANS, if (completeResult.isRight) PhaseOutcome.OK else PhaseOutcome.FAILED)
 
-                    if (completeResult.isLeft) {
+                    // 🔴 D5 · Cobro simple (t2-decisiones #13, 26-nov): el −11 tras el aprobado deja el cargo (medido en el portal de Blumon
+                    // TPV) ⇒ es un cobro: sigue por el MISMO camino que un cierre con éxito (fin del SDK, «Cobrado», registro con la llave
+                    // del intento y `success` con `paymentId` al POS). Sólo VENTAS. Cualquier otro fallo del cierre sigue en la duda de abajo.
+                    val elCargoSeQueda = completeResult.isLeft && sessionSnapshot.mode != PaymentMode.REFUND &&
+                        com.jaac.avoqado_tpv.features.payment.domain.CierreDelChip.elCargoSeQueda(completeResult.leftValue(), emvCodeForKernel)
+                    if (elCargoSeQueda) {
+                        Timber.w("⚠️ [PHASE 5] CompleteEmvTrans −11 tras APROBADA: el cargo se queda ⇒ se registra como cobro (D5)")
+                        com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.logPaymentBreadcrumb(
+                            "CompleteEmvTrans −11 tras APROBADA — se registra como cobro (D5, Cobro simple)"
+                        )
+                    } else if (completeResult.isLeft) {
                         val error = completeResult.leftValue()
                         Timber.e("❌ [PHASE 5] Complete failed: $error")
                         // 🔴 D5 (encargo 533d77, opción C): el banco APROBÓ y la tarjeta rechazó el cierre. No se sabe si Blumon TPV

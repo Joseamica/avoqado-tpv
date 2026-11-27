@@ -37,10 +37,17 @@ interface PaymentAttemptDao {
 
     // 🔴 29-sep-2026: sólo VENTAS — esta recuperación registra con los registradores de VENTA. Una devolución aprobada sin
     // registrar la cierra su cola (`pending_refunds`); hoy sólo la dejaba fuera que su contexto no se deja leer como venta.
+    // 🔴 Cobro simple · D5 mínimo (26-nov; rescate de F1 `7d12a7c8` + `a1cca768`): en la PAX (Blumon TPV) sin tope de intentos; la Nexgo
+    // conserva su tope de hoy (Codex d5-minimo r1 #5). Con `verify_attempts < 5`, cinco
+    // fallos del SERVIDOR sacaban de toda pasada a un aprobado: cargo con cero Payment. Un aprobado nunca se abandona; la pausa crece hasta
+    // 32 min (`LedgerApprovalRecovery`). Y el turno va por el ÚLTIMO TOQUE: el reclamo escribe `lease_until` (la hora del intento más su
+    // pausa) y nadie más la adelanta en un aprobado, así que `COALESCE(lease_until, created_at)` es «cuándo volvió a estar libre». Por
+    // antigüedad, sin tope, los viejos que fallan siempre ocupaban las 50 filas y un aprobado nuevo no entraba nunca.
+    // Sólo en la PAX: la Nexgo conserva su tope y su orden de hoy por antigüedad (Codex d5-minimo código r4 #2).
     @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE'
         AND state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
-        AND (host_approved = 1 OR state = 'AUTORIZADO') AND created_at < :olderThan AND verify_attempts < 5
-        AND (lease_until IS NULL OR lease_until < :now) ORDER BY created_at ASC LIMIT 50""")
+        AND (host_approved = 1 OR state = 'AUTORIZADO') AND created_at < :olderThan AND (verify_attempts < 5 OR processor = 'BLUMON')
+        AND (lease_until IS NULL OR lease_until < :now) ORDER BY CASE WHEN processor = 'BLUMON' THEN COALESCE(lease_until, created_at) ELSE created_at END ASC, attempt_id ASC LIMIT 50""")
     suspend fun getApprovalRecoveryCandidates(venueId: String, olderThan: Long, now: Long): List<PaymentAttemptEntity>
 
     @Query("""UPDATE payment_attempts SET lease_until = :leaseUntil, verify_attempts = verify_attempts + 1

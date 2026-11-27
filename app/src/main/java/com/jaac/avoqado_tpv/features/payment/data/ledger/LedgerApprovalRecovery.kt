@@ -18,7 +18,8 @@ class LedgerApprovalRecovery(
     /**
      * 🔴 D3 (encargo 9308a7): ¿se puede registrar AHORA (sesión y red)? Sin sesión cada pasada terminaba en un 401, y sin
      * red en un error de transporte; los dos gastaban uno de los CINCO intentos (`verify_attempts < 5`, que sube al
-     * reclamar) de un cobro ya aprobado, y tras cinco la venta quedaba fuera de la recuperación para siempre. Sin sesión o
+     * reclamar) de un cobro ya aprobado, y tras cinco la venta quedaba fuera de la recuperación para siempre (desde el D5 mínimo de
+     * Cobro simple ya no hay tope, pero un intento sin sesión o sin red sólo alargaría la pausa). Sin sesión o
      * sin red no se reclama ninguna fila: esperan intactas (entrar y reconectar vuelven a pedir la pasada). Se pregunta
      * ANTES DE CADA FILA: un 401 con refresco fallido borra la sesión a media pasada (Codex r1 #1).
      */
@@ -55,9 +56,12 @@ class LedgerApprovalRecovery(
                 Timber.i("📒 [LedgerApproval] se fue la sesión o la red a media pasada: las demás aprobaciones esperan")
                 break
             }
+            // 🔴 Cobro simple · D5 mínimo (rescate de F1 `7d12a7c8`): en la PAX sin tope de intentos (antes `verifyAttempts >= 5` ⇒ fuera
+            // para siempre). Un aprobado de Blumon TPV nunca se abandona: la pausa es 5 → 5 → 8 → 16 → 32 min y se queda en 32, con la llave
+            // del intento. La Nexgo conserva su tope de hoy (Codex d5-minimo r1 #5: no se le cambia nada).
             if (row.venueId != venueId || row.state !in RECOVERABLE ||
                 (row.hostApproved != true && row.state != PaymentAttemptEntity.STATE_AUTORIZADO) ||
-                row.verifyAttempts >= 5) continue
+                (row.verifyAttempts >= 5 && row.processor != PaymentAttemptEntity.PROCESSOR_BLUMON)) continue
             try {
                 val waitMs = 120_000L * (1L shl row.verifyAttempts.coerceIn(0, 4))
                 val acquiredAt = maxOf(now, System.currentTimeMillis())
@@ -102,7 +106,7 @@ class LedgerApprovalRecovery(
                         // Una fila AngelPay que el DAO declara fuera de alcance (devolución, heredada) sigue el camino anterior.
                         ResultadoDelVeredicto.Decision.FUERA_DE_ALCANCE ->
                             if (dao.completeRecovery(row.attemptId, venueId, ownedLease, PaymentAttemptEntity.STATE_REGISTRADO, completedAt, null) == 1) recovered++
-                        // Un rechazo no guardó nada: la fila conserva su estado y su lease; el tope de 5 intentos la acota y S6/F0 la ven.
+                        // Un rechazo no guardó nada: la fila conserva su estado y su lease; se reintenta con la pausa (≤ 32 min) y S6/F0 la ven.
                         else -> Timber.e("🚨 [LedgerApproval] la libreta RECHAZÓ el veredicto del 2xx (%s) | attemptId=%s paymentId=%s",
                             aplicado.decision, row.attemptId, receipt.paymentId)
                     }
@@ -125,6 +129,10 @@ class LedgerApprovalRecovery(
      * que no cupo en la página de 50. Lo que esta pasada ya intentó quedó con lease y no cuenta (no hay vuelta sin fin; su
      * reintento sigue el backoff de siempre). Devuelve en cuántos ms, o null si no hace falta o si no se puede registrar
      * ahora (sin sesión o sin red no se sondea: entrar y reconectar vuelven a pedir la pasada).
+     * 🔴 Cobro simple · D5 mínimo (Codex código r2 #1 y r3): sin el tope de 5, una fila cuya pausa vence también pide la siguiente pasada.
+     * No es un bucle: cada fila sale a lo más una vez por su pausa (5 → 5 → 8 → 16 → 32 min, `ownedLease`), así que el número de POST lo
+     * acota la pausa, no esta pasada. Filtrar aquí las ya intentadas dejaba sin pasada a una aprobación nueva detrás de 50 reintentos y a
+     * la Nexgo (r3): se queda como en `main`.
      */
     suspend fun cuandoHaceFaltaOtraPasada(venueId: String, now: Long): Long? {
         if (!puedeRegistrar()) return null

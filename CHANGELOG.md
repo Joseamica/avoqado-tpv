@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+---
+
+## [2.22.5] - 2026-11-27
+
 ### **Added**
 - **Interno, sin efecto en la app · `motorlab`, bloque P0 de la fase 3 del SDK propio**: tres cosas en la app de laboratorio de sandbox; `:app` y `:cobropropio` no cambian.
   - Botón «Servidor mudo»: el servidor local recibe el reporte completo y nunca contesta, como un SERVIDOR colgado, y suelta la conexión cuando el cliente se va o a los 15 s; la cabecera dice «(mudo)», cuántas retuvo, desde cuándo y qué reporte retuvo (la intención, el resultado u otra ruta).

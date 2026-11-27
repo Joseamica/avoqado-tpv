@@ -110,9 +110,13 @@ fun Navegacion(
                     val t = turnoS.value
                     val c = copiaS.value
                     val ahora = System.currentTimeMillis()
-                    // Codex r3 #1: la entrada sin red que el SERVIDOR rechazó (sigue en la cola) no deja vender.
+                    // Codex r3 #1: la entrada sin red que el SERVIDOR rechazó (sigue en la cola) no deja vender. H-1: el Inicio
+                    // lo dice con su motivo y no la cuenta como «Turno abierto».
                     val suEntrada = t?.llaveEntrada?.takeIf { t.timeEntryId == null }
-                        ?.let { l -> piezasS.value.firstOrNull { it.llave == l }?.estado }
+                        ?.let { l -> piezasS.value.firstOrNull { it.llave == l } }
+                    val rechazada = suEntrada?.takeIf {
+                        it.estado == EstadoPieza.RECHAZADA && t?.staffId == yo.staffId && t?.venueId == yo.venueIdDeLaSesion
+                    }
                     val esperan = piezasS.value.filter { it.estado == EstadoPieza.PENDIENTE && it.venueId != yo.venueIdDeLaSesion }
                         .mapNotNull { p -> yo.sucursales.firstOrNull { it.venueId == p.venueId }?.nombre }.distinct()
                     InicioScreen(
@@ -120,13 +124,15 @@ fun Navegacion(
                             nombre = yo.nombre, pendientes = visiblesEnPendientes(piezasS.value).size, necesitaPin = yo.necesitaPin, esperanSucursal = esperan,
                             // D3: un turno de un día ya terminado ya no es «turno abierto» (el Inicio ofrece «Checar entrada»).
                             // Codex r5 #1: el turno de otra sucursal no es «Turno abierto» aquí (Checar ofrece la entrada de ésta).
-                            turnoAbierto = tieneTurno(t, yo.staffId, ahora) && t?.venueId == yo.venueIdDeLaSesion, gps = gpsS.value,
+                            turnoAbierto = tieneTurno(t, yo.staffId, ahora) && t?.venueId == yo.venueIdDeLaSesion && rechazada == null,
+                            gps = gpsS.value,
                             version = versionS.value, obligatoria = obligatoriaS.value, paso = pasoS.value,
                             sucursal = yo.sucursales.firstOrNull { it.venueId == yo.venueIdDeLaSesion }?.nombre,
                             entradaAt = horaDeEntrada(t, yo.staffId),
                             enCustodia = cuantasEnCustodia(c, yo.venueIdDeLaSesion, conSimsS.value), articulo = c?.config?.etiquetaArticulo ?: "SIM",
                             porRevisar = cuantasPorRevisar(c, yo.venueIdDeLaSesion),
-                            puedeVender = puedeVender(t, yo.staffId, yo.venueIdDeLaSesion, ahora, suEntrada),
+                            puedeVender = puedeVender(t, yo.staffId, yo.venueIdDeLaSesion, ahora, suEntrada?.estado),
+                            entradaRechazada = rechazada?.let { it.rechazoMensaje?.takeIf(String::isNotBlank) ?: "revísala en «Ventas pendientes por subir»" },
                         ),
                         AccionesDeInicio(
                             vender = { nav.navigate("venta") }, sims = { nav.navigate("sims") }, checar = { nav.navigate("checada") },

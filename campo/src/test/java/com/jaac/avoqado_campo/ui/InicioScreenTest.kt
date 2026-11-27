@@ -304,11 +304,16 @@ class InicioScreenTest {
     }
 
     // Codex r3 #1: la entrada sin red que el SERVIDOR rechazó sigue en el celular, pero no deja vender.
-    @Test fun `con la entrada rechazada - Vender se bloquea igual que sin entrada`() {
-        inicio(base.copy(turnoAbierto = true, puedeVender = false))
-        compose.onNodeWithText(CHECA_TU_ENTRADA).assertExists()
+    // H-1 (full-testing del 26-nov): con la entrada rechazada, el Inicio no dice «Turno abierto» ni ofrece «Checar salida»:
+    // dice el motivo y Checar y Vender llevan a «Ventas pendientes por subir», donde está «Quitar de mi celular».
+    @Test fun `con la entrada rechazada - dice el motivo y Checar y Vender llevan a pendientes`() {
+        inicio(base.copy(entradaRechazada = "La asistencia no está activa en esta sucursal"))
+        compose.onNodeWithText("Tu entrada no se aceptó: La asistencia no está activa en esta sucursal").assertExists()
+        compose.onAllNodesWithText("Turno abierto", substring = true).assertCountEquals(0)
+        compose.onAllNodesWithText("Checar salida").assertCountEquals(0)
         compose.onNodeWithText("Vender SIM").performClick()
-        assertEquals(listOf("checar"), toques)
+        compose.onNodeWithText("Checar entrada").performClick()
+        assertEquals(listOf("pendientes", "pendientes"), toques)
     }
 
     @Test fun `Mis ventas por mes - abre el mas reciente, los demas cerrados, y un toque abre otro`() {

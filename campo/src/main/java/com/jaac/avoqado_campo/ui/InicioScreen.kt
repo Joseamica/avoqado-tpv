@@ -64,6 +64,8 @@ data class DatosDeInicio(
     val porRevisar: Int = 0,
     /** 0.6.0: turno vigente y su entrada no rechazada (Codex r3 #1); sin esto, «Vender» lleva a «Checar entrada». */
     val puedeVender: Boolean = false,
+    /** H-1: el motivo de la entrada de este celular que el SERVIDOR rechazó; Checar y Vender llevan a «Ventas pendientes». */
+    val entradaRechazada: String? = null,
 )
 
 class AccionesDeInicio(
@@ -108,7 +110,8 @@ fun InicioScreen(d: DatosDeInicio, a: AccionesDeInicio) {
     }
     val saludo = listOfNotNull(d.nombre?.let { "Hola, $it" }, d.sucursal).takeIf { it.isNotEmpty() }?.joinToString(" · ")
     PantallaCampo("Avoqado Campo", subtitulo = saludo, derecha = { if (d.nombre != null) Iniciales(d.nombre) }) {
-        if (d.turnoAbierto) Recuadro(d.entradaAt?.let { "Turno abierto · entraste a las ${horaCorta(it)}" } ?: "Turno abierto", Tono.OK)
+        if (d.entradaRechazada != null) Recuadro("Tu entrada no se aceptó: ${d.entradaRechazada}", Tono.AVISO)
+        else if (d.turnoAbierto) Recuadro(d.entradaAt?.let { "Turno abierto · entraste a las ${horaCorta(it)}" } ?: "Turno abierto", Tono.OK)
         AvisoDeVersion(d.version, d.obligatoria, d.paso, a.actualizar)
         if (d.necesitaPin) Recuadro("Escribe tu PIN con señal para subir lo pendiente", Tono.AVISO, boton = "Escribir mi PIN", onBoton = a.entrar)
         d.esperanSucursal.forEach { Recuadro("Tienes cosas por subir de $it", Tono.AVISO, boton = "Entrar a $it", onBoton = a.entrar) }
@@ -124,6 +127,7 @@ fun InicioScreen(d: DatosDeInicio, a: AccionesDeInicio) {
             {
                 // 0.6.0: sin entrada no se vende; el mosaico lo dice y lleva a «Checar entrada».
                 if (d.puedeVender) Mosaico("Vender ${d.articulo}", null, a.vender, it, enabled = !d.obligatoria, principal = true)
+                else if (d.entradaRechazada != null) Mosaico("Vender ${d.articulo}", NO_SE_ACEPTO, a.pendientes, it, enabled = !d.obligatoria)
                 else Mosaico("Vender ${d.articulo}", CHECA_TU_ENTRADA, a.checar, it, enabled = !d.obligatoria)
             },
             { Mosaico("Mis SIMs", d.enCustodia?.let { n -> "$n en tu custodia" }, a.sims, it) },
@@ -131,7 +135,8 @@ fun InicioScreen(d: DatosDeInicio, a: AccionesDeInicio) {
         ParDeMosaicos(
             {
                 val detalle = if (d.turnoAbierto) d.entradaAt?.let { t -> "Entraste ${horaCorta(t)}" } ?: "Turno abierto" else "Sin turno abierto"
-                Mosaico(if (d.turnoAbierto) "Checar salida" else "Checar entrada", detalle, a.checar, it)
+                if (d.entradaRechazada != null) Mosaico("Checar entrada", NO_SE_ACEPTO, a.pendientes, it)
+                else Mosaico(if (d.turnoAbierto) "Checar salida" else "Checar entrada", detalle, a.checar, it)
             },
             { Mosaico("Mis ventas", if (d.porRevisar > 0) "${d.porRevisar} por revisar" else null, a.ventas, it, insignia = d.porRevisar.takeIf { n -> n > 0 }) },
         )
@@ -294,6 +299,9 @@ private fun InicioPreview() = TemaCampo {
         )
     }
 }
+
+/** H-1: el detalle de Checar y Vender con la entrada rechazada (llevan a «Ventas pendientes por subir»). */
+private const val NO_SE_ACEPTO = "Tu entrada no se aceptó"
 
 /** r4: algo que la persona ya tocó (la checada que espera el GPS) no llegó a guardarse a tiempo, u otro borrado sigue: no se borró nada. */
 private const val ESPERA_UN_MOMENTO = "Espera un momento y vuelve a intentar."

@@ -445,6 +445,8 @@ class ChecadaViewModelTest {
         assertEquals(ms("2026-11-03T09:00"), turnoOlvidado(t, "s1", ms("2026-11-04T09:00"), mx))
         assertNull("del mismo día no es olvidado", turnoOlvidado(t, "s1", ms("2026-11-03T20:00"), mx))
         assertTrue(textoDeSalidaOlvidada(ms("2026-11-09T09:00"), mx).contains("9-nov"))
+        // H-2: con un corte del mismo día las dos entradas son de hoy.
+        assertTrue(textoDeSalidaOlvidada(ms("2026-11-09T09:00"), mx).endsWith("Marca una entrada nueva."))
     }
 
     // Codex r5 #1: promotor de dos sucursales. Con el turno local de A y la sesión en B, Checar ofrece la entrada de B (no la

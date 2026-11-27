@@ -139,5 +139,5 @@ private val MESES = listOf("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago
 /** «Tu entrada del 9-nov se quedó sin salida…»: el SERVIDOR la cierra como «salida olvidada» y la revisa el supervisor. */
 internal fun textoDeSalidaOlvidada(abiertoAtMs: Long, zona: java.time.ZoneId = java.time.ZoneId.systemDefault()): String {
     val d = java.time.Instant.ofEpochMilli(abiertoAtMs).atZone(zona)
-    return "Tu entrada del ${d.dayOfMonth}-${MESES[d.monthValue - 1]} se quedó sin salida: se cierra sola y la revisa tu supervisor. Marca tu entrada de hoy."
+    return "Tu entrada del ${d.dayOfMonth}-${MESES[d.monthValue - 1]} se quedó sin salida: se cierra sola y la revisa tu supervisor. Marca una entrada nueva."
 }

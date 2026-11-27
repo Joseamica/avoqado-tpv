@@ -20,7 +20,8 @@ TPV (`/avoqado:release-production`).
   bien, reemplaza la foto de ese espacio; si falla, se queda la anterior y se dice qué pasó.
 - No se vende sin entrada: sin turno abierto en el celular (también uno checado sin red), el mosaico «Vender SIM» dice «Checa tu
   entrada para vender» y lleva a «Checar entrada». Lo mismo con una entrada sin red que el SERVIDOR rechazó, también tras
-  reabrir la app, y con la entrada de otra sucursal. Con la entrada de una sucursal y la sesión en otra, «Checar» ofrece la
+  reabrir la app (el Inicio dice «Tu entrada no se aceptó: <motivo>» y Checar y Vender llevan a «Ventas pendientes por subir»,
+  donde está «Quitar de mi celular»), y con la entrada de otra sucursal. Con la entrada de una sucursal y la sesión en otra, «Checar» ofrece la
   entrada de ésta (nunca la salida de la otra); esa entrada se guarda normal y, si el SERVIDOR ya tenía una, se usa con
   «Usar esa entrada». El celular guarda un solo turno: el de la otra sucursal se reemplaza en el celular sin mandarle salida.
   Límite conocido: si la persona tiene entradas abiertas en dos sucursales y el SERVIDOR contesta «ya tienes entrada» con la de
@@ -33,7 +34,8 @@ TPV (`/avoqado:release-production`).
   de 12 h. En los dos casos el celular da su margen de 3 h (con corte a las 22:00, se vende hasta la 01:00): decisión del
   founder del 26-nov («B»), la app sólo exige una entrada válida (de esa sucursal, no rechazada y vigente) y la hora exacta la
   aplica el SERVIDOR con la salida olvidada. Con la salida olvidada apagada, no vence. Se guarda con la configuración de la
-  sucursal: sin red se usa la última que bajó (también con señal, hasta que la copia se actualiza).
+  sucursal: sin red se usa la última que bajó (también con señal, hasta que la copia se actualiza). El aviso de la entrada
+  que se quedó sin salida termina en «Marca una entrada nueva» (con un corte del mismo día, las dos son de hoy).
 - Límite conocido (igual que la cámara desde la 0.5.0): la foto de una venta o corrección que todavía no se registra vive en
   la pantalla; si Android cierra la app antes de «Registrar venta» o «Enviar», hay que tomarla o elegirla otra vez.
 - GPS del turno: si la persona no marcó salida y el turno ya es de un día terminado («salida olvidada»), el celular deja de

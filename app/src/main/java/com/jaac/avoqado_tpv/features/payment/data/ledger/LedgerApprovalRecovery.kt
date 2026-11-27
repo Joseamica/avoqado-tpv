@@ -129,14 +129,15 @@ class LedgerApprovalRecovery(
      * que no cupo en la página de 50. Lo que esta pasada ya intentó quedó con lease y no cuenta (no hay vuelta sin fin; su
      * reintento sigue el backoff de siempre). Devuelve en cuántos ms, o null si no hace falta o si no se puede registrar
      * ahora (sin sesión o sin red no se sondea: entrar y reconectar vuelven a pedir la pasada).
-     * 🔴 Cobro simple · D5 mínimo (Codex código r2 #1): sólo las que NUNCA se intentaron (`lease_until` nulo). Sin el tope de 5, una
-     * pasada larga con 503 dejaba vencer la pausa de las primeras y esto pedía otra pasada sobre las mismas, sin fin. Un reintento va con
-     * los barridos de siempre (arrancar, entrar, reconectar, 6 h).
+     * 🔴 Cobro simple · D5 mínimo (Codex código r2 #1 y r3): sin el tope de 5, una fila cuya pausa vence también pide la siguiente pasada.
+     * No es un bucle: cada fila sale a lo más una vez por su pausa (5 → 5 → 8 → 16 → 32 min, `ownedLease`), así que el número de POST lo
+     * acota la pausa, no esta pasada. Filtrar aquí las ya intentadas dejaba sin pasada a una aprobación nueva detrás de 50 reintentos y a
+     * la Nexgo (r3): se queda como en `main`.
      */
     suspend fun cuandoHaceFaltaOtraPasada(venueId: String, now: Long): Long? {
         if (!puedeRegistrar()) return null
         val siguiente = dao.getApprovalRecoveryCandidates(venueId, Long.MAX_VALUE, now)
-            .filter { it.venueId == venueId && it.leaseUntil == null }
+            .filter { it.venueId == venueId }
             .minOfOrNull { it.createdAt } ?: return null
         return (siguiente + ESPERA_MS - now).coerceAtLeast(0L) + MARGEN_MS
     }

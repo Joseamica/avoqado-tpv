@@ -73,6 +73,7 @@ class RepositorioDeCopiaTest {
     }
 
     @After fun tearDown() {
+        com.jaac.avoqado_campo.checada.recordarReglaDeSalida(null, null)
         db.close()
         server.shutdown()
         archivo.delete()
@@ -100,6 +101,37 @@ class RepositorioDeCopiaTest {
             ),
         )
         return dao.porId(id)!!
+    }
+
+    // ---------- 0.6.0: la fecha de venta y la hora de corte de la salida olvidada ----------
+
+    @Test fun `la copia guardada por la 0_5_0 (sin soldAt ni hora de corte) abre igual y usa la regla de hoy`() = runBlocking {
+        archivo.writeText(
+            """{"versionApp":${BuildConfig.VERSION_CODE},"venueId":"v1","generacion":"${quienSoy.generacion}","sims":[""" +
+                """{"serialNumber":"8952140000002","custodyState":"SOLD","custodyVersion":4,"categoria":"Prepago","precio":"50.00",""" +
+                """"rejectionReasons":[]}],""" +
+                """"config":{"etiquetaArticulo":"SIM","etiquetaCodigo":"ICCID","portabilidad":false,"numeroDeVinculacion":false,""" +
+                """"fotoEntrada":false,"gpsEntrada":false,"fotoSalida":false,"gpsSalida":false,"modulo":true},"bajadaAt":1}""",
+        )
+        val c = repo().leer()!!
+        assertNull(c.sims.single().soldAt)
+        assertEquals(com.jaac.avoqado_campo.checada.ReglaDeSalida.DE_HOY, com.jaac.avoqado_campo.checada.reglaDeSalida("v1"))
+    }
+
+    @Test fun `la hora de corte baja con la config, se guarda y sin red se usa la ultima que bajo`() = runBlocking {
+        modulos = MODULOS_CON_TODO.dropLast(1) + ""","asistencia":{"salidaOlvidadaEnabled":true,"salidaOlvidadaCorte":"22:00"}}"""
+        val r = repo()
+        assertTrue(r.actualizar("v1"))
+        assertEquals("22:00", r.copia.value!!.config.salidaOlvidadaCorte)
+        assertEquals(java.time.LocalTime.of(22, 0), com.jaac.avoqado_campo.checada.reglaDeSalida("v1").corte)
+        assertEquals("2026-11-20T18:00:00.000Z", r.copia.value!!.sims.first { it.serialNumber == "8952140000002" }.soldAt)
+        // Sin red: la app se abre de nuevo y la regla sale de la copia del celular.
+        com.jaac.avoqado_campo.checada.recordarReglaDeSalida(null, null)
+        repo()
+        assertEquals(java.time.LocalTime.of(22, 0), com.jaac.avoqado_campo.checada.reglaDeSalida("v1").corte)
+        // Borrar el celular la olvida.
+        repo().borrar()
+        assertEquals(com.jaac.avoqado_campo.checada.ReglaDeSalida.DE_HOY, com.jaac.avoqado_campo.checada.reglaDeSalida("v1"))
     }
 
     // ---------- D1: lo que ya había llegado al SERVIDOR al pedir la lista ----------
@@ -241,6 +273,7 @@ class RepositorioDeCopiaTest {
             SimEnCopia(
                 "8952140000002", "SOLD", 4, "Prepago", "50.00", null,
                 "FAILED", "sv2", "pay2", listOf("FOTO_BORROSA", "NUMERO_NO_COINCIDE"), "Toma otra foto",
+                soldAt = "2026-11-20T18:00:00.000Z",
             ),
             fallida,
         )
@@ -348,7 +381,7 @@ class RepositorioDeCopiaTest {
              "category":{"id":"c1","name":"E-SIM de promotor","suggestedPrice":null},
              "verificationStatus":null,"verificationId":null,"paymentId":null,"rejectionReasons":null,"reviewNotes":null},
             {"id":"i2","serialNumber":"8952140000002","custodyState":"SOLD","custodyVersion":4,
-             "category":{"id":"c2","name":"Prepago","suggestedPrice":"50.00"},
+             "category":{"id":"c2","name":"Prepago","suggestedPrice":"50.00"},"soldAt":"2026-11-20T18:00:00.000Z",
              "verificationStatus":"FAILED","verificationId":"sv2","paymentId":"pay2",
              "rejectionReasons":["FOTO_BORROSA","NUMERO_NO_COINCIDE"],"reviewNotes":"Toma otra foto"},
             {"id":"i3","serialNumber":"8952140000003","custodyState":"PROMOTER_PENDING","custodyVersion":2,

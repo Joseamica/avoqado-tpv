@@ -14,7 +14,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.jaac.avoqado_campo.ayuda.AyudaScreen
 import com.jaac.avoqado_campo.checada.ChecadaScreen
-import com.jaac.avoqado_campo.checada.turnoVigente
+import com.jaac.avoqado_campo.checada.tieneTurno
 import com.jaac.avoqado_campo.cola.EstadoPieza
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
@@ -114,7 +114,7 @@ fun Navegacion(
                         DatosDeInicio(
                             nombre = yo.nombre, pendientes = visiblesEnPendientes(piezasS.value).size, necesitaPin = yo.necesitaPin, esperanSucursal = esperan,
                             // D3: un turno de un día ya terminado ya no es «turno abierto» (el Inicio ofrece «Checar entrada»).
-                            turnoAbierto = t != null && turnoVigente(t, System.currentTimeMillis()) && t.staffId == yo.staffId, gps = gpsS.value,
+                            turnoAbierto = tieneTurno(t, yo.staffId, System.currentTimeMillis()), gps = gpsS.value,
                             version = versionS.value, obligatoria = obligatoriaS.value, paso = pasoS.value,
                             sucursal = yo.sucursales.firstOrNull { it.venueId == yo.venueIdDeLaSesion }?.nombre,
                             entradaAt = horaDeEntrada(t, yo.staffId),

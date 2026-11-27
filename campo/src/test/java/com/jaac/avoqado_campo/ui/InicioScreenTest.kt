@@ -28,6 +28,7 @@ import com.jaac.avoqado_campo.custodia.MisSimsContenido
 import com.jaac.avoqado_campo.identidad.EstadoDelCelular
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
 import com.jaac.avoqado_campo.venta.AccionesDeVenta
+import com.jaac.avoqado_campo.venta.CHECA_TU_ENTRADA
 import com.jaac.avoqado_campo.venta.EstadoVenta
 import com.jaac.avoqado_campo.venta.VentaContenido
 import com.jaac.avoqado_campo.version.NO_SE_PUDO_COMPROBAR
@@ -285,6 +286,47 @@ class InicioScreenTest {
         inicio(base)
         compose.onAllNodesWithText("Turno abierto", substring = true).assertCountEquals(0)
         compose.onNodeWithText("Checar entrada").assertIsEnabled()
+    }
+
+    // 0.6.0: sin entrada no se vende; el mosaico lo dice y lleva a «Checar entrada».
+    @Test fun `sin entrada - el mosaico de Vender dice «Checa tu entrada para vender» y lleva a Checar`() {
+        inicio(base)
+        compose.onNodeWithText(CHECA_TU_ENTRADA).assertExists()
+        compose.onNodeWithText("Vender SIM").assertIsEnabled().performClick()
+        assertEquals(listOf("checar"), toques)
+    }
+
+    @Test fun `con entrada - Vender abre la venta`() {
+        inicio(base.copy(turnoAbierto = true))
+        compose.onAllNodesWithText(CHECA_TU_ENTRADA).assertCountEquals(0)
+        compose.onNodeWithText("Vender SIM").performClick()
+        assertEquals(listOf("vender"), toques)
+    }
+
+    @Test fun `Mis ventas por mes - abre el mas reciente, los demas cerrados, y un toque abre otro`() {
+        fun ms(mes: Int) = ZonedDateTime.of(2026, mes, 15, 12, 0, 0, 0, ZoneId.of("America/Mexico_City")).toInstant().toEpochMilli()
+        fun vendida(serie: String, fecha: Long?) =
+            FilaSim(SimEnCopia(serie, "SOLD", 1, "Prepago", null, null, null, null, null, emptyList(), null), EstadoFila.VENDIDA, fecha = fecha)
+        compose.setContent {
+            var alternados by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(emptySet<String>()) }
+            TemaCampo {
+                MisSimsContenido(
+                    EstadoMisSims(vendidas = listOf(vendida("NOV1", ms(11)), vendida("OCT1", ms(10)), vendida("SIN1", null)), sinCopia = false),
+                    AccionesDeMisSims({}, {}, {}, { _, _ -> }, {}, {}), ventas = true,
+                    alternados = alternados, alternar = { k -> alternados = if (k in alternados) alternados - k else alternados + k },
+                )
+            }
+        }
+        compose.onNodeWithText("noviembre 2026 (1)").assertExists()
+        compose.onNodeWithText("NOV1").assertExists()
+        compose.onNodeWithText("OCT1").assertDoesNotExist()
+        compose.onNodeWithText("SIN1").assertDoesNotExist()
+        compose.onNodeWithText("octubre 2026 (1)").performClick()
+        compose.onNodeWithText("OCT1").assertExists()
+        compose.onNodeWithText("Sin fecha (1)").performClick()
+        compose.onNodeWithText("SIN1").assertExists()
+        compose.onNodeWithText("noviembre 2026 (1)").performClick()
+        compose.onNodeWithText("NOV1").assertDoesNotExist()
     }
 
     @Test fun `Mis SIMs dice cuantas hay en custodia, y nada si todavia no hay copia`() {

@@ -5,6 +5,21 @@ las terminales: por eso sus cambios van aquí y no en el `CHANGELOG.md` de la ra
 TPV (`/avoqado:release-production`).
 
 ## Sin publicar
+
+## 0.6.0 (código 6) — lo que pidió el cliente en sus pruebas del 26-nov (Asana 1220750328814319)
+- «Mis ventas» por mes: dentro de «Por revisar», «Exitosas» y «Rechazadas», las ventas van por mes, del más reciente al más
+  viejo («noviembre 2026 (45)»), en la zona del celular. Va abierto el mes actual (o el más reciente) y los demás cerrados: un
+  toque los abre. La fecha es la de la venta en el SERVIDOR (`soldAt`); la que el celular vendió y la lista todavía no trae va
+  con su hora local, y lo que no trae fecha va al final, en «Sin fecha». «Por subir» no cambia.
+- Foto de la galería: junto a «📷 Tomar la foto» está «Elegir de la galería» (selector del sistema, sin permisos) en Vender
+  (vinculación y portabilidad), en «Corregir evidencia» de «Mis ventas» y en «Ventas pendientes por subir». La imagen se copia
+  al celular antes de nada y pasa por la misma compresión que la de la cámara, también sin red; si no se puede leer, lo dice.
+- No se vende sin entrada: sin turno abierto en el celular (también uno checado sin red), el mosaico «Vender SIM» dice «Checa tu
+  entrada para vender» y lleva a «Checar entrada»; «Registrar venta» tampoco guarda si el turno ya venció con la pantalla
+  abierta. Subir fotos pendientes y corregir evidencia no piden entrada.
+- La hora de corte de la salida olvidada viene de la sucursal (`asistencia` de `GET tpv/modules`): con «22:00», el turno vence
+  en el siguiente 22:00 que caiga al menos 1 h después de la entrada; sin hora, como antes (04:00 y nunca antes de 12 h); con
+  la salida olvidada apagada, no vence. Se guarda con la configuración de la sucursal: sin red se usa la última que bajó.
 - GPS del turno: si la persona no marcó salida y el turno ya es de un día terminado («salida olvidada»), el celular deja de
   guardar y mandar su ubicación: ninguna lectura de después del límite se guarda (tampoco la que lo cruza mientras busca la
   señal). El servicio se para en su siguiente lectura (cada 30 min con el celular despierto) o al abrir la app, y se quita

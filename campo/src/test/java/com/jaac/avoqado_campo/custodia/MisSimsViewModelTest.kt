@@ -219,6 +219,19 @@ class MisSimsViewModelTest {
         assertEquals(listOf("S6"), e.enCustodia.map { it.sim.serialNumber })
     }
 
+    // 0.6.0: «Mis ventas» por mes. La del SERVIDOR trae `soldAt`; la del celular que la lista aún no trae, la hora de la venta.
+    @Test fun `cada venta trae su fecha - la del servidor por soldAt y la del celular por la hora de la venta`() {
+        cola.value = listOf(venta("S2", EstadoPieza.HECHA, 5).copy(resultadoJson = conPago, creadaAt = 1_795_000_000_000))
+        ponerCopia(
+            sim("S1", "SOLD").copy(soldAt = "2026-11-20T18:00:00.000Z"), sim("S2", "PROMOTER_HELD"), sim("S3", "SOLD"),
+            yaLlegadas = emptyList(),
+        )
+        val e = vm().estado.value
+        assertEquals(java.time.Instant.parse("2026-11-20T18:00:00Z").toEpochMilli(), e.exitosas.single { it.sim.serialNumber == "S1" }.fecha)
+        assertEquals(1_795_000_000_000, e.exitosas.single { it.sim.serialNumber == "S2" }.fecha)
+        assertEquals("sin soldAt (SERVIDOR viejo): sin fecha", null, e.exitosas.single { it.sim.serialNumber == "S3" }.fecha)
+    }
+
     private fun venta(serie: String, estado: String, id: Long) = Pieza(
         id = id, tipo = TipoPieza.VENTA, llave = "kv$id", staffId = "s1", venueId = "v1",
         cuerpoJson = """{"llave":"kv$id","serialNumber":"$serie","precioVisto":0}""", estado = estado, creadaAt = 0, resumen = "",

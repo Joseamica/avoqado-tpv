@@ -1,6 +1,8 @@
 package com.jaac.avoqado_campo.copia
 
 import com.google.gson.JsonParser
+import com.jaac.avoqado_campo.checada.ReglaDeSalida
+import com.jaac.avoqado_campo.checada.reglaDe
 import com.jaac.avoqado_campo.cola.EstadoPieza
 import com.jaac.avoqado_campo.cola.Pieza
 import com.jaac.avoqado_campo.cola.TipoPieza
@@ -41,6 +43,8 @@ data class SimEnCopia(
     val paymentId: String?,
     val rejectionReasons: List<String>,
     val reviewNotes: String?,
+    /** 0.6.0: cuándo se vendió (ISO, del SERVIDOR) para «Mis ventas» por mes; null = copia vieja o SERVIDOR sin el campo. */
+    val soldAt: String? = null,
 )
 
 /** Lo que el celular ya hizo con una SIM y todavía no sube (vive mientras su pieza siga por subir). */
@@ -61,7 +65,13 @@ data class ConfigDeSucursal(
     val fotoSalida: Boolean,
     val gpsSalida: Boolean,
     val modulo: Boolean,
-)
+    // 0.6.0: la salida olvidada de la sucursal (`asistencia` de `GET tpv/modules`). Nulos (copia vieja, SERVIDOR sin el
+    // campo): la regla de hoy. Nulables a propósito: Gson no pone los valores por defecto de Kotlin.
+    val salidaOlvidadaEnabled: Boolean? = null,
+    val salidaOlvidadaCorte: String? = null,
+) {
+    fun reglaDeSalida(): ReglaDeSalida = reglaDe(salidaOlvidadaEnabled, salidaOlvidadaCorte)
+}
 
 const val MODULO_DE_SIMS = "SERIALIZED_INVENTORY"
 
@@ -78,6 +88,8 @@ fun configDe(r: RespuestaModulos): ConfigDeSucursal {
         fotoSalida = c?.attendance?.requireClockOutPhoto == true,
         gpsSalida = c?.attendance?.requireClockOutGps == true,
         modulo = modulo,
+        salidaOlvidadaEnabled = r.asistencia?.salidaOlvidadaEnabled,
+        salidaOlvidadaCorte = r.asistencia?.salidaOlvidadaCorte,
     )
 }
 
@@ -86,7 +98,7 @@ fun MiSimDto.aSim(localmente: String?) = SimEnCopia(
     serialNumber = serialNumber!!, custodyState = custodyState!!, custodyVersion = custodyVersion ?: 0,
     categoria = category?.name.orEmpty(), precio = category?.suggestedPrice, localmente = localmente,
     verificationStatus = verificationStatus, verificationId = verificationId, paymentId = paymentId,
-    rejectionReasons = rejectionReasons.orEmpty(), reviewNotes = reviewNotes,
+    rejectionReasons = rejectionReasons.orEmpty(), reviewNotes = reviewNotes, soldAt = soldAt,
 )
 
 /** D1 (Codex r3): lo último que ESTE celular hizo con una SIM y que la lista todavía no trae. */
@@ -165,7 +177,7 @@ fun loDelCelular(c: Copia, piezas: List<Pieza>): Map<String, LoDelCelular> {
 private val POR_SUBIR = setOf(EstadoPieza.PENDIENTE, EstadoPieza.RETENIDA, EstadoPieza.RECHAZADA)
 private const val EN_PARTE = "CUSTODIA_EN_PARTE"
 
-private fun serieDeVenta(cuerpo: String?): String? = runCatching {
+internal fun serieDeVenta(cuerpo: String?): String? = runCatching {
     JsonParser.parseString(cuerpo).asJsonObject["serialNumber"]?.asString?.let(::normalizarSerie)
 }.getOrNull()
 

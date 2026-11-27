@@ -45,6 +45,7 @@ import com.jaac.avoqado_campo.gps.ResultadoGps
 import com.jaac.avoqado_campo.identidad.ResultadoDelBorrado
 import com.jaac.avoqado_campo.ui.tema.ColoresCampo
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
+import com.jaac.avoqado_campo.venta.CHECA_TU_ENTRADA
 import com.jaac.avoqado_campo.version.AvisoDeVersion
 import com.jaac.avoqado_campo.version.PasoDeActualizacion
 import com.jaac.avoqado_campo.version.VersionNueva
@@ -118,7 +119,11 @@ fun InicioScreen(d: DatosDeInicio, a: AccionesDeInicio) {
         }
         // D-2: con una obligatoria pendiente no se empieza nada NUEVO; Mis SIMs y Checar siguen (dentro, aceptar y entrar en gris).
         ParDeMosaicos(
-            { Mosaico("Vender ${d.articulo}", null, a.vender, it, enabled = !d.obligatoria, principal = true) },
+            {
+                // 0.6.0: sin entrada no se vende; el mosaico lo dice y lleva a «Checar entrada».
+                if (d.turnoAbierto) Mosaico("Vender ${d.articulo}", null, a.vender, it, enabled = !d.obligatoria, principal = true)
+                else Mosaico("Vender ${d.articulo}", CHECA_TU_ENTRADA, a.checar, it, enabled = !d.obligatoria)
+            },
             { Mosaico("Mis SIMs", d.enCustodia?.let { n -> "$n en tu custodia" }, a.sims, it) },
         )
         ParDeMosaicos(

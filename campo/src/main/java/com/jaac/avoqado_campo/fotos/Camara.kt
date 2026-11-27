@@ -58,7 +58,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -101,7 +100,7 @@ private fun PermisoDeCamara(para: String, negada: Boolean, onPedir: () -> Unit, 
 
 /**
  * Toma UNA foto con CameraX (trasera o [frontal]), la comprime ([Compresor]) a `cacheDir/fotos/` y entrega esa ruta. La
- * cruda se borra. Como `CameraPreviewScreen` de la PAX, sin el flash ni la galería. Con [frontal] (la selfie) dibuja el óvalo
+ * cruda se borra. Como `CameraPreviewScreen` de la PAX, sin el flash; la galería es [BotonDeGaleria], al lado. Con [frontal] (la selfie) dibuja el óvalo
  * del mockup para acomodar la cara; [extra] va arriba de los botones (p. ej. el estado de la ubicación al checar).
  */
 @Composable
@@ -188,9 +187,7 @@ private fun Ovalo(modifier: Modifier) {
 }
 
 private suspend fun tomarYComprimir(context: android.content.Context, captura: ImageCapture): File {
-    val dir = File(context.cacheDir, "fotos").apply { mkdirs() }
-    val nombre = UUID.randomUUID().toString()
-    val cruda = File(dir, "$nombre-cruda.jpg")
+    val (dir, nombre, cruda) = fotoCruda(context)
     suspendCancellableCoroutine { cont ->
         captura.takePicture(
             ImageCapture.OutputFileOptions.Builder(cruda).build(),
@@ -201,11 +198,7 @@ private suspend fun tomarYComprimir(context: android.content.Context, captura: I
             },
         )
     }
-    return withContext(Dispatchers.IO) {
-        val lista = File(dir, "$nombre.jpg")
-        try { Compresor.comprimir(cruda, lista) } finally { cruda.delete() }
-        lista
-    }
+    return withContext(Dispatchers.IO) { comprimirCruda(dir, nombre, cruda) }
 }
 
 @VistaPrevia(widthDp = 360, heightDp = 640)

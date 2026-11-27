@@ -11,6 +11,7 @@ import com.jaac.avoqado_campo.cola.Pieza
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.cola.SimYaEnCola
 import com.jaac.avoqado_campo.cola.TipoPieza
+import com.jaac.avoqado_campo.cola.TurnoLocal
 import com.jaac.avoqado_campo.cola.VentaNueva
 import com.jaac.avoqado_campo.copia.ConfigDeSucursal
 import com.jaac.avoqado_campo.copia.Copia
@@ -67,6 +68,7 @@ class VentaViewModelTest {
     private val venta = slot<VentaNueva>()
 
     private val serie = "8952020012345678901F"
+    private val AHORA = 1_795_000_000_000L
 
     private fun sim(estado: String = "PROMOTER_HELD", precio: String? = "150.00", localmente: String? = null) =
         SimEnCopia(serie, estado, 1, "Prepago", precio, localmente, null, null, null, emptyList(), null)
@@ -101,6 +103,9 @@ class VentaViewModelTest {
         coEvery { copia.actualizar(any()) } returns false
         coEvery { copia.marcar(any(), any(), any()) } just runs
         coEvery { encolador.venta(quienSoy.generacion, capture(venta)) } returns "llave"
+        // 0.6.0: sin entrada no se vende. La de aquí es la checada sin red (sólo su llave): ya cuenta.
+        coEvery { dao.turnoAhora() } returns TurnoLocal(staffId = "s1", llaveEntrada = "e1", timeEntryId = null, venueId = "v1", abiertoAt = AHORA)
+        every { encolador.ahoraMs() } returns AHORA + 60_000
     }
 
     @After fun tearDown() {
@@ -405,6 +410,36 @@ class VentaViewModelTest {
         v.registrar()
         v.venderOtra()
         assertTrue(f.exists()) // es del Encolador (aquí, un mock que no la mueve)
+    }
+
+    @Test fun `sin entrada no se registra la venta y pide checar entrada`() {
+        coEvery { dao.turnoAhora() } returns null
+        val v = vm(copiaCon(sim()))
+        v.alEscanear(serie)
+        v.listaParaRegistrar().registrar()
+        assertEquals(CHECA_TU_ENTRADA, v.estado.value.error)
+        assertFalse(v.estado.value.guardada)
+        assertFalse(v.estado.value.registrando)
+        assertEquals("la foto se queda para cuando cheque", "/tmp/v.jpg", v.estado.value.fotos[Slot.VINCULACION])
+        coVerify(exactly = 0) { encolador.venta(any(), any()) }
+    }
+
+    @Test fun `con la pantalla abierta y el turno ya vencido (salida olvidada) no se registra`() {
+        every { encolador.ahoraMs() } returns AHORA + 3 * 24 * 3_600_000L
+        val v = vm(copiaCon(sim()))
+        v.alEscanear(serie)
+        v.listaParaRegistrar().registrar()
+        assertEquals(CHECA_TU_ENTRADA, v.estado.value.error)
+        coVerify(exactly = 0) { encolador.venta(any(), any()) }
+    }
+
+    @Test fun `la entrada de otra persona no cuenta`() {
+        coEvery { dao.turnoAhora() } returns TurnoLocal(staffId = "s9", llaveEntrada = "e1", timeEntryId = "te", venueId = "v1", abiertoAt = AHORA)
+        val v = vm(copiaCon(sim()))
+        v.alEscanear(serie)
+        v.listaParaRegistrar().registrar()
+        assertEquals(CHECA_TU_ENTRADA, v.estado.value.error)
+        coVerify(exactly = 0) { encolador.venta(any(), any()) }
     }
 
     @Test fun `registrar lee la generacion antes que la sesion - otra persona entre las dos no recibe la venta (H2)`() {

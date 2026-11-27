@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_campo.copia.ConfigDeSucursal
 import com.jaac.avoqado_campo.copia.SimEnCopia
+import com.jaac.avoqado_campo.fotos.BotonDeGaleria
 import com.jaac.avoqado_campo.fotos.Camara
 import com.jaac.avoqado_campo.ui.BotonPrincipal
 import com.jaac.avoqado_campo.ui.BotonSecundario
@@ -58,6 +59,7 @@ import com.jaac.avoqado_campo.ui.enGrupos
 import com.jaac.avoqado_campo.ui.tema.ColoresCampo
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
 import com.jaac.avoqado_campo.version.ACTUALIZA_PARA_SEGUIR
+import java.io.File
 import java.math.BigDecimal
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
@@ -90,6 +92,7 @@ fun VentaScreen(vm: VentaViewModel, obligatoria: Boolean, onRegresar: () -> Unit
                 escanear = { escaneando = true }, buscar = vm::alEscanear, foto = { fotoDe = it }, numero = vm::alEscribirNumero,
                 precio = vm::alEscribirPrecio, portabilidad = vm::alCambiarPortabilidad, registrar = vm::registrar,
                 otra = vm::venderOtra, regresar = onRegresar, pendientes = onPendientes,
+                galeria = { s, f -> vm.alTomarFoto(s, f.absolutePath) },
             ),
             obligatoria,
         )
@@ -100,6 +103,8 @@ class AccionesDeVenta(
     val escanear: () -> Unit, val buscar: (String) -> Unit, val foto: (Slot) -> Unit, val numero: (Slot, String) -> Unit,
     val precio: (String) -> Unit, val portabilidad: (Boolean) -> Unit, val registrar: () -> Unit, val otra: () -> Unit,
     val regresar: () -> Unit, val pendientes: () -> Unit = {},
+    /** La foto ya copiada de la galería y comprimida, como la de la cámara (0.6.0). */
+    val galeria: (Slot, File) -> Unit = { _, _ -> },
 )
 
 @Composable
@@ -231,6 +236,7 @@ private fun Evidencia(s: Slot, e: EstadoVenta, a: AccionesDeVenta) {
         }
         if (lista) Text("📷 Foto ✓", color = ColoresCampo.VerdeTexto, fontWeight = FontWeight.SemiBold)
         BotonSecundario(if (lista) "Tomar otra foto" else "📷 Tomar la foto", { a.foto(s) }, enabled = !e.registrando)
+        BotonDeGaleria(enabled = !e.registrando) { a.galeria(s, it) }
     }
 }
 

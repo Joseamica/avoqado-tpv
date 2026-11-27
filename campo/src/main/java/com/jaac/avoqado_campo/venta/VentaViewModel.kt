@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_campo.checada.tieneTurno
 import com.jaac.avoqado_campo.cola.CelularBorrandose
 import com.jaac.avoqado_campo.cola.Disparador
 import com.jaac.avoqado_campo.cola.Encolador
@@ -31,6 +32,9 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.math.BigDecimal
 import javax.inject.Inject
+
+/** El mosaico del Inicio y «Registrar venta» sin una entrada vigente en el celular (0.6.0). */
+internal const val CHECA_TU_ENTRADA = "Checa tu entrada para vender"
 
 /** B7: `suggestedPrice` "0" → de caja; mayor que 0 → efectivo fijo; null → lo escribe el promotor. */
 enum class TipoDePrecio { DE_CAJA, DE_PROMOTOR, LIBRE }
@@ -158,6 +162,12 @@ class VentaViewModel @Inject constructor(
         val sim = e.sim!!
         _estado.update { it.copy(registrando = true, error = null) }
         viewModelScope.launch {
+            // 0.6.0: sin entrada no se vende. También aquí: la pantalla pudo quedar abierta y el turno vencer (salida olvidada).
+            if (!withContext(NonCancellable) { tieneTurno(dao.turnoAhora(), yo.staffId, encolador.ahoraMs()) }) {
+                val error = if (quienSoy.generacion != generacion) "Espera un momento." else CHECA_TU_ENTRADA
+                _estado.update { it.copy(registrando = false, error = error) }
+                return@launch
+            }
             try {
                 // Salir de la pantalla a media transacción no la corta: lo que se tocó se guarda o se deshace entero.
                 withContext(NonCancellable) {

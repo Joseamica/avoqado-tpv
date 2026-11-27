@@ -5,6 +5,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonElement
 import com.google.gson.JsonParser
 import com.jaac.avoqado_campo.BuildConfig
+import com.jaac.avoqado_campo.checada.recordarReglaDeSalida
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.cola.TipoPieza
 import com.jaac.avoqado_campo.cola.normalizarSerie
@@ -38,7 +39,7 @@ class RepositorioDeCopia(
     private val gson = Gson()
     private val candado = Mutex()
 
-    private val _copia = MutableStateFlow(leerArchivo()?.takeIf { vigente(it) })
+    private val _copia = MutableStateFlow(leerArchivo()?.takeIf { vigente(it) }.also(::recordarRegla))
     val copia: StateFlow<Copia?> = _copia
 
     /** La copia vigente; la de otra versión de la app, otra activación u otra sucursal se borra y da null. */
@@ -46,10 +47,10 @@ class RepositorioDeCopia(
         val c = leerArchivo()
         if (c == null || !vigente(c)) {
             archivo.delete()
-            _copia.value = null
+            fijar(null)
             return@withLock null
         }
-        _copia.value = c
+        fijar(c)
         c
     }
 
@@ -92,7 +93,7 @@ class RepositorioDeCopia(
     /** Lo llama el borrado del celular (R8-1, R9-1): archivo y `StateFlow`, bajo el mismo candado que las escrituras. */
     suspend fun borrar() = candado.withLock {
         archivo.delete()
-        _copia.value = null
+        fijar(null)
     }
 
     /** I2 + R7-1, y que la sesión siga en esa sucursal (un `entrar` a otra a media descarga no se queda con la de antes). */
@@ -103,8 +104,16 @@ class RepositorioDeCopia(
         val tmp = File(archivo.parentFile, "copia.json.tmp")
         tmp.writeText(gson.toJson(c))
         if (!tmp.renameTo(archivo)) { archivo.delete(); tmp.renameTo(archivo) }
+        fijar(c)
+    }
+
+    /** La copia y la regla de la salida olvidada de su sucursal van juntas: sin red se usa la última que bajó (0.6.0). */
+    private fun fijar(c: Copia?) {
+        recordarRegla(c)
         _copia.value = c
     }
+
+    private fun recordarRegla(c: Copia?) = recordarReglaDeSalida(c?.venueId, c?.config?.reglaDeSalida())
 
     private fun leerArchivo(): Copia? =
         if (!archivo.exists()) null else runCatching { gson.fromJson(archivo.readText(), Copia::class.java) }.getOrNull()

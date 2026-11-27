@@ -39,6 +39,12 @@ class PrivacidadTest {
         assertEquals(emptyList<String>(), hallazgos(raiz))
     }
 
+    /** D14: las bibliotecas de PAX (`emv`, `commonlib`) escriben datos de la tarjeta al registro del aparato si este interruptor está prendido. */
+    @Test fun `el interruptor de registro de las bibliotecas de PAX esta apagado`() {
+        val campo = com.pax.commonlib.utils.LogUtils::class.java.getDeclaredField("IS_DEBUG").apply { isAccessible = true }
+        assertEquals(false, campo.getBoolean(null))
+    }
+
     @Test fun `la guardia ve nombres sueltos excepciones interpoladas y archivos java`() {
         val raiz = carpeta.root
         File(raiz, "A.kt").writeText("with(l) { val x = bin }\n")

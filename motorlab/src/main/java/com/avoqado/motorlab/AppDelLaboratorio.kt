@@ -39,6 +39,10 @@ import kotlin.time.Duration
 class AppDelLaboratorio : Application() {
     internal lateinit var laboratorio: Laboratorio
         private set
+
+    /** La medición de chip (26-nov): comparte la PAX y el folio del lector con el laboratorio. */
+    internal lateinit var medidor: MedidorDeChip
+        private set
     private lateinit var respondedor: RespondedorLocal
     private lateinit var red: RedDelLaboratorio
 
@@ -66,7 +70,9 @@ class AppDelLaboratorio : Application() {
         }
         respondedor = RespondedorLocal(ahora = SystemClock::elapsedRealtime) // el reloj de las notas de los folios
         red = RedDelLaboratorio(this)
-        val lector = LectorPax(PaxDeLaTerminal(this), red)
+        val pax = PaxDeLaTerminal(this)
+        val lector = LectorPax(pax, red)
+        medidor = MedidorDeChip(pax, lector, SystemClock::elapsedRealtime)
         val principal = Handler(Looper.getMainLooper())
         laboratorio = Laboratorio(
             historial = HistorialLocal(File(noBackupFilesDir, "historial")),

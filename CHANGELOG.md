@@ -8,6 +8,7 @@
 ## [Unreleased]
 
 ### **Added**
+- **Interno, sin efecto en la app · `motorlab`, medición de chip (rumbo A del motor · chip)**: botón «Medir chip (sin dinero)» en la app de laboratorio de sandbox para medir en la PAX el kernel de contacto antes de diseñar el chip del motor. Sondea sólo el chip o chip + antena (tope 60 s), corre el kernel hasta pedir en línea y cierra la segunda generación con «banco no contestó» o con un aprobado de datos inventados, sin red ni Blumon; espera el retiro, cierra el lector y prueba un segundo sondeo. La pantalla sólo enseña tiempos y códigos (9F34, 95, resultados del kernel, el oyente del NIP, cada cierre que falló) y dice si una llamada siguió ocupada pasados 10 s, hasta 120 s; «Cancelar medición» llama `cancelInput` y `stopPolling`. Comparte el folio del lector: mientras mide, «Cobrar» y la lectura seca se rechazan. `:app`, `:cobropropio` y `:emv` no cambian.
 - **Interno, sin efecto en la app · `motorlab`, bloque P0 de la fase 3 del SDK propio**: tres cosas en la app de laboratorio de sandbox; `:app` y `:cobropropio` no cambian.
   - Botón «Servidor mudo»: el servidor local recibe el reporte completo y nunca contesta, como un SERVIDOR colgado, y suelta la conexión cuando el cliente se va o a los 15 s; la cabecera dice «(mudo)», cuántas retuvo, desde cuándo y qué reporte retuvo (la intención, el resultado u otra ruta).
   - El informe del lector dice por dónde entró la tarjeta («entrada», hoy siempre sin contacto); si nadie acercó una, no lo menciona.

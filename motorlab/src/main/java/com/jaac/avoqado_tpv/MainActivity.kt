@@ -12,6 +12,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import com.avoqado.motorlab.AppDelLaboratorio
 import com.avoqado.motorlab.Laboratorio
+import com.avoqado.motorlab.ModoDeCierre
+import com.avoqado.motorlab.ModoDeSondeo
 import com.avoqado.motorlab.Orden
 import com.avoqado.motorlab.centavosDe
 import com.avoqado.motorlab.momentosDePintar
@@ -22,6 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 
 /**
@@ -40,6 +43,7 @@ class MainActivity : Activity() {
     private lateinit var cabeza: TextView
     private lateinit var lecturaSeca: Button
     private lateinit var resultado: TextView
+    private lateinit var medicion: TextView
     private lateinit var cobrar: Button
     private lateinit var folios: TextView
 
@@ -51,6 +55,24 @@ class MainActivity : Activity() {
         cabeza = TextView(this)
         lecturaSeca = boton("Lectura seca de \$25.50") { lab.orden(Orden.LecturaSeca) }
         resultado = TextView(this)
+        // La medición de chip (26-nov): sin dinero y sin red. Los dos modos se eligen tocando su botón; el texto dice el elegido.
+        val sondeo = Button(this).apply {
+            text = "Sondeo: ${sondeoElegido.texto}"
+            setOnClickListener {
+                sondeoElegido = ModoDeSondeo.entries[(sondeoElegido.ordinal + 1) % ModoDeSondeo.entries.size]
+                text = "Sondeo: ${sondeoElegido.texto}"
+            }
+        }
+        val cierre = Button(this).apply {
+            text = "Cierre: ${cierreElegido.texto}"
+            setOnClickListener {
+                cierreElegido = ModoDeCierre.entries[(cierreElegido.ordinal + 1) % ModoDeCierre.entries.size]
+                text = "Cierre: ${cierreElegido.texto}"
+            }
+        }
+        val medir = boton("Medir chip (sin dinero)") { app.medidor.medir(sondeoElegido, cierreElegido) }
+        val cancelarMedicion = boton("Cancelar medición") { app.medidor.cancelar() }
+        medicion = TextView(this)
         val serie = oculto("Serie de Blumon", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         val posId = oculto("posId", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD)
         val fisica = oculto("Serie física (vacía: la misma)", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
@@ -77,7 +99,7 @@ class MainActivity : Activity() {
         val columna = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
-            listOf(cabeza, lecturaSeca, resultado, serie, posId, fisica, guardar, importe, cobrar, cancelar, mudo, folios).forEach { addView(it) }
+            listOf(cabeza, lecturaSeca, resultado, sondeo, cierre, medir, cancelarMedicion, medicion, serie, posId, fisica, guardar, importe, cobrar, cancelar, mudo, folios).forEach { addView(it) }
         }
         setContentView(ScrollView(this).apply { addView(columna) })
         pintar() // este hilo ES el carril: el primer cuadro ya trae el estado vigente, no una pantalla vacía con «Cobrar» encendido
@@ -95,7 +117,7 @@ class MainActivity : Activity() {
         lab.releer()
         pintor = CoroutineScope(Dispatchers.Default).launch {
             val latido = flow { while (true) { delay(1_000); lab.releer(); emit(Unit) } }
-            momentosDePintar(lab.situacion, lab.folios, latido).collect { runOnUiThread { if (!isDestroyed) pintar() } }
+            momentosDePintar(lab.situacion, merge(lab.folios, app.medidor.texto), latido).collect { runOnUiThread { if (!isDestroyed) pintar() } }
         }
     }
 
@@ -110,6 +132,7 @@ class MainActivity : Activity() {
         val s = lab.situacion.value
         cabeza.ponSiCambia("Pantalla n.º $pantalla\n${app.cabecera()}\n${textoDeLaSituacion(s)}")
         resultado.ponSiCambia(s.lecturaSeca ?: "Lectura seca: sin tocar")
+        medicion.ponSiCambia(app.medidor.texto.value)
         cobrar.isEnabled = porQueNoCobra(s) == null
         lecturaSeca.isEnabled = s.trabajo == null
         folios.ponSiCambia(lab.folios.value)
@@ -144,5 +167,9 @@ class MainActivity : Activity() {
     private companion object {
         /** Cuántas veces se creó la pantalla en este proceso (sólo en el hilo de la pantalla): «Pantalla n.º». */
         var pantallas = 0
+
+        /** Los modos elegidos de la medición de chip (sólo en el hilo de la pantalla): recrearla no los pierde. */
+        var sondeoElegido = ModoDeSondeo.CHIP
+        var cierreElegido = ModoDeCierre.BANCO_NO_CONTESTO
     }
 }

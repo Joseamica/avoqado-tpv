@@ -45,6 +45,17 @@ class PrivacidadTest {
         assertEquals(false, campo.getBoolean(null))
     }
 
+    /**
+     * La medición de chip (26-nov) corre el kernel de contacto: sólo le pide 9F34 y 95 (códigos del CVM y del TVR), nunca la
+     * banda, el PAN ni un criptograma; y la guardia de arriba la cubre (vive en `src/main/java`).
+     */
+    @Test fun `la medicion de chip solo pide al kernel 9F34 y 95`() {
+        val fuentes = File("src/main/java").walk().filter { it.extension == "kt" }.toList()
+        assertTrue("la guardia no ve MedicionDeChip.kt", fuentes.any { it.name == "MedicionDeChip.kt" })
+        val pedidos = fuentes.flatMap { f -> Regex("""tagDelChip\(([^)]*)\)""").findAll(f.readText()).map { it.groupValues[1] }.toList() }
+        assertEquals(setOf("0x9F34", "0x95", "tag: Int"), pedidos.toSet())
+    }
+
     @Test fun `la guardia ve nombres sueltos excepciones interpoladas y archivos java`() {
         val raiz = carpeta.root
         File(raiz, "A.kt").writeText("with(l) { val x = bin }\n")

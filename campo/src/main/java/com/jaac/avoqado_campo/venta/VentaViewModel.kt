@@ -63,6 +63,8 @@ data class EstadoVenta(
     val guardada: Boolean = false,
     /** La foto de la galería se está copiando (~1 s): la pantalla queda bloqueada con «Guardando la foto…». */
     val copiandoFoto: Boolean = false,
+    /** El espacio cuya copia de galería falló: su aviso sale junto a esa foto, no sólo arriba (Codex r7 #2). */
+    val fotoFallida: Slot? = null,
 ) {
     val slots: List<Slot> get() = if (portabilidad) listOf(Slot.VINCULACION, Slot.PORTABILIDAD) else listOf(Slot.VINCULACION)
 
@@ -102,7 +104,8 @@ class VentaViewModel @Inject constructor(
     /** B8: sólo SIMs de la copia en `PROMOTER_HELD` (o con su aceptación encolada); sin la SIM, con señal se refresca una vez. */
     fun alEscanear(texto: String) {
         val serie = Iccid.canonica(texto)
-        if (serie.isEmpty() || _estado.value.buscando || _estado.value.registrando) return
+        // Tampoco mientras se copia una foto (Codex r7 #1: con teclado se llega a «Buscar» detrás del bloqueo).
+        if (serie.isEmpty() || _estado.value.buscando || _estado.value.registrando || _estado.value.copiandoFoto) return
         borrarFotosSinRegistrar()
         _estado.value = EstadoVenta(buscando = true)
         viewModelScope.launch {
@@ -156,10 +159,10 @@ class VentaViewModel @Inject constructor(
     fun alElegirDeGaleria(slot: Slot, uri: Uri) {
         val e = _estado.value
         if (e.registrando || e.guardada || e.copiandoFoto) return
-        _estado.update { it.copy(copiandoFoto = true, error = null) }
+        _estado.update { it.copy(copiandoFoto = true, error = null, fotoFallida = null) }
         viewModelScope.launch {
             val error = copiarDeGaleria(galeria, uri) { alTomarFoto(slot, it) }
-            _estado.update { it.copy(copiandoFoto = false, error = error) }
+            _estado.update { it.copy(copiandoFoto = false, error = error, fotoFallida = if (error != null) slot else null) }
         }
     }
 
@@ -253,7 +256,7 @@ class VentaViewModel @Inject constructor(
 
     private fun cambiar(f: EstadoVenta.() -> EstadoVenta) {
         if (_estado.value.registrando || _estado.value.guardada) return
-        _estado.update { it.f().copy(error = null) }
+        _estado.update { it.f().copy(error = null, fotoFallida = null) }
     }
 
     private companion object {

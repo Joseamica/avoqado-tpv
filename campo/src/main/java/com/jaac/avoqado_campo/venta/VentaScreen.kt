@@ -162,7 +162,7 @@ private fun PantallaDeVenta(e: EstadoVenta, a: AccionesDeVenta, obligatoria: Boo
 @Composable
 private fun Buscar(e: EstadoVenta, a: AccionesDeVenta, bloqueado: Boolean) {
     var escrito by remember { mutableStateOf("") }
-    val puede = !bloqueado && !e.buscando && !e.registrando
+    val puede = !bloqueado && !e.buscando && !e.registrando && !e.copiandoFoto
     val grande = e.sim == null
     Box(
         Modifier.fillMaxWidth().height(if (grande) 132.dp else 64.dp).clip(MaterialTheme.shapes.medium)
@@ -190,7 +190,7 @@ private fun Buscar(e: EstadoVenta, a: AccionesDeVenta, bloqueado: Boolean) {
             escrito, { escrito = it }, Modifier.weight(1f), singleLine = true, shape = MaterialTheme.shapes.small,
             label = { Text("O escribe el ${e.config?.etiquetaCodigo ?: "ICCID"}") },
         )
-        BotonSecundario("Buscar", { a.buscar(escrito) }, enabled = !bloqueado && escrito.isNotBlank() && !e.buscando, lleno = false)
+        BotonSecundario("Buscar", { a.buscar(escrito) }, enabled = puede && escrito.isNotBlank(), lleno = false)
     }
 }
 
@@ -241,6 +241,8 @@ private fun Evidencia(s: Slot, e: EstadoVenta, a: AccionesDeVenta) {
             )
         }
         if (lista) Text("📷 Foto ✓", color = ColoresCampo.VerdeTexto, fontWeight = FontWeight.SemiBold)
+        // El aviso de una copia de galería que falló, junto a ESA foto: arriba puede quedar fuera de la vista (Codex r7 #2).
+        if (e.fotoFallida == s) e.error?.let { Recuadro(it, Tono.ERROR) }
         BotonSecundario(if (lista) "Tomar otra foto" else "📷 Tomar la foto", { a.foto(s) }, enabled = !e.registrando)
         BotonDeGaleria(enabled = !e.registrando) { a.galeria(s, it) }
     }

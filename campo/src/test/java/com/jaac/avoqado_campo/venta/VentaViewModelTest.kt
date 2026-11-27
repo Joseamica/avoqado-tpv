@@ -474,6 +474,23 @@ class VentaViewModelTest {
         assertTrue(vieja.exists())
         assertTrue(v.estado.value.error!!.startsWith("No se pudo leer esa imagen"))
         assertFalse(v.estado.value.copiandoFoto)
+        // Codex r7 #2: el aviso queda marcado en ESE espacio (la pantalla lo enseña junto a su foto).
+        assertEquals(Slot.VINCULACION, v.estado.value.fotoFallida)
+        v.alEscribirNumero(Slot.VINCULACION, "5512345678")
+        assertEquals(null, v.estado.value.fotoFallida)
+    }
+
+    @Test fun `mientras se copia la foto no se busca otra SIM (Codex r7 1)`() {
+        val espera = CompletableDeferred<File>()
+        coEvery { galeria.copiar(any()) } coAnswers { espera.await() }
+        val v = vm(copiaCon(sim()))
+        v.alEscanear(serie)
+        v.alElegirDeGaleria(Slot.VINCULACION, mockk())
+        val antes = v.estado.value.sim
+        v.alEscanear("8952020099999999999F")
+        assertEquals(antes, v.estado.value.sim)
+        assertTrue(v.estado.value.copiandoFoto)
+        espera.complete(tmp.newFile("nueva.jpg"))
     }
 
     @Test fun `registrar lee la generacion antes que la sesion - otra persona entre las dos no recibe la venta (H2)`() {

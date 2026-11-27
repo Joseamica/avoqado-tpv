@@ -41,6 +41,10 @@ TPV (`/avoqado:release-production`).
   señal). El servicio se para en su siguiente lectura (cada 30 min con el celular despierto) o al abrir la app, y se quita
   el aviso fijo «Turno activo»; si Android revive el servicio solo, se para de inmediato. Antes el GPS seguía a nombre de un
   turno que el servidor ya había cerrado (hz:nube0000:na1c5a48).
+- Límite conocido: en los segundos en que una venta hecha sin red está subiendo, si «Mis ventas» se actualiza justo entre que
+  la SIM queda vendida y se crea su verificación, esa venta puede salir en el mes de subida hasta la siguiente actualización.
+- Mientras se copia una foto de la galería tampoco se puede buscar otra SIM, y si la copia falla el aviso sale junto a esa foto.
+
 
 ## 0.5.0 (código 5) — lo que pidió PlayTelecom en sus pruebas (Asana 1220750328814319, 20-nov)
 - Venta sin costo: si la SIM no trae precio fijo, el importe puede ser $0 (como «Regalar (Gratis)» en la terminal); la

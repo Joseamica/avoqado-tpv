@@ -3,6 +3,7 @@ package com.jaac.avoqado_campo.custodia
 import android.net.Uri
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -31,6 +32,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_campo.copia.SimEnCopia
+import com.jaac.avoqado_campo.fotos.BloqueoGuardandoFoto
 import com.jaac.avoqado_campo.fotos.BotonDeGaleria
 import com.jaac.avoqado_campo.fotos.Camara
 import com.jaac.avoqado_campo.ui.BotonPrincipal
@@ -66,10 +68,13 @@ fun MisSimsScreen(vm: MisSimsViewModel, obligatoria: Boolean, onRegresar: () -> 
             titulo = if (c.photoLabel == "Portabilidad") "la foto de portabilidad" else "la foto de vinculación",
             onFoto = { camara = false; vm.alTomarFotoDeCorreccion(it.absolutePath) }, onCerrar = { camara = false },
         )
-        c != null -> PantallaDeCorreccion(
-            estado, c, { camara = true }, vm::alEscribirNumeroDeCorreccion, vm::enviarCorreccion, vm::cancelarCorreccion,
-            onGaleria = vm::alElegirDeGaleriaDeCorreccion,
-        )
+        c != null -> Box {
+            PantallaDeCorreccion(
+                estado, c, { camara = true }, vm::alEscribirNumeroDeCorreccion, vm::enviarCorreccion, vm::cancelarCorreccion,
+                onGaleria = vm::alElegirDeGaleriaDeCorreccion,
+            )
+            BloqueoGuardandoFoto(estado.copiandoFoto)
+        }
         else -> MisSimsContenido(
             estado,
             AccionesDeMisSims(vm::aceptar, vm::rechazar, vm::aceptarTodas, vm::empezarCorreccion, vm::actualizar, onRegresar),
@@ -229,10 +234,7 @@ private fun PantallaDeCorreccion(
     PantallaCampo(
         "Corregir evidencia", onRegresar = cancelar, regresarHabilitado = !e.ocupado,
         abajo = {
-            BotonPrincipal(
-                if (e.ocupado) "Guardando…" else "Enviar corrección", enviar,
-                enabled = !e.ocupado && !e.copiandoFoto && c.foto != null, cargando = e.ocupado,
-            )
+            BotonPrincipal(if (e.ocupado) "Guardando…" else "Enviar corrección", enviar, enabled = !e.ocupado && c.foto != null, cargando = e.ocupado)
             BotonSecundario("Cancelar", cancelar, enabled = !e.ocupado)
         },
     ) {
@@ -241,8 +243,8 @@ private fun PantallaDeCorreccion(
             e.vendidas.firstOrNull { it.sim.serialNumber == c.serie }?.nota?.let { Text(it, color = ColoresCampo.RojoTinta) }
         }
         if (c.foto != null) Text("📷 Foto ✓", color = ColoresCampo.VerdeTexto, fontWeight = FontWeight.SemiBold)
-        BotonSecundario(if (c.foto != null) "Tomar otra foto" else "📷 Tomar la foto", foto, enabled = !e.ocupado && !e.copiandoFoto)
-        BotonDeGaleria(enabled = !e.ocupado, copiando = e.copiandoFoto, onElegida = onGaleria)
+        BotonSecundario(if (c.foto != null) "Tomar otra foto" else "📷 Tomar la foto", foto, enabled = !e.ocupado)
+        BotonDeGaleria(enabled = !e.ocupado, onElegida = onGaleria)
         OutlinedTextField(
             c.numero, numero, Modifier.fillMaxWidth(), singleLine = true, enabled = !e.ocupado, shape = MaterialTheme.shapes.small,
             label = { Text(if (c.photoLabel == "Portabilidad") "Número portado (si cambia)" else "Número de vinculación (si cambia)") },

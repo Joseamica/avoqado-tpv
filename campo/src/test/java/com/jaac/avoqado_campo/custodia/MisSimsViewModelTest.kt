@@ -43,7 +43,6 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -223,8 +222,8 @@ class MisSimsViewModelTest {
     }
 
     // 0.6.0: «Mis ventas» por mes. La del SERVIDOR trae `soldAt`; la del celular que la lista aún no trae, la hora de la venta.
-    // Codex r3 #8: `saleAt` (la hora real de la venta) manda; si no viene, `soldAt` (la de subida); si no, la hora local.
-    @Test fun `cada venta trae su fecha - saleAt, si no soldAt, si no la hora local de la venta`() {
+    // Codex r3 #8: del SERVIDOR, `saleAt` (la hora real) y si no `soldAt`; la del celular que la lista no trae, su hora local.
+    @Test fun `cada venta trae su fecha - del servidor saleAt o soldAt, la del celular su hora local`() {
         val local = 1_795_000_000_000L
         cola.value = listOf(
             venta("S2", EstadoPieza.HECHA, 5).copy(resultadoJson = conPago, creadaAt = local),
@@ -241,7 +240,7 @@ class MisSimsViewModelTest {
         assertEquals("saleAt gana a soldAt", java.time.Instant.parse("2026-11-30T23:58:00Z").toEpochMilli(), fecha("S1"))
         assertEquals("vendida en el celular, la lista aún no la trae", local, fecha("S2"))
         assertEquals("sin saleAt ni soldAt (SERVIDOR viejo) ni venta del celular: sin fecha", null, fecha("S3"))
-        assertEquals("sin saleAt ni soldAt: la hora local de su venta", local + 1, fecha("S4"))
+        assertEquals("del SERVIDOR sin saleAt ni soldAt: sin fecha (no se cruza con la fila local)", null, fecha("S4"))
         assertEquals(java.time.Instant.parse("2026-11-20T18:00:00Z").toEpochMilli(), fecha("S5"))
     }
 
@@ -257,23 +256,22 @@ class MisSimsViewModelTest {
         assertEquals(java.time.Instant.parse("2026-11-30T23:58:00Z").toEpochMilli(), vm().estado.value.exitosas.single().fecha)
     }
 
-    // Codex r5 #5: con el SERVIDOR de hoy (sin `saleAt`), la venta del 30-nov que subió el 1-dic se queda en noviembre: la hora
-    // de su venta en este celular gana a `soldAt` (la de subida).
-    @Test fun `sin saleAt, la hora de la venta de este celular gana a soldAt`() {
+    // Founder, 26-nov (simplificar): una SIM que viene del SERVIDOR usa saleAt o soldAt, nunca una fila local por su serie
+    // (Codex r6 #3 y #4: la fila podía ser un intento rechazado, y al limpiar la cola la fecha saltaba).
+    @Test fun `la SIM del servidor usa saleAt o soldAt, no la fila local de esa serie`() {
         cola.value = listOf(
             Pieza(
                 id = 8, tipo = TipoPieza.VENTA, llave = "kv8", staffId = "s1", venueId = "v1",
                 cuerpoJson = """{"llave":"kv8","serialNumber":"S6","precioVisto":50.00,"ocurrioAt":"2026-11-30T23:58:00Z"}""",
-                estado = EstadoPieza.HECHA, resultadoJson = conPago, creadaAt = java.time.Instant.parse("2026-12-01T00:30:00Z").toEpochMilli(), resumen = "",
+                estado = EstadoPieza.RECHAZADA, creadaAt = java.time.Instant.parse("2026-11-30T23:58:00Z").toEpochMilli(), resumen = "",
             ),
         )
-        ponerCopia(sim("S6", "SOLD").copy(soldAt = "2026-12-01T00:31:00.000Z"), yaLlegadas = listOf(8))
-        assertEquals(java.time.Instant.parse("2026-11-30T23:58:00Z").toEpochMilli(), vm().estado.value.exitosas.single().fecha)
+        ponerCopia(sim("S6", "SOLD").copy(soldAt = "2026-12-01T00:31:00.000Z"), yaLlegadas = emptyList())
+        assertEquals(java.time.Instant.parse("2026-12-01T00:31:00Z").toEpochMilli(), vm().estado.value.exitosas.single().fecha)
     }
 
-    // Codex r3 #7 y r5 #4: la copia de la galería la hace el ViewModel; mientras copia, la foto anterior ya no cuenta y «Enviar»
-    // espera; si falla, la corrección queda sin foto, nunca con la anterior.
-    @Test fun `mientras se copia la foto de la galeria no se envia la correccion, y luego sale la nueva`() {
+    // Foto de la galería (founder: simplificar): mientras se copia no se envía ni se cancela; buena reemplaza, mala deja la anterior.
+    @Test fun `mientras se copia la foto de la galeria no se envia ni se cancela la correccion, y luego sale la nueva`() {
         ponerCopia(sim("S1", "SOLD", verificacion = "FAILED"))
         val enviada = slot<EvidenciaSueltaNueva>()
         coEvery { encolador.evidenciaSuelta(any(), capture(enviada)) } returns "k"
@@ -284,25 +282,27 @@ class MisSimsViewModelTest {
         val vieja = tmp.newFile("vieja.jpg")
         v.alTomarFotoDeCorreccion(vieja.path)
         v.alElegirDeGaleriaDeCorreccion(mockk())
-        assertNull(v.estado.value.corrigiendo!!.foto)
-        assertFalse(vieja.exists())
+        assertTrue(v.estado.value.copiandoFoto)
         v.enviarCorreccion()
         coVerify(exactly = 0) { encolador.evidenciaSuelta(any(), any()) }
-        assertEquals("Espera a que se guarde la foto.", v.estado.value.error)
+        v.cancelarCorreccion()
+        assertTrue("atrás no la cierra mientras copia", v.estado.value.corrigiendo != null)
         val nueva = tmp.newFile("nueva.jpg")
         espera.complete(nueva)
+        assertFalse(vieja.exists())
         v.enviarCorreccion()
         assertEquals(nueva.path, enviada.captured.archivoFoto)
     }
 
-    @Test fun `si la copia de la galeria falla, la correccion queda sin foto y lo dice`() {
+    @Test fun `si la copia de la galeria falla, la correccion conserva la foto anterior y lo dice`() {
         ponerCopia(sim("S1", "SOLD", verificacion = "FAILED"))
         coEvery { galeria.copiar(any()) } throws com.jaac.avoqado_campo.fotos.ImagenIlegible()
         val v = vm()
         v.empezarCorreccion("S1", "Vinculacion")
-        v.alTomarFotoDeCorreccion(tmp.newFile("vieja.jpg").path)
+        val vieja = tmp.newFile("vieja.jpg")
+        v.alTomarFotoDeCorreccion(vieja.path)
         v.alElegirDeGaleriaDeCorreccion(mockk())
-        assertNull(v.estado.value.corrigiendo!!.foto)
+        assertEquals(vieja.path, v.estado.value.corrigiendo!!.foto)
         assertTrue(v.estado.value.error!!.startsWith("No se pudo leer esa imagen"))
         assertFalse(v.estado.value.copiandoFoto)
     }

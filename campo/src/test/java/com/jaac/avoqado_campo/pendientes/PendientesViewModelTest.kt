@@ -52,7 +52,6 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -180,9 +179,8 @@ class PendientesViewModelTest {
         assertFalse(segunda.exists())
     }
 
-    // Codex r3 #7 y r5 #4: la copia de la galería la hace el ViewModel; mientras copia, «Guardar corrección» espera y la foto
-    // anterior ya no cuenta.
-    @Test fun `mientras se copia la foto de la galeria no se guarda la correccion`() = runBlocking {
+    // Foto de la galería (founder: simplificar): mientras se copia no se guarda ni se cancela; buena reemplaza, mala deja la anterior.
+    @Test fun `mientras se copia la foto de la galeria no se guarda ni se cancela la correccion`() = runBlocking {
         val llave = encolador.evidenciaSuelta(
             quienSoy.generacion, EvidenciaSueltaNueva("v1", "pay1", "ver1", "Vinculacion", null, foto(), "SIM 1"),
         )
@@ -196,14 +194,32 @@ class PendientesViewModelTest {
         m.alTomarFoto(vieja.path)
         m.alElegirDeGaleria(mockk())
         esperar { m.estado.value.copiandoFoto }
-        assertNull(m.estado.value.corrigiendo!!.foto)
-        assertFalse(vieja.exists())
         m.enviarCorreccion()
         assertEquals("Espera a que se guarde la foto.", m.estado.value.error)
+        m.cancelarCorreccion()
+        assertTrue("atrás no la cierra mientras copia", m.estado.value.corrigiendo != null)
         assertEquals(EstadoPieza.RECHAZADA, dao.porLlave(llave)!!.estado)
         val nueva = File(foto())
         espera.complete(nueva)
         esperar { m.estado.value.corrigiendo?.foto == nueva.path && !m.estado.value.copiandoFoto }
+        assertFalse(vieja.exists())
+    }
+
+    @Test fun `si la copia de la galeria falla, la correccion conserva la foto anterior y lo dice`() = runBlocking {
+        val llave = encolador.evidenciaSuelta(
+            quienSoy.generacion, EvidenciaSueltaNueva("v1", "pay1", "ver1", "Vinculacion", null, foto(), "SIM 1"),
+        )
+        dao.rechazar(dao.porLlave(llave)!!, "FOTO_NO_SUBIO", "La foto no subió")
+        coEvery { galeria.copiar(any()) } throws com.jaac.avoqado_campo.fotos.ImagenIlegible()
+        val m = nuevoVm()
+        m.empezarCorreccion(dao.porLlave(llave)!!.id)
+        esperar { m.estado.value.let { it.corrigiendo != null && !it.ocupado } }
+        val vieja = foto()
+        m.alTomarFoto(vieja)
+        m.alElegirDeGaleria(mockk())
+        esperar { !m.estado.value.copiandoFoto && m.estado.value.error != null }
+        assertEquals(vieja, m.estado.value.corrigiendo!!.foto)
+        assertTrue(m.estado.value.error!!.startsWith("No se pudo leer esa imagen"))
     }
 
     @Test fun `la foto de una correccion que se esta enviando no la borran ni otra foto ni Atras, y Atras no la cancela (H5)`() = runBlocking {

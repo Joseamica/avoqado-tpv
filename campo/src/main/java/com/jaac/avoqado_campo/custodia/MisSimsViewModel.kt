@@ -26,8 +26,7 @@ import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.copia.SimEnCopia
 import com.jaac.avoqado_campo.copia.serieDeVenta
 import com.jaac.avoqado_campo.fotos.Galeria
-import com.jaac.avoqado_campo.fotos.ImagenIlegible
-import com.jaac.avoqado_campo.fotos.NO_SE_GUARDO_LA_FOTO
+import com.jaac.avoqado_campo.fotos.copiarDeGaleria
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.venta.ESPERA_LA_FOTO
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -62,7 +61,7 @@ data class EstadoMisSims(
     val actualizando: Boolean = false,
     val ocupado: Boolean = false,
     val corrigiendo: Correccion? = null,
-    /** Codex r3 #7: la foto de la galería se está copiando; «Enviar» espera (si no, saldría la anterior). */
+    /** La foto de la galería se está copiando: la pantalla queda bloqueada; ni «Enviar» ni «atrás». */
     val copiandoFoto: Boolean = false,
     val error: String? = null,
 ) {
@@ -188,35 +187,14 @@ class MisSimsViewModel @Inject constructor(
         _estado.update { it.copy(corrigiendo = c.copy(foto = archivo)) }
     }
 
-    /**
-     * Codex r5 #4: la foto elegida de la galería se copia AQUÍ (abrir la cámara no la cancela). La anterior se quita al empezar:
-     * si la copia no termina, la corrección queda sin foto, nunca con la anterior.
-     */
+    /** La foto de la galería se copia aquí, con la pantalla bloqueada (~1 s). Bien: reemplaza. Mal: queda la anterior y lo dice. */
     fun alElegirDeGaleriaDeCorreccion(uri: Uri) {
         val e = _estado.value
-        val c = e.corrigiendo ?: return
-        if (e.ocupado || e.copiandoFoto) return
-        c.foto?.let { File(it).delete() }
-        _estado.update { it.copy(corrigiendo = c.copy(foto = null), copiandoFoto = true, error = null) }
+        if (e.corrigiendo == null || e.ocupado || e.copiandoFoto) return
+        _estado.update { it.copy(copiandoFoto = true, error = null) }
         viewModelScope.launch {
-            var error: String? = null
-            try {
-                val f = galeria.copiar(uri)
-                // Si mientras tanto la cancelaron o empezaron otra, ésta no se cuela.
-                if (_estado.value.corrigiendo?.let { it.serie == c.serie && it.photoLabel == c.photoLabel } == true) {
-                    alTomarFotoDeCorreccion(f.absolutePath)
-                } else {
-                    f.delete()
-                }
-            } catch (x: CancellationException) {
-                throw x
-            } catch (x: ImagenIlegible) {
-                error = x.message
-            } catch (x: Exception) {
-                error = NO_SE_GUARDO_LA_FOTO
-            } finally {
-                _estado.update { it.copy(copiandoFoto = false, error = error ?: it.error) }
-            }
+            val error = copiarDeGaleria(galeria, uri, ::alTomarFotoDeCorreccion)
+            _estado.update { it.copy(copiandoFoto = false, error = error) }
         }
     }
 
@@ -225,7 +203,7 @@ class MisSimsViewModel @Inject constructor(
     }
 
     fun cancelarCorreccion() {
-        if (_estado.value.ocupado) return
+        if (_estado.value.ocupado || _estado.value.copiandoFoto) return
         borrarFotoDeCorreccion()
         _estado.update { it.copy(corrigiendo = null) }
     }
@@ -328,18 +306,15 @@ class MisSimsViewModel @Inject constructor(
         // D1 (Codex r3): cada SIM por lo último que hizo ESTE celular y cómo acabó, contra lo que ya traía la lista al bajarla
         // (la misma regla que el escáner y el Inicio). La venta de una SIM que ya no está en la lista también sale (caso 4).
         val lo = c?.let { loDelCelular(it, conSims) }.orEmpty()
-        // 0.6.0 · Codex r5 #5: el mes de una venta sale, en este orden, de 1) su `saleAt` del SERVIDOR (la hora real); 2) si la
-        // hizo este celular, su `ocurrioAt` (la hora del toque, que corregir el precio conserva: r4 #8); 3) su `soldAt` (en una
-        // venta sin red, la hora de subida); 4) la hora local de su fila. De cada SIM manda la última venta, como `loDelCelular`.
-        val ventasDelCelular = conSims.filter { it.tipo == TipoPieza.VENTA }.sortedBy { it.id }
-            .mapNotNull { p -> serieDeVenta(p.cuerpoJson)?.let { it to p } }.toMap()
-        fun delToque(serie: String) = ventasDelCelular[serie]?.let { ocurrioAt(it.cuerpoJson) }
-        fun deSuFila(serie: String) = ventasDelCelular[serie]?.creadaAt
+        // 0.6.0 (founder, 26-nov: simplificar): el mes de una SIM del SERVIDOR es su `saleAt` o, si falta, su `soldAt`. La venta
+        // del celular que la lista todavía no trae, la hora del toque de esa venta (`ocurrioAt`, que corregir el precio conserva).
+        val horaDelToque = conSims.filter { it.tipo == TipoPieza.VENTA }.sortedBy { it.id }
+            .mapNotNull { p -> serieDeVenta(p.cuerpoJson)?.let { it to (fechaDe(campo(p.cuerpoJson, "ocurrioAt")) ?: p.creadaAt) } }.toMap()
         val filas = c?.sims.orEmpty().mapNotNull { s ->
             val serie = normalizarSerie(s.serialNumber)
             val l = lo[serie]?.takeIf { s.custodyState != "SOLD" }
             when {
-                l != null && l.esVenta -> filaDeVenta(s, l).copy(fecha = delToque(serie) ?: deSuFila(serie))
+                l != null && l.esVenta -> filaDeVenta(s, l).copy(fecha = horaDelToque[serie])
                 s.custodyState == "SOLD" -> when (s.verificationStatus) {
                     "FAILED" -> if (s.verificationId in corrigiendo) FilaSim(s, EstadoFila.CORRECCION_POR_SUBIR, "Corrección por subir")
                     else FilaSim(s, EstadoFila.REVISAR, motivos(s))
@@ -347,7 +322,7 @@ class MisSimsViewModel @Inject constructor(
                     // Terminal: la venta se perdió (no se pudo vincular o portar) y no se corrige. Antes salía «Vendida».
                     "REJECTED" -> FilaSim(s, EstadoFila.RECHAZADA, motivos(s, siNoHay = "Tu supervisor la rechazó"))
                     else -> FilaSim(s, EstadoFila.VENDIDA)
-                }.copy(fecha = fechaDe(s.saleAt) ?: delToque(serie) ?: fechaDe(s.soldAt) ?: deSuFila(serie))
+                }.copy(fecha = fechaDe(s.saleAt) ?: fechaDe(s.soldAt))
                 l == LoDelCelular.RECHAZADA -> null // la regresó y el SERVIDOR ya lo confirmó: ya no es suya
                 l == LoDelCelular.ACEPTADA || s.custodyState == "PROMOTER_HELD" -> FilaSim(s, EstadoFila.EN_CUSTODIA)
                 s.custodyState == "PROMOTER_PENDING" -> when {
@@ -360,7 +335,7 @@ class MisSimsViewModel @Inject constructor(
                 else -> null
             }
         } + lo.filter { (serie, l) -> l.esVenta && serie !in porSerie }
-            .map { (serie, l) -> filaDeVenta(simFueraDeLaLista(serie), l).copy(fecha = delToque(serie) ?: deSuFila(serie)) }
+            .map { (serie, l) -> filaDeVenta(simFueraDeLaLista(serie), l).copy(fecha = horaDelToque[serie]) }
         val vendidas = setOf(EstadoFila.VENDIDA, EstadoFila.EN_REVISION, EstadoFila.REVISAR, EstadoFila.CORRECCION_POR_SUBIR, EstadoFila.RECHAZADA, EstadoFila.VENTA_POR_SUBIR)
         _estado.update { e ->
             e.copy(
@@ -378,8 +353,6 @@ class MisSimsViewModel @Inject constructor(
         LoDelCelular.VENTA_NO_SUBIO -> FilaSim(s, EstadoFila.VENTA_POR_SUBIR, NO_SUBIO)
         else -> FilaSim(s, EstadoFila.VENTA_POR_SUBIR, "Por subir")
     }
-
-    private fun ocurrioAt(cuerpo: String?): Long? = fechaDe(campo(cuerpo, "ocurrioAt"))
 
     private fun fechaDe(iso: String?): Long? = iso?.let { runCatching { OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull() }
 

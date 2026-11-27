@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_campo.copia.ConfigDeSucursal
 import com.jaac.avoqado_campo.copia.SimEnCopia
+import com.jaac.avoqado_campo.fotos.BloqueoGuardandoFoto
 import com.jaac.avoqado_campo.fotos.BotonDeGaleria
 import com.jaac.avoqado_campo.fotos.Camara
 import com.jaac.avoqado_campo.ui.BotonPrincipal
@@ -112,6 +113,11 @@ fun VentaContenido(e: EstadoVenta, a: AccionesDeVenta, obligatoria: Boolean = fa
     if (e.guardada) return VentaGuardada(e, a, obligatoria)
     val articulo = e.config?.etiquetaArticulo ?: "SIM"
     val sim = e.sim
+    Box { PantallaDeVenta(e, a, obligatoria, articulo, sim); BloqueoGuardandoFoto(e.copiandoFoto) }
+}
+
+@Composable
+private fun PantallaDeVenta(e: EstadoVenta, a: AccionesDeVenta, obligatoria: Boolean, articulo: String, sim: SimEnCopia?) {
     PantallaCampo(
         "Vender $articulo", onRegresar = a.regresar, regresarHabilitado = !e.registrando,
         abajo = {
@@ -235,9 +241,8 @@ private fun Evidencia(s: Slot, e: EstadoVenta, a: AccionesDeVenta) {
             )
         }
         if (lista) Text("📷 Foto ✓", color = ColoresCampo.VerdeTexto, fontWeight = FontWeight.SemiBold)
-        val copiando = s in e.copiandoEn
-        BotonSecundario(if (lista) "Tomar otra foto" else "📷 Tomar la foto", { a.foto(s) }, enabled = !e.registrando && !copiando)
-        BotonDeGaleria(enabled = !e.registrando, copiando = copiando) { a.galeria(s, it) }
+        BotonSecundario(if (lista) "Tomar otra foto" else "📷 Tomar la foto", { a.foto(s) }, enabled = !e.registrando)
+        BotonDeGaleria(enabled = !e.registrando) { a.galeria(s, it) }
     }
 }
 

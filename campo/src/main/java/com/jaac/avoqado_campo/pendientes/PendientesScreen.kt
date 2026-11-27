@@ -31,6 +31,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.jaac.avoqado_campo.fotos.BloqueoGuardandoFoto
 import com.jaac.avoqado_campo.fotos.BotonDeGaleria
 import com.jaac.avoqado_campo.fotos.Camara
 import com.jaac.avoqado_campo.ui.BotonPrincipal
@@ -57,10 +58,10 @@ fun PendientesScreen(vm: PendientesViewModel, onRegresar: () -> Unit, onMisSims:
             titulo = if (c.photoLabel == "Portabilidad") "la foto de portabilidad" else "la foto de vinculación",
             onFoto = { camara = false; vm.alTomarFoto(it.absolutePath) }, onCerrar = { camara = false },
         )
-        c != null -> Correccion(
-            e, c, { camara = true }, vm::alEscribirNumero, vm::enviarCorreccion, vm::cancelarCorreccion,
-            onGaleria = vm::alElegirDeGaleria,
-        )
+        c != null -> Box {
+            Correccion(e, c, { camara = true }, vm::alEscribirNumero, vm::enviarCorreccion, vm::cancelarCorreccion, vm::alElegirDeGaleria)
+            BloqueoGuardandoFoto(e.copiandoFoto)
+        }
         else -> PendientesContenido(filas, e, onRegresar) { id, accion ->
             when (accion) {
                 Accion.QUITAR -> porQuitar = id
@@ -146,16 +147,15 @@ private fun Correccion(
     PantallaCampo(
         "Corregir evidencia", onRegresar = cancelar, regresarHabilitado = !e.ocupado,
         abajo = {
-            BotonPrincipal(if (e.ocupado) "Guardando…" else "Guardar corrección", enviar, enabled = !e.ocupado && !e.copiandoFoto, cargando = e.ocupado)
+            BotonPrincipal(if (e.ocupado) "Guardando…" else "Guardar corrección", enviar, enabled = !e.ocupado, cargando = e.ocupado)
             BotonSecundario("Cancelar", cancelar, enabled = !e.ocupado)
         },
     ) {
         if (c.foto != null) Text("📷 Foto ✓", color = ColoresCampo.VerdeTexto, fontWeight = FontWeight.SemiBold)
         BotonSecundario(
-            if (c.foto != null) "Tomar otra foto" else if (c.pideFoto) "📷 Tomar la foto" else "Tomar otra foto (si hace falta)", foto,
-            enabled = !e.ocupado && !e.copiandoFoto,
+            if (c.foto != null) "Tomar otra foto" else if (c.pideFoto) "📷 Tomar la foto" else "Tomar otra foto (si hace falta)", foto, enabled = !e.ocupado,
         )
-        BotonDeGaleria(enabled = !e.ocupado, copiando = e.copiandoFoto, onElegida = onGaleria)
+        BotonDeGaleria(enabled = !e.ocupado, onElegida = onGaleria)
         OutlinedTextField(
             c.numero, numero, Modifier.fillMaxWidth(), singleLine = true, enabled = !e.ocupado, shape = MaterialTheme.shapes.small,
             label = { Text(if (c.photoLabel == "Portabilidad") "Número portado" else "Número de vinculación") },

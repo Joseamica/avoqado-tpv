@@ -432,75 +432,48 @@ class VentaViewModelTest {
         coVerify(exactly = 0) { encolador.venta(any(), any(), false) }
     }
 
-    // Codex r3 #7, r4 #7 y r5 #4: la copia de la galería la hace el ViewModel (sobrevive a abrir la cámara). Mientras copia, la
-    // foto de ESE espacio ya no está (nunca se registra la anterior) y «Registrar» espera a todas las copias.
-    @Test fun `copia de galeria en curso y la camara de la otra foto - no se registra con la foto vieja`() {
+    // Foto de la galería (founder, 26-nov: «no overengineer»): mientras se copia (~1 s) la pantalla queda bloqueada; si sale
+    // bien reemplaza la foto de ese espacio, si falla se queda la anterior y lo dice.
+    @Test fun `mientras se copia la foto de la galeria no se registra`() {
         val espera = CompletableDeferred<File>()
         coEvery { galeria.copiar(any()) } coAnswers { espera.await() }
-        val v = vm(copiaCon(sim(), config = config(portabilidad = true)))
+        val v = vm(copiaCon(sim()))
         v.alEscanear(serie)
-        v.alCambiarPortabilidad(true)
-        v.alEscribirNumero(Slot.PORTABILIDAD, "5512345678")
-        val vieja = tmp.newFile("vieja.jpg")
-        v.alTomarFoto(Slot.VINCULACION, vieja.path)
-        v.alTomarFoto(Slot.PORTABILIDAD, tmp.newFile("p.jpg").path)
+        v.listaParaRegistrar()
         v.alElegirDeGaleria(Slot.VINCULACION, mockk())
-        assertNull("la anterior ya no cuenta", v.estado.value.fotos[Slot.VINCULACION])
-        assertFalse("y no se queda en el celular", vieja.exists())
-        // Se abre la cámara de portabilidad (la pantalla de la venta se desmonta) y regresa con otra foto.
-        val p2 = tmp.newFile("p2.jpg").path
-        v.alTomarFoto(Slot.PORTABILIDAD, p2)
+        assertTrue(v.estado.value.copiandoFoto)
         assertEquals(ESPERA_LA_FOTO, v.estado.value.falta)
         v.registrar()
         coVerify(exactly = 0) { encolador.venta(any(), any(), any()) }
+        espera.complete(tmp.newFile("nueva.jpg"))
+        assertFalse(v.estado.value.copiandoFoto)
+    }
+
+    @Test fun `la copia buena reemplaza la foto de ese espacio`() {
         val nueva = tmp.newFile("nueva.jpg")
-        espera.complete(nueva)
-        assertNull(v.estado.value.falta)
-        v.registrar()
-        assertEquals(listOf(nueva.path, p2), venta.captured.evidencias.map { it.archivoFoto })
-    }
-
-    @Test fun `dos copias a la vez - terminar una no deja registrar`() {
-        val vinc = CompletableDeferred<File>()
-        val port = CompletableDeferred<File>()
-        val v = vm(copiaCon(sim(), config = config(portabilidad = true)))
+        coEvery { galeria.copiar(any()) } returns nueva
+        val v = vm(copiaCon(sim()))
         v.alEscanear(serie)
-        v.alCambiarPortabilidad(true)
-        v.alEscribirNumero(Slot.PORTABILIDAD, "5512345678")
-        coEvery { galeria.copiar(any()) } coAnswers { vinc.await() }
+        val vieja = tmp.newFile("vieja.jpg")
+        v.alTomarFoto(Slot.VINCULACION, vieja.path)
         v.alElegirDeGaleria(Slot.VINCULACION, mockk())
-        coEvery { galeria.copiar(any()) } coAnswers { port.await() }
-        v.alElegirDeGaleria(Slot.PORTABILIDAD, mockk())
-        assertEquals(setOf(Slot.VINCULACION, Slot.PORTABILIDAD), v.estado.value.copiandoEn)
-        vinc.complete(tmp.newFile("v.jpg"))
-        assertEquals(ESPERA_LA_FOTO, v.estado.value.falta)
-        port.complete(tmp.newFile("p.jpg"))
-        assertNull(v.estado.value.falta)
+        assertEquals(nueva.path, v.estado.value.fotos[Slot.VINCULACION])
+        assertFalse("la reemplazada no se queda en el celular", vieja.exists())
+        v.registrar()
+        assertEquals(nueva.path, venta.captured.evidencias.single().archivoFoto)
     }
 
-    @Test fun `si la copia de la galeria falla, ese espacio queda vacio y lo dice`() {
+    @Test fun `la copia mala deja la foto anterior y dice que paso`() {
         coEvery { galeria.copiar(any()) } throws com.jaac.avoqado_campo.fotos.ImagenIlegible()
         val v = vm(copiaCon(sim()))
         v.alEscanear(serie)
-        v.alTomarFoto(Slot.VINCULACION, tmp.newFile("vieja.jpg").path)
+        val vieja = tmp.newFile("vieja.jpg")
+        v.alTomarFoto(Slot.VINCULACION, vieja.path)
         v.alElegirDeGaleria(Slot.VINCULACION, mockk())
-        assertNull(v.estado.value.fotos[Slot.VINCULACION])
+        assertEquals(vieja.path, v.estado.value.fotos[Slot.VINCULACION])
+        assertTrue(vieja.exists())
         assertTrue(v.estado.value.error!!.startsWith("No se pudo leer esa imagen"))
-        assertTrue(v.estado.value.copiandoEn.isEmpty())
-        assertEquals("Falta la foto de vinculación.", v.estado.value.falta)
-    }
-
-    @Test fun `la copia que termina despues de empezar otra venta no se cuela en la nueva`() {
-        val espera = CompletableDeferred<File>()
-        coEvery { galeria.copiar(any()) } coAnswers { espera.await() }
-        val v = vm(copiaCon(sim()))
-        v.alEscanear(serie)
-        v.alElegirDeGaleria(Slot.VINCULACION, mockk())
-        v.alEscanear(serie) // otra venta
-        val tarde = tmp.newFile("tarde.jpg")
-        espera.complete(tarde)
-        assertNull(v.estado.value.fotos[Slot.VINCULACION])
-        assertFalse("la que llegó tarde no se queda en el celular", tarde.exists())
+        assertFalse(v.estado.value.copiandoFoto)
     }
 
     @Test fun `registrar lee la generacion antes que la sesion - otra persona entre las dos no recibe la venta (H2)`() {

@@ -28,3 +28,7 @@ graphify-out/
 .claude/worktrees/
 baseline/artefactos/
 .gbrain-source
+
+# Registros de aparatos (pueden traer datos de tarjeta): nunca al repo
+/logs/
+*.log

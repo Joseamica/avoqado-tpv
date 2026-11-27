@@ -1,6 +1,9 @@
 package com.jaac.avoqado_campo.custodia
 
+import android.net.Uri
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -17,16 +20,20 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_campo.copia.SimEnCopia
+import com.jaac.avoqado_campo.fotos.BloqueoGuardandoFoto
+import com.jaac.avoqado_campo.fotos.BotonDeGaleria
 import com.jaac.avoqado_campo.fotos.Camara
 import com.jaac.avoqado_campo.ui.BotonPrincipal
 import com.jaac.avoqado_campo.ui.BotonSecundario
@@ -42,6 +49,8 @@ import com.jaac.avoqado_campo.ui.horaCorta
 import com.jaac.avoqado_campo.ui.tema.ColoresCampo
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
 import com.jaac.avoqado_campo.version.ACTUALIZA_PARA_SEGUIR
+import java.time.YearMonth
+import java.time.ZoneId
 
 /**
  * «Mis SIMs»: aceptar o rechazar lo que te asignaron y lo que tienes. Con [ventas], la misma lista enseña «Mis ventas» (Isaac,
@@ -51,17 +60,25 @@ import com.jaac.avoqado_campo.version.ACTUALIZA_PARA_SEGUIR
 fun MisSimsScreen(vm: MisSimsViewModel, obligatoria: Boolean, onRegresar: () -> Unit, ventas: Boolean = false) {
     val estado by vm.estado.collectAsStateWithLifecycle()
     var camara by rememberSaveable { mutableStateOf(false) }
+    // Los meses que la persona abrió o cerró: aquí, para que no se olviden al volver de «Corregir evidencia».
+    var alternados by rememberSaveable { mutableStateOf(emptySet<String>()) }
     val c = estado.corrigiendo
     when {
         c != null && camara -> Camara(
             titulo = if (c.photoLabel == "Portabilidad") "la foto de portabilidad" else "la foto de vinculación",
             onFoto = { camara = false; vm.alTomarFotoDeCorreccion(it.absolutePath) }, onCerrar = { camara = false },
         )
-        c != null -> PantallaDeCorreccion(estado, c, { camara = true }, vm::alEscribirNumeroDeCorreccion, vm::enviarCorreccion, vm::cancelarCorreccion)
+        c != null -> Box {
+            PantallaDeCorreccion(
+                estado, c, { camara = true }, vm::alEscribirNumeroDeCorreccion, vm::enviarCorreccion, vm::cancelarCorreccion,
+                onGaleria = vm::alElegirDeGaleriaDeCorreccion,
+            )
+            BloqueoGuardandoFoto(estado.copiandoFoto)
+        }
         else -> MisSimsContenido(
             estado,
             AccionesDeMisSims(vm::aceptar, vm::rechazar, vm::aceptarTodas, vm::empezarCorreccion, vm::actualizar, onRegresar),
-            obligatoria, ventas,
+            obligatoria, ventas, alternados, alternar = { k -> alternados = if (k in alternados) alternados - k else alternados + k },
         )
     }
 }
@@ -72,7 +89,10 @@ class AccionesDeMisSims(
 )
 
 @Composable
-fun MisSimsContenido(e: EstadoMisSims, a: AccionesDeMisSims, obligatoria: Boolean = false, ventas: Boolean = false) {
+fun MisSimsContenido(
+    e: EstadoMisSims, a: AccionesDeMisSims, obligatoria: Boolean = false, ventas: Boolean = false,
+    alternados: Set<String> = emptySet(), alternar: (String) -> Unit = {},
+) {
     PantallaCampo(
         if (ventas) "Mis ventas" else "Mis SIMs", onRegresar = a.regresar,
         derecha = {
@@ -90,7 +110,7 @@ fun MisSimsContenido(e: EstadoMisSims, a: AccionesDeMisSims, obligatoria: Boolea
                 Seccion("Por subir", e.ventasPorSubir, vacio = "") {}
                 Tenue("Todavía no llegan al servidor; las ves en «Ventas pendientes por subir».")
             }
-            Seccion("Por revisar", e.porRevisar, vacio = "No tienes ventas por corregir.") { f ->
+            SeccionPorMes("Por revisar", e.porRevisar, vacio = "No tienes ventas por corregir.", alternados, alternar) { f ->
                 if (f.estado == EstadoFila.REVISAR) {
                     BotonPrincipal("Corregir evidencia de vinculación", { a.corregir(f.sim.serialNumber, "Vinculacion") }, enabled = !e.ocupado)
                     if ("REVIEW_PORTABILIDAD" in f.sim.rejectionReasons) {
@@ -98,8 +118,8 @@ fun MisSimsContenido(e: EstadoMisSims, a: AccionesDeMisSims, obligatoria: Boolea
                     }
                 }
             }
-            Seccion("Exitosas", e.exitosas, vacio = "Aquí salen las que vendas.") {}
-            Seccion("Rechazadas", e.rechazadas, vacio = "No tienes ventas rechazadas.") {}
+            SeccionPorMes("Exitosas", e.exitosas, vacio = "Aquí salen las que vendas.", alternados, alternar) {}
+            SeccionPorMes("Rechazadas", e.rechazadas, vacio = "No tienes ventas rechazadas.", alternados, alternar) {}
         } else {
             ContenidoDeSims(e, a, obligatoria)
         }
@@ -133,6 +153,11 @@ private fun Seccion(titulo: String, filas: List<FilaSim>, vacio: String, accione
         Tenue(vacio)
         return
     }
+    Filas(filas, acciones)
+}
+
+@Composable
+private fun Filas(filas: List<FilaSim>, acciones: @Composable (FilaSim) -> Unit) {
     Tarjeta(relleno = PaddingValues(horizontal = 14.dp, vertical = 4.dp)) {
         filas.forEachIndexed { i, f ->
             if (i > 0) HorizontalDivider(color = ColoresCampo.Gris100)
@@ -141,6 +166,37 @@ private fun Seccion(titulo: String, filas: List<FilaSim>, vacio: String, accione
                 acciones(f)
             }
         }
+    }
+}
+
+/**
+ * 0.6.0: un estado de «Mis ventas» por mes (del más reciente al más viejo, en la zona del celular). Va abierto el mes actual
+ * (o el más reciente) y los demás cerrados: así no se pintan 1,000 filas. Un toque abre o cierra cada mes.
+ */
+@Composable
+private fun SeccionPorMes(
+    titulo: String, filas: List<FilaSim>, vacio: String, alternados: Set<String>, alternar: (String) -> Unit,
+    acciones: @Composable (FilaSim) -> Unit,
+) {
+    TituloDeSeccion("$titulo (${filas.size})")
+    if (filas.isEmpty()) {
+        Tenue(vacio)
+        return
+    }
+    val zona = remember { ZoneId.systemDefault() }
+    val grupos = remember(filas) { porMes(filas, zona) }
+    val deFabrica = abiertoDeFabrica(grupos, YearMonth.now(zona))?.let { "$titulo|$it" }
+    grupos.forEach { g ->
+        val clave = "$titulo|${g.clave}"
+        val abierto = estaAbierto(clave, deFabrica, alternados)
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(role = Role.Button) { alternar(clave) },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(g.titulo, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+            Text(if (abierto) "▾" else "▸", color = ColoresCampo.Gris700, fontWeight = FontWeight.Bold)
+        }
+        if (abierto) Filas(g.filas, acciones)
     }
 }
 
@@ -173,6 +229,7 @@ private fun Fila(f: FilaSim) {
 @Composable
 private fun PantallaDeCorreccion(
     e: EstadoMisSims, c: Correccion, foto: () -> Unit, numero: (String) -> Unit, enviar: () -> Unit, cancelar: () -> Unit,
+    onGaleria: (Uri) -> Unit = {},
 ) {
     PantallaCampo(
         "Corregir evidencia", onRegresar = cancelar, regresarHabilitado = !e.ocupado,
@@ -187,6 +244,7 @@ private fun PantallaDeCorreccion(
         }
         if (c.foto != null) Text("📷 Foto ✓", color = ColoresCampo.VerdeTexto, fontWeight = FontWeight.SemiBold)
         BotonSecundario(if (c.foto != null) "Tomar otra foto" else "📷 Tomar la foto", foto, enabled = !e.ocupado)
+        BotonDeGaleria(enabled = !e.ocupado, onElegida = onGaleria)
         OutlinedTextField(
             c.numero, numero, Modifier.fillMaxWidth(), singleLine = true, enabled = !e.ocupado, shape = MaterialTheme.shapes.small,
             label = { Text(if (c.photoLabel == "Portabilidad") "Número portado (si cambia)" else "Número de vinculación (si cambia)") },

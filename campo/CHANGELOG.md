@@ -5,11 +5,48 @@ las terminales: por eso sus cambios van aquí y no en el `CHANGELOG.md` de la ra
 TPV (`/avoqado:release-production`).
 
 ## Sin publicar
+
+## 0.6.0 (código 6) — lo que pidió el cliente en sus pruebas del 26-nov (Asana 1220750328814319)
+- «Mis ventas» por mes: dentro de «Por revisar», «Exitosas» y «Rechazadas», las ventas van por mes, del más reciente al más
+  viejo («noviembre 2026 (45)»), en la zona del celular. Va abierto el mes actual (o el más reciente) y los demás cerrados: un
+  toque los abre. Una SIM que viene del SERVIDOR va con la hora real de la venta (`saleAt`) o, si falta, `soldAt`; la venta del
+  celular que la lista todavía no trae, con la hora local de esa venta (corregir el precio no la cambia). Lo que no trae fecha va al final, en «Sin fecha».
+  «Por subir» no cambia. La copia guardada por la 0.5.0 se sigue leyendo sin red: al actualizar no se pierden «Mis ventas» ni
+  las SIMs del escáner.
+- Foto de la galería: junto a «📷 Tomar la foto» está «Elegir de la galería» (selector del sistema, sin permisos) en Vender
+  (vinculación y portabilidad), en «Corregir evidencia» de «Mis ventas» y en «Ventas pendientes por subir». La imagen se copia
+  al celular antes de nada y pasa por la misma compresión que la de la cámara, también sin red; si no se puede leer, lo dice.
+  Mientras se copia (~1 s) la pantalla queda bloqueada con «Guardando la foto…»: no se toca nada y «atrás» no sale. Si sale
+  bien, reemplaza la foto de ese espacio; si falla, se queda la anterior y se dice qué pasó.
+- No se vende sin entrada: sin turno abierto en el celular (también uno checado sin red), el mosaico «Vender SIM» dice «Checa tu
+  entrada para vender» y lleva a «Checar entrada». Lo mismo con una entrada sin red que el SERVIDOR rechazó, también tras
+  reabrir la app (el Inicio dice «Tu entrada no se aceptó: <motivo>» y Checar y Vender llevan a «Ventas pendientes por subir»,
+  donde está «Quitar de mi celular»), y con la entrada de otra sucursal. Con la entrada de una sucursal y la sesión en otra, «Checar» ofrece la
+  entrada de ésta (nunca la salida de la otra); esa entrada se guarda normal y, si el SERVIDOR ya tenía una, se usa con
+  «Usar esa entrada». El celular guarda un solo turno: el de la otra sucursal se reemplaza en el celular sin mandarle salida.
+  Límite conocido: si la persona tiene entradas abiertas en dos sucursales y el SERVIDOR contesta «ya tienes entrada» con la de
+  la OTRA, la app lo dice («Tu entrada abierta es de …») y no adopta nada; lo resuelve la salida olvidada esa noche. Al usar la entrada que ya tenía el SERVIDOR («Usar esa entrada»), la hora
+  del turno es la de esa entrada, no la del intento rechazado. «Registrar venta» lo revisa en la misma escritura de la venta y con la misma hora que la fecha: si el turno
+  venció con la pantalla abierta, no se guarda. Subir fotos pendientes y corregir evidencia no piden entrada.
+- La hora de corte de la salida olvidada viene de la sucursal (`asistencia` de `GET tpv/modules`), en la zona de la sucursal
+  (`timezone`; sin ella, la del celular): con «22:00», el turno vence en el siguiente 22:00 que caiga al menos 1 h después de
+  la entrada, armado por fecha como en el SERVIDOR (el cambio de horario no lo mueve). Sin hora, como antes: 04:00, nunca antes
+  de 12 h. En los dos casos el celular da su margen de 3 h (con corte a las 22:00, se vende hasta la 01:00): decisión del
+  founder del 26-nov («B»), la app sólo exige una entrada válida (de esa sucursal, no rechazada y vigente) y la hora exacta la
+  aplica el SERVIDOR con la salida olvidada. Con la salida olvidada apagada, no vence. Se guarda con la configuración de la
+  sucursal: sin red se usa la última que bajó (también con señal, hasta que la copia se actualiza). El aviso de la entrada
+  que se quedó sin salida termina en «Marca una entrada nueva» (con un corte del mismo día, las dos son de hoy).
+- Límite conocido (igual que la cámara desde la 0.5.0): la foto de una venta o corrección que todavía no se registra vive en
+  la pantalla; si Android cierra la app antes de «Registrar venta» o «Enviar», hay que tomarla o elegirla otra vez.
 - GPS del turno: si la persona no marcó salida y el turno ya es de un día terminado («salida olvidada»), el celular deja de
   guardar y mandar su ubicación: ninguna lectura de después del límite se guarda (tampoco la que lo cruza mientras busca la
   señal). El servicio se para en su siguiente lectura (cada 30 min con el celular despierto) o al abrir la app, y se quita
   el aviso fijo «Turno activo»; si Android revive el servicio solo, se para de inmediato. Antes el GPS seguía a nombre de un
   turno que el servidor ya había cerrado (hz:nube0000:na1c5a48).
+- Límite conocido: en los segundos en que una venta hecha sin red está subiendo, si «Mis ventas» se actualiza justo entre que
+  la SIM queda vendida y se crea su verificación, esa venta puede salir en el mes de subida hasta la siguiente actualización.
+- Mientras se copia una foto de la galería tampoco se puede buscar otra SIM, y si la copia falla el aviso sale junto a esa foto.
+
 
 ## 0.5.0 (código 5) — lo que pidió PlayTelecom en sus pruebas (Asana 1220750328814319, 20-nov)
 - Venta sin costo: si la SIM no trae precio fijo, el importe puede ser $0 (como «Regalar (Gratis)» en la terminal); la

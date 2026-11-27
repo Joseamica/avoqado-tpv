@@ -1,10 +1,12 @@
 package com.jaac.avoqado_campo.pendientes
 
 import android.content.Context
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_campo.checada.limiteEnElCelular
+import com.jaac.avoqado_campo.checada.reglaDeSalida
 import com.jaac.avoqado_campo.cola.CelularBorrandose
 import com.jaac.avoqado_campo.cola.Disparador
 import com.jaac.avoqado_campo.cola.Encolador
@@ -19,7 +21,10 @@ import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.identidad.EstadoDelCelular
 import com.jaac.avoqado_campo.identidad.Identidad
 import com.jaac.avoqado_campo.identidad.QuienSoy
+import com.jaac.avoqado_campo.fotos.Galeria
+import com.jaac.avoqado_campo.fotos.copiarDeGaleria
 import com.jaac.avoqado_campo.red.Conectividad
+import com.jaac.avoqado_campo.venta.ESPERA_LA_FOTO
 import com.jaac.avoqado_campo.red.objetoJson
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -48,7 +53,10 @@ data class FilaPendiente(val id: Long, val resumen: String, val texto: String, v
 data class CorreccionDeEvidencia(
     val id: Long, val photoLabel: String, val pideFoto: Boolean, val foto: String? = null, val numero: String = "", val pideNumero: Boolean = false,
 )
-data class EstadoPendientes(val ocupado: Boolean = false, val error: String? = null, val corrigiendo: CorreccionDeEvidencia? = null)
+/** [copiandoFoto]: la foto de la galería se está copiando; la pantalla queda bloqueada, ni «Guardar corrección» ni «atrás». */
+data class EstadoPendientes(
+    val ocupado: Boolean = false, val error: String? = null, val corrigiendo: CorreccionDeEvidencia? = null, val copiandoFoto: Boolean = false,
+)
 
 private val QUITAR = Boton(Accion.QUITAR, "Quitar de mi celular")
 private val ENTENDIDO = Boton(Accion.ENTENDIDO, "Entendido")
@@ -78,7 +86,8 @@ fun filaDe(p: Pieza, yo: Identidad, hayRed: Boolean, llavesVivas: Set<String>, n
             // D3: la entrada abierta del SERVIDOR sólo se ofrece si es del MISMO día que esta entrada; la de otro día es una
             // «salida olvidada» y usarla cerraba el turno con cientos de horas (Isaac, 267 h).
             val abiertaDesde = dato(p, "clockInTime")?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
-            val deOtroDia = abiertaDesde != null && p.creadaAt >= limiteEnElCelular(abiertaDesde)
+            val deOtroDia = abiertaDesde != null &&
+                p.creadaAt >= limiteEnElCelular(abiertaDesde, regla = reglaDeSalida(dato(p, "venueId")))
             val entradaDeAqui =
                 code == "YA_TIENE_ENTRADA" && dato(p, "venueId") == p.venueId && dato(p, "timeEntryId") != null && !deOtroDia
             val texto = when {
@@ -137,6 +146,7 @@ class PendientesViewModel @Inject constructor(
     private val copia: RepositorioDeCopia,
     conectividad: Conectividad,
     @ApplicationContext private val context: Context,
+    private val galeria: Galeria = Galeria(context),
 ) : ViewModel() {
     val filas: StateFlow<List<FilaPendiente>> = combine(dao.pendientesDeVer(), quienSoy.identidad, conectividad.cambios) { lista, yo, red ->
         val vivas = lista.map { it.llave }.toSet()
@@ -199,8 +209,19 @@ class PendientesViewModel @Inject constructor(
         c.foto?.takeIf { it != archivo }?.let { File(it).delete() }
         _estado.update { it.copy(corrigiendo = c.copy(foto = archivo)) }
     }
+    /** La foto de la galería se copia aquí, con la pantalla bloqueada (~1 s). Bien: reemplaza. Mal: queda la anterior y lo dice. */
+    fun alElegirDeGaleria(uri: Uri) {
+        val e = _estado.value
+        if (e.corrigiendo == null || e.ocupado || e.copiandoFoto) return
+        _estado.update { it.copy(copiandoFoto = true, error = null) }
+        viewModelScope.launch {
+            val error = copiarDeGaleria(galeria, uri, ::alTomarFoto)
+            _estado.update { it.copy(copiandoFoto = false, error = error) }
+        }
+    }
     fun alEscribirNumero(n: String) = _estado.update { it.copy(corrigiendo = it.corrigiendo?.copy(numero = n.filter(Char::isDigit).take(10))) }
     fun cancelarCorreccion() {
+        if (_estado.value.copiandoFoto) return
         _estado.value.corrigiendo?.foto?.let { runCatching { File(it).delete() } }
         _estado.update { it.copy(corrigiendo = null, error = null) }
     }
@@ -214,6 +235,7 @@ class PendientesViewModel @Inject constructor(
     fun enviarCorreccion() {
         val c = _estado.value.corrigiendo ?: return
         val falta = when {
+            _estado.value.copiandoFoto -> ESPERA_LA_FOTO
             c.pideFoto && c.foto == null -> "Toma la foto otra vez."
             (c.pideNumero || c.numero.isNotEmpty()) && c.numero.length !in 9..10 -> "El número lleva 9 o 10 dígitos."
             else -> null

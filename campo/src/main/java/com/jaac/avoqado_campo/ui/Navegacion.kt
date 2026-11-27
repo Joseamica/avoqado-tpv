@@ -14,7 +14,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.jaac.avoqado_campo.ayuda.AyudaScreen
 import com.jaac.avoqado_campo.checada.ChecadaScreen
-import com.jaac.avoqado_campo.checada.turnoVigente
+import com.jaac.avoqado_campo.checada.puedeVender
+import com.jaac.avoqado_campo.checada.tieneTurno
 import com.jaac.avoqado_campo.cola.EstadoPieza
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
@@ -108,18 +109,30 @@ fun Navegacion(
                     val yo = identidadS.value
                     val t = turnoS.value
                     val c = copiaS.value
+                    val ahora = System.currentTimeMillis()
+                    // Codex r3 #1: la entrada sin red que el SERVIDOR rechazó (sigue en la cola) no deja vender. H-1: el Inicio
+                    // lo dice con su motivo y no la cuenta como «Turno abierto».
+                    val suEntrada = t?.llaveEntrada?.takeIf { t.timeEntryId == null }
+                        ?.let { l -> piezasS.value.firstOrNull { it.llave == l } }
+                    val rechazada = suEntrada?.takeIf {
+                        it.estado == EstadoPieza.RECHAZADA && t?.staffId == yo.staffId && t?.venueId == yo.venueIdDeLaSesion
+                    }
                     val esperan = piezasS.value.filter { it.estado == EstadoPieza.PENDIENTE && it.venueId != yo.venueIdDeLaSesion }
                         .mapNotNull { p -> yo.sucursales.firstOrNull { it.venueId == p.venueId }?.nombre }.distinct()
                     InicioScreen(
                         DatosDeInicio(
                             nombre = yo.nombre, pendientes = visiblesEnPendientes(piezasS.value).size, necesitaPin = yo.necesitaPin, esperanSucursal = esperan,
                             // D3: un turno de un día ya terminado ya no es «turno abierto» (el Inicio ofrece «Checar entrada»).
-                            turnoAbierto = t != null && turnoVigente(t, System.currentTimeMillis()) && t.staffId == yo.staffId, gps = gpsS.value,
+                            // Codex r5 #1: el turno de otra sucursal no es «Turno abierto» aquí (Checar ofrece la entrada de ésta).
+                            turnoAbierto = tieneTurno(t, yo.staffId, ahora) && t?.venueId == yo.venueIdDeLaSesion && rechazada == null,
+                            gps = gpsS.value,
                             version = versionS.value, obligatoria = obligatoriaS.value, paso = pasoS.value,
                             sucursal = yo.sucursales.firstOrNull { it.venueId == yo.venueIdDeLaSesion }?.nombre,
                             entradaAt = horaDeEntrada(t, yo.staffId),
                             enCustodia = cuantasEnCustodia(c, yo.venueIdDeLaSesion, conSimsS.value), articulo = c?.config?.etiquetaArticulo ?: "SIM",
                             porRevisar = cuantasPorRevisar(c, yo.venueIdDeLaSesion),
+                            puedeVender = puedeVender(t, yo.staffId, yo.venueIdDeLaSesion, ahora, suEntrada?.estado),
+                            entradaRechazada = rechazada?.let { motivoDeEntradaRechazada(it.rechazoCode, it.rechazoMensaje) },
                         ),
                         AccionesDeInicio(
                             vender = { nav.navigate("venta") }, sims = { nav.navigate("sims") }, checar = { nav.navigate("checada") },
@@ -146,4 +159,14 @@ fun Navegacion(
             }
         }
     }
+}
+
+/**
+ * El motivo de la banda «Tu entrada no se aceptó: …». Con YA_TIENE_ENTRADA el texto del SERVIDOR («Primero marca la salida»)
+ * pide algo que Pendientes no ofrece: ahí se resuelve con «Usar esa entrada» o «Quitar» (full-testing r2, W-1).
+ */
+internal fun motivoDeEntradaRechazada(code: String?, mensaje: String?): String = when {
+    code == "YA_TIENE_ENTRADA" -> "ya tienes otra entrada abierta; resuélvelo en «Ventas pendientes por subir»"
+    !mensaje.isNullOrBlank() -> mensaje
+    else -> "revísala en «Ventas pendientes por subir»"
 }

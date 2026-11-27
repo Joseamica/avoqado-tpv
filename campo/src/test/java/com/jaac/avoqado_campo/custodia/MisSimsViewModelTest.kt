@@ -98,7 +98,9 @@ class MisSimsViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun vm() = MisSimsViewModel(encolador, copia, dao, quienSoy, context).also { vm = it }
+    private val galeria = mockk<com.jaac.avoqado_campo.fotos.Galeria>()
+
+    private fun vm() = MisSimsViewModel(encolador, copia, dao, quienSoy, context, galeria).also { vm = it }
 
     @Test fun `aceptar 60 SIMs son dos piezas de 50 y 10 con su version de la copia`() {
         ponerCopia(*Array(60) { sim("S$it", version = it) })
@@ -217,6 +219,92 @@ class MisSimsViewModelTest {
         assertEquals(EstadoFila.RECHAZADA, e.rechazadas.single().estado)
         assertTrue(e.rechazadas.single().nota!!.contains("Se ve borrosa"))
         assertEquals(listOf("S6"), e.enCustodia.map { it.sim.serialNumber })
+    }
+
+    // 0.6.0: «Mis ventas» por mes. La del SERVIDOR trae `soldAt`; la del celular que la lista aún no trae, la hora de la venta.
+    // Codex r3 #8: del SERVIDOR, `saleAt` (la hora real) y si no `soldAt`; la del celular que la lista no trae, su hora local.
+    @Test fun `cada venta trae su fecha - del servidor saleAt o soldAt, la del celular su hora local`() {
+        val local = 1_795_000_000_000L
+        cola.value = listOf(
+            venta("S2", EstadoPieza.HECHA, 5).copy(resultadoJson = conPago, creadaAt = local),
+            venta("S4", EstadoPieza.HECHA, 6).copy(resultadoJson = conPago, creadaAt = local + 1),
+        )
+        ponerCopia(
+            sim("S1", "SOLD").copy(soldAt = "2026-12-01T00:05:00.000Z", saleAt = "2026-11-30T23:58:00.000Z"),
+            sim("S2", "PROMOTER_HELD"), sim("S3", "SOLD"), sim("S4", "SOLD"),
+            sim("S5", "SOLD").copy(soldAt = "2026-11-20T18:00:00.000Z"),
+            yaLlegadas = listOf(6),
+        )
+        val e = vm().estado.value
+        fun fecha(s: String) = e.exitosas.single { it.sim.serialNumber == s }.fecha
+        assertEquals("saleAt gana a soldAt", java.time.Instant.parse("2026-11-30T23:58:00Z").toEpochMilli(), fecha("S1"))
+        assertEquals("vendida en el celular, la lista aún no la trae", local, fecha("S2"))
+        assertEquals("sin saleAt ni soldAt (SERVIDOR viejo) ni venta del celular: sin fecha", null, fecha("S3"))
+        assertEquals("del SERVIDOR sin saleAt ni soldAt: sin fecha (no se cruza con la fila local)", null, fecha("S4"))
+        assertEquals(java.time.Instant.parse("2026-11-20T18:00:00Z").toEpochMilli(), fecha("S5"))
+    }
+
+    // Codex r4 #8: la venta que se corrigió de precio el 1-dic conserva su hora (la del cuerpo, 30-nov) y no cambia de mes.
+    @Test fun `la venta del celular usa la hora de su cuerpo, no la de la fila recreada por corregir el precio`() {
+        val corregida = Pieza(
+            id = 7, tipo = TipoPieza.VENTA, llave = "kv7", staffId = "s1", venueId = "v1",
+            cuerpoJson = """{"llave":"kv7","serialNumber":"S2","precioVisto":150.00,"ocurrioAt":"2026-11-30T23:58:00Z"}""",
+            estado = EstadoPieza.HECHA, resultadoJson = conPago, creadaAt = java.time.Instant.parse("2026-12-01T10:00:00Z").toEpochMilli(), resumen = "",
+        )
+        cola.value = listOf(corregida)
+        ponerCopia(sim("S2", "PROMOTER_HELD"), yaLlegadas = emptyList())
+        assertEquals(java.time.Instant.parse("2026-11-30T23:58:00Z").toEpochMilli(), vm().estado.value.exitosas.single().fecha)
+    }
+
+    // Founder, 26-nov (simplificar): una SIM que viene del SERVIDOR usa saleAt o soldAt, nunca una fila local por su serie
+    // (Codex r6 #3 y #4: la fila podía ser un intento rechazado, y al limpiar la cola la fecha saltaba).
+    @Test fun `la SIM del servidor usa saleAt o soldAt, no la fila local de esa serie`() {
+        cola.value = listOf(
+            Pieza(
+                id = 8, tipo = TipoPieza.VENTA, llave = "kv8", staffId = "s1", venueId = "v1",
+                cuerpoJson = """{"llave":"kv8","serialNumber":"S6","precioVisto":50.00,"ocurrioAt":"2026-11-30T23:58:00Z"}""",
+                estado = EstadoPieza.RECHAZADA, creadaAt = java.time.Instant.parse("2026-11-30T23:58:00Z").toEpochMilli(), resumen = "",
+            ),
+        )
+        ponerCopia(sim("S6", "SOLD").copy(soldAt = "2026-12-01T00:31:00.000Z"), yaLlegadas = emptyList())
+        assertEquals(java.time.Instant.parse("2026-12-01T00:31:00Z").toEpochMilli(), vm().estado.value.exitosas.single().fecha)
+    }
+
+    // Foto de la galería (founder: simplificar): mientras se copia no se envía ni se cancela; buena reemplaza, mala deja la anterior.
+    @Test fun `mientras se copia la foto de la galeria no se envia ni se cancela la correccion, y luego sale la nueva`() {
+        ponerCopia(sim("S1", "SOLD", verificacion = "FAILED"))
+        val enviada = slot<EvidenciaSueltaNueva>()
+        coEvery { encolador.evidenciaSuelta(any(), capture(enviada)) } returns "k"
+        val espera = CompletableDeferred<File>()
+        coEvery { galeria.copiar(any()) } coAnswers { espera.await() }
+        val v = vm()
+        v.empezarCorreccion("S1", "Vinculacion")
+        val vieja = tmp.newFile("vieja.jpg")
+        v.alTomarFotoDeCorreccion(vieja.path)
+        v.alElegirDeGaleriaDeCorreccion(mockk())
+        assertTrue(v.estado.value.copiandoFoto)
+        v.enviarCorreccion()
+        coVerify(exactly = 0) { encolador.evidenciaSuelta(any(), any()) }
+        v.cancelarCorreccion()
+        assertTrue("atrás no la cierra mientras copia", v.estado.value.corrigiendo != null)
+        val nueva = tmp.newFile("nueva.jpg")
+        espera.complete(nueva)
+        assertFalse(vieja.exists())
+        v.enviarCorreccion()
+        assertEquals(nueva.path, enviada.captured.archivoFoto)
+    }
+
+    @Test fun `si la copia de la galeria falla, la correccion conserva la foto anterior y lo dice`() {
+        ponerCopia(sim("S1", "SOLD", verificacion = "FAILED"))
+        coEvery { galeria.copiar(any()) } throws com.jaac.avoqado_campo.fotos.ImagenIlegible()
+        val v = vm()
+        v.empezarCorreccion("S1", "Vinculacion")
+        val vieja = tmp.newFile("vieja.jpg")
+        v.alTomarFotoDeCorreccion(vieja.path)
+        v.alElegirDeGaleriaDeCorreccion(mockk())
+        assertEquals(vieja.path, v.estado.value.corrigiendo!!.foto)
+        assertTrue(v.estado.value.error!!.startsWith("No se pudo leer esa imagen"))
+        assertFalse(v.estado.value.copiandoFoto)
     }
 
     private fun venta(serie: String, estado: String, id: Long) = Pieza(

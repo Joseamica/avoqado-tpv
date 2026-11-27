@@ -68,7 +68,9 @@ class ChecadaViewModel @Inject constructor(
             dao.turno().collect { t ->
                 // D3: un turno de un día ya terminado no ofrece «Marcar salida»: la de hoy es una entrada nueva.
                 val ahora = encolador.ahoraMs()
-                _estado.update { it.copy(entrada = refEntrada(t, quienSoy.staffId, ahora), olvidadaAt = turnoOlvidado(t, quienSoy.staffId, ahora)) }
+                // Codex r5 #1: la entrada es la de la sucursal de la sesión; la de otra no se ofrece para «Marcar salida» aquí.
+                val entrada = refEntrada(t, quienSoy.staffId, quienSoy.sesion?.venueId, ahora)
+                _estado.update { it.copy(entrada = entrada, olvidadaAt = turnoOlvidado(t, quienSoy.staffId, ahora)) }
             }
         }
         // Si el GPS empieza a seguir (p. ej., concedió el permiso sin salir de «Checar»), el aviso de la entrada deja de decir

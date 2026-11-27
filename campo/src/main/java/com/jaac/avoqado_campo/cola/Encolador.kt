@@ -1,13 +1,16 @@
 package com.jaac.avoqado_campo.cola
 
 import com.jaac.avoqado_campo.BuildConfig
+import com.jaac.avoqado_campo.checada.puedeVender
 import com.jaac.avoqado_campo.checada.turnoVigente
 import com.jaac.avoqado_campo.identidad.HoraDeCampo
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.identidad.RelojAnclado
+import com.jaac.avoqado_campo.red.objetoJson
 import java.io.File
 import java.io.IOException
 import java.math.BigDecimal
+import java.time.Instant
 import java.util.UUID
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -16,6 +19,9 @@ class CelularBorrandose : Exception("El celular se está borrando")
 
 /** Ya hay una VENTA viva (no HECHA ni DESCARTADA) de esa SIM en la cola: no se escribió nada. */
 class SimYaEnCola : Exception("Esta SIM ya está vendida (o por subir)")
+
+/** 0.6.0: sin entrada vigente en el celular (o con la que el SERVIDOR rechazó) no se vende. No se escribió nada. */
+class SinEntrada : Exception("Checa tu entrada para vender")
 
 /** `replaceIndex` sale del `photoLabel` (Vinculacion → 0, Portabilidad → 1), nunca suelto. */
 data class EvidenciaNueva(val photoLabel: String, val numero: String?, val archivoFoto: String)
@@ -67,11 +73,21 @@ class Encolador(
     private val dirCola: File,
     private val env: String = BuildConfig.STORAGE_ENV,
 ) {
-    suspend fun venta(generacion: String, v: VentaNueva): String = llaveNueva().also { llave ->
+    /**
+     * [exigirEntrada] (0.6.0, Codex r3 #1 y #2): la venta NUEVA de «Vender SIM» lo pide. Dentro de la MISMA transacción y con la
+     * MISMA hora que la fecha, se revisa que haya entrada vigente y no rechazada; si no, [SinEntrada] y nada escrito. Las
+     * ventas que rehace la cola (corregir el precio) no pasan por aquí.
+     */
+    suspend fun venta(generacion: String, v: VentaNueva, exigirEntrada: Boolean = false): String = llaveNueva().also { llave ->
         enTransaccion(generacion) {
             // Defensa en la base (Tarea 10): dentro de la transacción, dos registros de la misma SIM no pasan los dos.
             if (dao.ventaConSerieEnCola(v.serialNumber) != null) throw SimYaEnCola()
             val hora = reloj.ahora()
+            if (exigirEntrada) {
+                val t = dao.turnoAhora()
+                val suEntrada = t?.llaveEntrada?.takeIf { t.timeEntryId == null }?.let { dao.porLlave(it)?.estado }
+                if (!puedeVender(t, staffId, v.venueId, hora.epochMs, suEntrada)) throw SinEntrada()
+            }
             val cuerpo = CuerpoVenta(llave, normalizarSerie(v.serialNumber), v.precio.setScale(2), hora.iso, hora.origen, v.isPortabilidad)
             dao.insertar(pieza(TipoPieza.VENTA, llave, staffId, v.venueId, cuerpo, hora, v.resumen))
             v.evidencias.forEach {
@@ -227,15 +243,16 @@ class Encolador(
     fun ahoraMs(): Long = reloj.ahora().epochMs
 
     /**
-     * ENTRADA: no debe haber turno VIVO de [staffId] (null). SALIDA: su turno vivo, de esa sucursal. Si no, lanza. D3: un turno
-     * de un día ya terminado no cuenta como abierto («salida olvidada»: el SERVIDOR lo cierra solo); la entrada nueva lo
-     * reemplaza en el celular.
+     * ENTRADA: no debe haber turno VIVO de [staffId] en ESA sucursal (null). SALIDA: su turno vivo, de esa sucursal. Si no, lanza.
+     * D3: un turno de un día ya terminado no cuenta como abierto («salida olvidada»: el SERVIDOR lo cierra solo); la entrada
+     * nueva lo reemplaza en el celular. Codex r5 #1: el turno vivo de OTRA sucursal tampoco impide checar aquí; la entrada nueva
+     * lo reemplaza en el celular sin mandarle salida (en el SERVIDOR sigue como esté: su salida o la salida olvidada).
      */
     private suspend fun turnoPara(tipo: String, staffId: String, venueId: String, aLaHora: Long = ahoraMs()): TurnoLocal? {
         val t = dao.turnoAhora()
         val vivo = t != null && turnoVigente(t, aLaHora)
         if (tipo == TipoPieza.ENTRADA) {
-            check(t == null || !vivo || t.staffId != staffId) { "Ya hay un turno abierto" }
+            check(t == null || !vivo || t.staffId != staffId || t.venueId != venueId) { "Ya hay un turno abierto" }
             return null
         }
         check(t != null && t.staffId == staffId && vivo) { "No hay turno abierto" }
@@ -307,7 +324,13 @@ class Encolador(
                 dao.insertar(s.renacida(llave, hora).copy(cuerpoJson = texto, huella = huella(s.tipo, s.venueId, texto), dependeDe = null))
             }
             val t = dao.turnoAhora()
-            if (t?.llaveEntrada == e.llave) dao.guardarTurno(t.copy(llaveEntrada = null, timeEntryId = timeEntryId))
+            // Codex r4 #2: la hora del turno es la de la entrada que ya tenía el SERVIDOR (`clockInTime` del detalle del 409),
+            // no la del intento rechazado; sin ella, la de antes.
+            val delServidor = objetoJson(e.rechazoDatosJson)?.get("clockInTime")?.takeIf { it.isJsonPrimitive }
+                ?.let { runCatching { Instant.parse(it.asString).toEpochMilli() }.getOrNull() }
+            if (t?.llaveEntrada == e.llave) {
+                dao.guardarTurno(t.copy(llaveEntrada = null, timeEntryId = timeEntryId, abiertoAt = delServidor ?: t.abiertoAt))
+            }
         }
     }
 

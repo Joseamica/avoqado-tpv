@@ -441,16 +441,46 @@ class ChecadaViewModelTest {
         assertFalse(turnoVigente(t, ms("2026-11-04T07:00"), mx))
         assertEquals(ms("2026-11-04T07:00"), limiteEnElCelular(ms("2026-11-03T09:00"), mx))
         assertTrue("sin hora (fila vieja) cuenta como vivo", turnoVigente(t.copy(abiertoAt = null), ms("2026-12-01T00:00"), mx))
-        assertNull(refEntrada(t, "s1", ms("2026-11-04T09:00")))
+        assertNull(refEntrada(t, "s1", "v1", ms("2026-11-04T09:00")))
         assertEquals(ms("2026-11-03T09:00"), turnoOlvidado(t, "s1", ms("2026-11-04T09:00"), mx))
         assertNull("del mismo día no es olvidado", turnoOlvidado(t, "s1", ms("2026-11-03T20:00"), mx))
         assertTrue(textoDeSalidaOlvidada(ms("2026-11-09T09:00"), mx).contains("9-nov"))
+        // H-2: con un corte del mismo día las dos entradas son de hoy.
+        assertTrue(textoDeSalidaOlvidada(ms("2026-11-09T09:00"), mx).endsWith("Marca una entrada nueva."))
+    }
+
+    // Codex r5 #1: promotor de dos sucursales. Con el turno local de A y la sesión en B, Checar ofrece la entrada de B (no la
+    // salida de A), la entrada de B se encola normal sin cerrar A y después se puede vender en B.
+    @Test fun `con el turno local de A y la sesion en B, Checar ofrece la entrada de B y despues se vende en B`() {
+        runBlocking {
+            dao.guardarTurno(com.jaac.avoqado_campo.cola.TurnoLocal(staffId = "s1", llaveEntrada = null, timeEntryId = "teA", venueId = "v1", abiertoAt = 1_762_797_600_000 - 60_000))
+        }
+        quienSoy.guardarEntrada(
+            com.jaac.avoqado_campo.identidad.DatosDeEntrada(Sesion("a2", "r", "v2"), listOf(Sucursal("v1", "Centro", null), Sucursal("v2", "Norte", null))),
+        )
+        vm.viewModelScope.cancel()
+        vm = ChecadaViewModel(encolador, ubicacion, gps, estadoDelGps, copia, dao, quienSoy, context)
+        assertNull("no ofrece la salida de A", vm.estado.value.entrada)
+        vm.marcarEntrada()
+        assertNull(quieto().error)
+        val entrada = piezas().single()
+        assertEquals(TipoPieza.ENTRADA, entrada.tipo)
+        assertEquals("v2", entrada.venueId)
+        assertEquals("v2", runBlocking { dao.turnoAhora() }!!.venueId)
+        runBlocking {
+            encolador.venta(
+                quienSoy.generacion,
+                com.jaac.avoqado_campo.cola.VentaNueva("8952140000001", java.math.BigDecimal("50"), false, "v2", emptyList(), "SIM"),
+                exigirEntrada = true,
+            )
+        }
+        assertEquals(listOf(TipoPieza.ENTRADA, TipoPieza.VENTA), piezas().map { it.tipo })
     }
 
     @Test fun `el turno de otra persona no cuenta`() {
-        assertNull(refEntrada(com.jaac.avoqado_campo.cola.TurnoLocal(1, "otra", "k", null, "v1", 0L), "s1", 1_000L))
-        assertEquals(RefEntrada.PorLlave("k"), refEntrada(com.jaac.avoqado_campo.cola.TurnoLocal(1, "s1", "k", null, "v1", 0L), "s1", 1_000L))
-        assertEquals(RefEntrada.PorId("t"), refEntrada(com.jaac.avoqado_campo.cola.TurnoLocal(1, "s1", "k", "t", "v1", 0L), "s1", 1_000L))
+        assertNull(refEntrada(com.jaac.avoqado_campo.cola.TurnoLocal(1, "otra", "k", null, "v1", 0L), "s1", "v1", 1_000L))
+        assertEquals(RefEntrada.PorLlave("k"), refEntrada(com.jaac.avoqado_campo.cola.TurnoLocal(1, "s1", "k", null, "v1", 0L), "s1", "v1", 1_000L))
+        assertEquals(RefEntrada.PorId("t"), refEntrada(com.jaac.avoqado_campo.cola.TurnoLocal(1, "s1", "k", "t", "v1", 0L), "s1", "v1", 1_000L))
     }
 
     @Test fun `checar lee la generacion antes que la sesion - otra persona entre las dos no recibe la checada (H2)`() {

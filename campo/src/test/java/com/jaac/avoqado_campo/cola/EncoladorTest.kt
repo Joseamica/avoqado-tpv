@@ -43,7 +43,7 @@ class EncoladorTest {
     private lateinit var dao: PiezaDao
     private val almacen = AlmacenEnMemoria()
     private lateinit var quienSoy: QuienSoy
-    private val ahora = Instant.parse("2026-11-10T18:00:00Z").toEpochMilli()
+    private var ahora = Instant.parse("2026-11-10T18:00:00Z").toEpochMilli()
     private val reloj = RelojAnclado(almacen, ahoraDelCelular = { ahora }, transcurrido = { 0L }, arranque = { 1 })
     private lateinit var dirCola: File
     private lateinit var encolador: Encolador
@@ -62,7 +62,10 @@ class EncoladorTest {
         encolador = nuevoEncolador()
     }
 
-    @After fun tearDown() = db.close()
+    @After fun tearDown() {
+        com.jaac.avoqado_campo.checada.recordarReglaDeSalida(null, null)
+        db.close()
+    }
 
     private fun nuevoEncolador() = Encolador(dao, quienSoy, reloj, SecuenciaDeCaptura(almacen), dirCola, env = "dev")
 
@@ -127,6 +130,80 @@ class EncoladorTest {
         assertEquals(listOf(venta.huella), dao.huellasPorSubir())
         assertEquals(llave, dao.ventaConSerieEnCola("89521400001")?.llave)
         assertEquals(2, dao.archivosVivos().size)
+    }
+
+    // ---------- 0.6.0 · Codex r3 #1 y #2: sin entrada no se vende, decidido dentro de la transacción de la venta ----------
+
+    private suspend fun entradaSinRed(abiertoAt: Long = ahora - 60_000, estado: String = EstadoPieza.PENDIENTE): String {
+        val llave = "entrada-1"
+        dao.insertar(Pieza(tipo = TipoPieza.ENTRADA, llave = llave, staffId = "s1", venueId = "v1", cuerpoJson = "{}", estado = estado, creadaAt = abiertoAt, resumen = "Entrada"))
+        dao.guardarTurno(TurnoLocal(staffId = "s1", llaveEntrada = llave, timeEntryId = null, venueId = "v1", abiertoAt = abiertoAt))
+        return llave
+    }
+
+    private suspend fun ventaSinEntrada(v: VentaNueva) {
+        try {
+            encolador.venta(quienSoy.generacion, v, exigirEntrada = true)
+            fail("debió pedir la entrada")
+        } catch (_: SinEntrada) {
+        }
+        assertTrue("no se escribió nada", dao.pendientesDeVer().first().none { it.tipo == TipoPieza.VENTA || it.tipo == TipoPieza.EVIDENCIA })
+        v.evidencias.forEach { assertTrue("las fotos siguen para reintentar", File(it.archivoFoto).isFile) }
+    }
+
+    @Test fun `la venta con entrada sin red (por subir) se guarda`() = runBlocking {
+        entradaSinRed()
+        encolador.venta(quienSoy.generacion, ventaNueva(), exigirEntrada = true)
+        assertEquals(1, dao.pendientesDeVer().first().count { it.tipo == TipoPieza.VENTA })
+    }
+
+    @Test fun `sin entrada no se escribe la venta`() = runBlocking { ventaSinEntrada(ventaNueva()) }
+
+    @Test fun `con la entrada que el servidor rechazo no se escribe la venta, tambien con un Encolador nuevo`() = runBlocking {
+        entradaSinRed(estado = EstadoPieza.RECHAZADA)
+        ventaSinEntrada(ventaNueva())
+        encolador = nuevoEncolador() // como al matar y reabrir la app: todo sale de Room
+        ventaSinEntrada(ventaNueva())
+    }
+
+    @Test fun `la venta en otra sucursal que la de la entrada no se escribe (Codex r4 #3)`() = runBlocking {
+        entradaSinRed()
+        ventaSinEntrada(ventaNueva().copy(venueId = "v2"))
+    }
+
+    // Codex r4 #2: «Usar esa entrada» tras YA_TIENE_ENTRADA: la hora del turno es la de la entrada del SERVIDOR.
+    @Test fun `usarEntrada guarda la clockInTime que mando el servidor como hora de la entrada`() = runBlocking {
+        val e = dao.porLlave(encolador.entrada(quienSoy.generacion, checada()))!!
+        dao.actualizar(
+            e.copy(
+                estado = EstadoPieza.RECHAZADA, rechazoCode = "YA_TIENE_ENTRADA",
+                rechazoDatosJson = """{"timeEntryId":"te9","venueId":"v1","clockInTime":"2026-11-10T14:45:00.000Z"}""",
+            ),
+        )
+        encolador.usarEntrada(quienSoy.generacion, e.id, "te9", "v1")
+        val t = dao.turnoAhora()!!
+        assertEquals("te9", t.timeEntryId)
+        assertEquals(Instant.parse("2026-11-10T14:45:00Z").toEpochMilli(), t.abiertoAt)
+    }
+
+    @Test fun `usarEntrada sin clockInTime en el detalle deja la hora como estaba`() = runBlocking {
+        val e = dao.porLlave(encolador.entrada(quienSoy.generacion, checada()))!!
+        dao.actualizar(e.copy(estado = EstadoPieza.RECHAZADA, rechazoCode = "YA_TIENE_ENTRADA", rechazoDatosJson = """{"timeEntryId":"te9"}"""))
+        encolador.usarEntrada(quienSoy.generacion, e.id, "te9", "v1")
+        assertEquals(ahora, dao.turnoAhora()!!.abiertoAt)
+    }
+
+    @Test fun `la hora que fecha la venta es la que decide si el turno ya vencio`() = runBlocking {
+        com.jaac.avoqado_campo.checada.recordarReglaDeSalida(
+            "v1", com.jaac.avoqado_campo.checada.ReglaDeSalida(corte = java.time.LocalTime.of(22, 0), zona = java.time.ZoneOffset.UTC),
+        )
+        entradaSinRed(abiertoAt = Instant.parse("2026-11-10T12:00:00Z").toEpochMilli())
+        // Corte 22:00 + el margen de 3 h del celular (founder, «B»): a la 01:00 ya no.
+        ahora = Instant.parse("2026-11-11T01:00:00Z").toEpochMilli()
+        ventaSinEntrada(ventaNueva())
+        ahora = Instant.parse("2026-11-11T00:59:59Z").toEpochMilli()
+        encolador.venta(quienSoy.generacion, ventaNueva(), exigirEntrada = true)
+        assertTrue(dao.pendientesDeVer().first().single { it.tipo == TipoPieza.VENTA }.cuerpoJson!!.contains("2026-11-11T00:59:59Z"))
     }
 
     @Test fun `precioVisto de caja sale 0 punto 00`() = runBlocking {
@@ -196,6 +273,7 @@ class EncoladorTest {
         assertEquals("PENDIENTE", p.estado)
         assertEquals(nueva, json(p.cuerpoJson)["llave"].asString)
         assertTrue(p.cuerpoJson!!.contains("\"precioVisto\":150.00,"))
+        assertEquals("la hora de la venta no cambia (Codex r4 #8)", json(dao.porLlave(vieja)!!.cuerpoJson)["ocurrioAt"], json(p.cuerpoJson)["ocurrioAt"])
         assertEquals(huella("VENTA", "v1", p.cuerpoJson!!), p.huella)
         assertEquals(listOf(nueva, nueva), dao.pendientesDeVer().first().filter { it.tipo == "EVIDENCIA" }.map { it.dependeDe })
     }

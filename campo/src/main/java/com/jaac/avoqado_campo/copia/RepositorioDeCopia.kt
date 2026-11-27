@@ -5,6 +5,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonElement
 import com.google.gson.JsonParser
 import com.jaac.avoqado_campo.BuildConfig
+import com.jaac.avoqado_campo.checada.recordarReglaDeSalida
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.cola.TipoPieza
 import com.jaac.avoqado_campo.cola.normalizarSerie
@@ -26,6 +27,12 @@ import java.io.File
  * bajo UN candado propio (R8-1), que también toma el borrado del celular ([borrar]); y nadie escribe si el celular se está
  * borrando o cambió de activación mientras bajaba (R7-1, I2).
  */
+/**
+ * La copia más vieja que esta versión todavía lee (Codex r3 #5): la de la 0.5.0 (código 5) trae lo mismo sin los campos nuevos,
+ * que son opcionales; tirarla al actualizar dejaba sin «Mis ventas» ni escáner a quien abría la 0.6.0 sin señal.
+ */
+private const val LEIBLE_DESDE = 5
+
 class RepositorioDeCopia(
     context: Context,
     private val api: CampoApi,
@@ -38,18 +45,18 @@ class RepositorioDeCopia(
     private val gson = Gson()
     private val candado = Mutex()
 
-    private val _copia = MutableStateFlow(leerArchivo()?.takeIf { vigente(it) })
+    private val _copia = MutableStateFlow(leerArchivo()?.takeIf { vigente(it) }.also(::recordarRegla))
     val copia: StateFlow<Copia?> = _copia
 
-    /** La copia vigente; la de otra versión de la app, otra activación u otra sucursal se borra y da null. */
+    /** La copia vigente; la de una versión que no se lee, otra activación u otra sucursal se borra y da null. */
     suspend fun leer(): Copia? = candado.withLock {
         val c = leerArchivo()
         if (c == null || !vigente(c)) {
             archivo.delete()
-            _copia.value = null
+            fijar(null)
             return@withLock null
         }
-        _copia.value = c
+        fijar(c)
         c
     }
 
@@ -92,7 +99,7 @@ class RepositorioDeCopia(
     /** Lo llama el borrado del celular (R8-1, R9-1): archivo y `StateFlow`, bajo el mismo candado que las escrituras. */
     suspend fun borrar() = candado.withLock {
         archivo.delete()
-        _copia.value = null
+        fijar(null)
     }
 
     /** I2 + R7-1, y que la sesión siga en esa sucursal (un `entrar` a otra a media descarga no se queda con la de antes). */
@@ -103,8 +110,16 @@ class RepositorioDeCopia(
         val tmp = File(archivo.parentFile, "copia.json.tmp")
         tmp.writeText(gson.toJson(c))
         if (!tmp.renameTo(archivo)) { archivo.delete(); tmp.renameTo(archivo) }
+        fijar(c)
+    }
+
+    /** La copia y la regla de la salida olvidada de su sucursal van juntas: sin red se usa la última que bajó (0.6.0). */
+    private fun fijar(c: Copia?) {
+        recordarRegla(c)
         _copia.value = c
     }
+
+    private fun recordarRegla(c: Copia?) = recordarReglaDeSalida(c?.venueId, c?.config?.reglaDeSalida())
 
     private fun leerArchivo(): Copia? =
         if (!archivo.exists()) null else runCatching { gson.fromJson(archivo.readText(), Copia::class.java) }.getOrNull()
@@ -112,7 +127,7 @@ class RepositorioDeCopia(
     // Gson no respeta los no-nulos de Kotlin: un archivo a medias trae null donde el tipo dice que no.
     @Suppress("SENSELESS_COMPARISON")
     private fun vigente(c: Copia, yo: Instantanea = quienSoy.instantanea()) = c.sims != null && c.config != null &&
-        c.versionApp == BuildConfig.VERSION_CODE && c.generacion == yo.generacion && c.venueId == yo.sesion?.venueId
+        c.versionApp in LEIBLE_DESDE..BuildConfig.VERSION_CODE && c.generacion == yo.generacion && c.venueId == yo.sesion?.venueId
 
     /** Serie normalizada → marca, de las ventas y custodias que siguen por subir (las HECHA ya están en `mis-sims`). */
     private suspend fun marcasDeLaCola(): Map<String, String> {

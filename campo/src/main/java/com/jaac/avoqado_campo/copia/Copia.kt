@@ -1,6 +1,8 @@
 package com.jaac.avoqado_campo.copia
 
 import com.google.gson.JsonParser
+import com.jaac.avoqado_campo.checada.ReglaDeSalida
+import com.jaac.avoqado_campo.checada.reglaDe
 import com.jaac.avoqado_campo.cola.EstadoPieza
 import com.jaac.avoqado_campo.cola.Pieza
 import com.jaac.avoqado_campo.cola.TipoPieza
@@ -11,7 +13,7 @@ import com.jaac.avoqado_campo.red.RespuestaModulos
 
 /**
  * Lo que el celular necesita para vender sin señal: las SIMs de la persona y la configuración de la sucursal. Es de UNA
- * activación ([generacion]), de UNA sucursal y de UNA versión de la app; si no coincide, se tira (R7-1).
+ * activación ([generacion]), de UNA sucursal y de una versión que esta app sabe leer (desde la 0.5.0); si no, se tira (R7-1).
  */
 data class Copia(
     val versionApp: Int,
@@ -41,6 +43,10 @@ data class SimEnCopia(
     val paymentId: String?,
     val rejectionReasons: List<String>,
     val reviewNotes: String?,
+    /** 0.6.0: cuándo se marcó vendida en el SERVIDOR (ISO; en una venta sin red, la hora de subida). null = copia vieja o sin el campo. */
+    val soldAt: String? = null,
+    /** 0.6.0 (Codex r3 #8): la hora real de la venta (ISO, la de su verificación). Manda sobre [soldAt] para el mes. */
+    val saleAt: String? = null,
 )
 
 /** Lo que el celular ya hizo con una SIM y todavía no sube (vive mientras su pieza siga por subir). */
@@ -61,7 +67,15 @@ data class ConfigDeSucursal(
     val fotoSalida: Boolean,
     val gpsSalida: Boolean,
     val modulo: Boolean,
-)
+    // 0.6.0: la salida olvidada de la sucursal (`asistencia` de `GET tpv/modules`). Nulos (copia vieja, SERVIDOR sin el
+    // campo): la regla de hoy. Nulables a propósito: Gson no pone los valores por defecto de Kotlin.
+    val salidaOlvidadaEnabled: Boolean? = null,
+    val salidaOlvidadaCorte: String? = null,
+    /** La zona de la sucursal («America/Mexico_City»), con la que el SERVIDOR decide el límite (Codex r3 #3). */
+    val zonaDeLaSucursal: String? = null,
+) {
+    fun reglaDeSalida(): ReglaDeSalida = reglaDe(salidaOlvidadaEnabled, salidaOlvidadaCorte, zonaDeLaSucursal)
+}
 
 const val MODULO_DE_SIMS = "SERIALIZED_INVENTORY"
 
@@ -78,6 +92,9 @@ fun configDe(r: RespuestaModulos): ConfigDeSucursal {
         fotoSalida = c?.attendance?.requireClockOutPhoto == true,
         gpsSalida = c?.attendance?.requireClockOutGps == true,
         modulo = modulo,
+        salidaOlvidadaEnabled = r.asistencia?.salidaOlvidadaEnabled,
+        salidaOlvidadaCorte = r.asistencia?.salidaOlvidadaCorte,
+        zonaDeLaSucursal = r.asistencia?.timezone,
     )
 }
 
@@ -86,7 +103,8 @@ fun MiSimDto.aSim(localmente: String?) = SimEnCopia(
     serialNumber = serialNumber!!, custodyState = custodyState!!, custodyVersion = custodyVersion ?: 0,
     categoria = category?.name.orEmpty(), precio = category?.suggestedPrice, localmente = localmente,
     verificationStatus = verificationStatus, verificationId = verificationId, paymentId = paymentId,
-    rejectionReasons = rejectionReasons.orEmpty(), reviewNotes = reviewNotes,
+    rejectionReasons = rejectionReasons.orEmpty(), reviewNotes = reviewNotes, soldAt = soldAt,
+    saleAt = saleAt,
 )
 
 /** D1 (Codex r3): lo último que ESTE celular hizo con una SIM y que la lista todavía no trae. */
@@ -165,7 +183,7 @@ fun loDelCelular(c: Copia, piezas: List<Pieza>): Map<String, LoDelCelular> {
 private val POR_SUBIR = setOf(EstadoPieza.PENDIENTE, EstadoPieza.RETENIDA, EstadoPieza.RECHAZADA)
 private const val EN_PARTE = "CUSTODIA_EN_PARTE"
 
-private fun serieDeVenta(cuerpo: String?): String? = runCatching {
+internal fun serieDeVenta(cuerpo: String?): String? = runCatching {
     JsonParser.parseString(cuerpo).asJsonObject["serialNumber"]?.asString?.let(::normalizarSerie)
 }.getOrNull()
 

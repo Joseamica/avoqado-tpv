@@ -1,5 +1,6 @@
 package com.jaac.avoqado_campo.venta
 
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -45,6 +46,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_campo.copia.ConfigDeSucursal
 import com.jaac.avoqado_campo.copia.SimEnCopia
+import com.jaac.avoqado_campo.fotos.BloqueoGuardandoFoto
+import com.jaac.avoqado_campo.fotos.BotonDeGaleria
 import com.jaac.avoqado_campo.fotos.Camara
 import com.jaac.avoqado_campo.ui.BotonPrincipal
 import com.jaac.avoqado_campo.ui.BotonSecundario
@@ -90,6 +93,7 @@ fun VentaScreen(vm: VentaViewModel, obligatoria: Boolean, onRegresar: () -> Unit
                 escanear = { escaneando = true }, buscar = vm::alEscanear, foto = { fotoDe = it }, numero = vm::alEscribirNumero,
                 precio = vm::alEscribirPrecio, portabilidad = vm::alCambiarPortabilidad, registrar = vm::registrar,
                 otra = vm::venderOtra, regresar = onRegresar, pendientes = onPendientes,
+                galeria = vm::alElegirDeGaleria,
             ),
             obligatoria,
         )
@@ -100,6 +104,8 @@ class AccionesDeVenta(
     val escanear: () -> Unit, val buscar: (String) -> Unit, val foto: (Slot) -> Unit, val numero: (Slot, String) -> Unit,
     val precio: (String) -> Unit, val portabilidad: (Boolean) -> Unit, val registrar: () -> Unit, val otra: () -> Unit,
     val regresar: () -> Unit, val pendientes: () -> Unit = {},
+    /** La imagen elegida de la galería; la copia el ViewModel (0.6.0, Codex r5 #4). */
+    val galeria: (Slot, Uri) -> Unit = { _, _ -> },
 )
 
 @Composable
@@ -107,6 +113,11 @@ fun VentaContenido(e: EstadoVenta, a: AccionesDeVenta, obligatoria: Boolean = fa
     if (e.guardada) return VentaGuardada(e, a, obligatoria)
     val articulo = e.config?.etiquetaArticulo ?: "SIM"
     val sim = e.sim
+    Box { PantallaDeVenta(e, a, obligatoria, articulo, sim); BloqueoGuardandoFoto(e.copiandoFoto) }
+}
+
+@Composable
+private fun PantallaDeVenta(e: EstadoVenta, a: AccionesDeVenta, obligatoria: Boolean, articulo: String, sim: SimEnCopia?) {
     PantallaCampo(
         "Vender $articulo", onRegresar = a.regresar, regresarHabilitado = !e.registrando,
         abajo = {
@@ -151,7 +162,7 @@ fun VentaContenido(e: EstadoVenta, a: AccionesDeVenta, obligatoria: Boolean = fa
 @Composable
 private fun Buscar(e: EstadoVenta, a: AccionesDeVenta, bloqueado: Boolean) {
     var escrito by remember { mutableStateOf("") }
-    val puede = !bloqueado && !e.buscando && !e.registrando
+    val puede = !bloqueado && !e.buscando && !e.registrando && !e.copiandoFoto
     val grande = e.sim == null
     Box(
         Modifier.fillMaxWidth().height(if (grande) 132.dp else 64.dp).clip(MaterialTheme.shapes.medium)
@@ -179,7 +190,7 @@ private fun Buscar(e: EstadoVenta, a: AccionesDeVenta, bloqueado: Boolean) {
             escrito, { escrito = it }, Modifier.weight(1f), singleLine = true, shape = MaterialTheme.shapes.small,
             label = { Text("O escribe el ${e.config?.etiquetaCodigo ?: "ICCID"}") },
         )
-        BotonSecundario("Buscar", { a.buscar(escrito) }, enabled = !bloqueado && escrito.isNotBlank() && !e.buscando, lleno = false)
+        BotonSecundario("Buscar", { a.buscar(escrito) }, enabled = puede && escrito.isNotBlank(), lleno = false)
     }
 }
 
@@ -230,7 +241,10 @@ private fun Evidencia(s: Slot, e: EstadoVenta, a: AccionesDeVenta) {
             )
         }
         if (lista) Text("📷 Foto ✓", color = ColoresCampo.VerdeTexto, fontWeight = FontWeight.SemiBold)
+        // El aviso de una copia de galería que falló, junto a ESA foto: arriba puede quedar fuera de la vista (Codex r7 #2).
+        if (e.fotoFallida == s) e.error?.let { Recuadro(it, Tono.ERROR) }
         BotonSecundario(if (lista) "Tomar otra foto" else "📷 Tomar la foto", { a.foto(s) }, enabled = !e.registrando)
+        BotonDeGaleria(enabled = !e.registrando) { a.galeria(s, it) }
     }
 }
 

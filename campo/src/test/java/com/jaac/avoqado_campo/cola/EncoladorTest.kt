@@ -166,16 +166,44 @@ class EncoladorTest {
         ventaSinEntrada(ventaNueva())
     }
 
+    @Test fun `la venta en otra sucursal que la de la entrada no se escribe (Codex r4 #3)`() = runBlocking {
+        entradaSinRed()
+        ventaSinEntrada(ventaNueva().copy(venueId = "v2"))
+    }
+
+    // Codex r4 #2: «Usar esa entrada» tras YA_TIENE_ENTRADA: la hora del turno es la de la entrada del SERVIDOR.
+    @Test fun `usarEntrada guarda la clockInTime que mando el servidor como hora de la entrada`() = runBlocking {
+        val e = dao.porLlave(encolador.entrada(quienSoy.generacion, checada()))!!
+        dao.actualizar(
+            e.copy(
+                estado = EstadoPieza.RECHAZADA, rechazoCode = "YA_TIENE_ENTRADA",
+                rechazoDatosJson = """{"timeEntryId":"te9","venueId":"v1","clockInTime":"2026-11-10T14:45:00.000Z"}""",
+            ),
+        )
+        encolador.usarEntrada(quienSoy.generacion, e.id, "te9", "v1")
+        val t = dao.turnoAhora()!!
+        assertEquals("te9", t.timeEntryId)
+        assertEquals(Instant.parse("2026-11-10T14:45:00Z").toEpochMilli(), t.abiertoAt)
+    }
+
+    @Test fun `usarEntrada sin clockInTime en el detalle deja la hora como estaba`() = runBlocking {
+        val e = dao.porLlave(encolador.entrada(quienSoy.generacion, checada()))!!
+        dao.actualizar(e.copy(estado = EstadoPieza.RECHAZADA, rechazoCode = "YA_TIENE_ENTRADA", rechazoDatosJson = """{"timeEntryId":"te9"}"""))
+        encolador.usarEntrada(quienSoy.generacion, e.id, "te9", "v1")
+        assertEquals(ahora, dao.turnoAhora()!!.abiertoAt)
+    }
+
     @Test fun `la hora que fecha la venta es la que decide si el turno ya vencio`() = runBlocking {
         com.jaac.avoqado_campo.checada.recordarReglaDeSalida(
             "v1", com.jaac.avoqado_campo.checada.ReglaDeSalida(corte = java.time.LocalTime.of(22, 0), zona = java.time.ZoneOffset.UTC),
         )
         entradaSinRed(abiertoAt = Instant.parse("2026-11-10T12:00:00Z").toEpochMilli())
-        ahora = Instant.parse("2026-11-10T22:00:00Z").toEpochMilli() // justo el corte: ya no
+        // Corte 22:00 + el margen de 3 h del celular (founder, «B»): a la 01:00 ya no.
+        ahora = Instant.parse("2026-11-11T01:00:00Z").toEpochMilli()
         ventaSinEntrada(ventaNueva())
-        ahora = Instant.parse("2026-11-10T21:59:59Z").toEpochMilli()
+        ahora = Instant.parse("2026-11-11T00:59:59Z").toEpochMilli()
         encolador.venta(quienSoy.generacion, ventaNueva(), exigirEntrada = true)
-        assertTrue(dao.pendientesDeVer().first().single { it.tipo == TipoPieza.VENTA }.cuerpoJson!!.contains("2026-11-10T21:59:59Z"))
+        assertTrue(dao.pendientesDeVer().first().single { it.tipo == TipoPieza.VENTA }.cuerpoJson!!.contains("2026-11-11T00:59:59Z"))
     }
 
     @Test fun `precioVisto de caja sale 0 punto 00`() = runBlocking {
@@ -245,6 +273,7 @@ class EncoladorTest {
         assertEquals("PENDIENTE", p.estado)
         assertEquals(nueva, json(p.cuerpoJson)["llave"].asString)
         assertTrue(p.cuerpoJson!!.contains("\"precioVisto\":150.00,"))
+        assertEquals("la hora de la venta no cambia (Codex r4 #8)", json(dao.porLlave(vieja)!!.cuerpoJson)["ocurrioAt"], json(p.cuerpoJson)["ocurrioAt"])
         assertEquals(huella("VENTA", "v1", p.cuerpoJson!!), p.huella)
         assertEquals(listOf(nueva, nueva), dao.pendientesDeVer().first().filter { it.tipo == "EVIDENCIA" }.map { it.dependeDe })
     }

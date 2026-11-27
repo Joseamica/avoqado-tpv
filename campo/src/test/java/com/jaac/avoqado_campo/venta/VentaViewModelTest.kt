@@ -445,6 +445,24 @@ class VentaViewModelTest {
         assertEquals("/tmp/v2.jpg", venta.captured.evidencias.single().archivoFoto)
     }
 
+    // Codex r4 #7: dos copias a la vez (vinculación y portabilidad): «Registrar» espera a que terminen las dos.
+    @Test fun `con dos fotos de galeria copiandose, terminar una no deja registrar`() {
+        val v = vm(copiaCon(sim()))
+        v.alEscanear(serie)
+        v.listaParaRegistrar()
+        v.alCopiarFoto(true)
+        v.alCopiarFoto(true)
+        v.alCopiarFoto(false)
+        assertEquals(ESPERA_LA_FOTO, v.estado.value.falta)
+        v.registrar()
+        coVerify(exactly = 0) { encolador.venta(any(), any(), any()) }
+        v.alCopiarFoto(false)
+        assertNull(v.estado.value.falta)
+        v.alCopiarFoto(false) // un fin de más (la pantalla se cerró a media copia) no lo deja en negativo
+        v.alCopiarFoto(true)
+        assertEquals(ESPERA_LA_FOTO, v.estado.value.falta)
+    }
+
     @Test fun `registrar lee la generacion antes que la sesion - otra persona entre las dos no recibe la venta (H2)`() {
         val v = vm(copiaCon(sim()))
         // Como el Encolador (EncoladorTest H2): con una generación que ya no es la vigente no escribe nada.

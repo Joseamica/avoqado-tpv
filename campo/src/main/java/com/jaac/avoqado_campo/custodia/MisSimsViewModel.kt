@@ -295,8 +295,9 @@ class MisSimsViewModel @Inject constructor(
         val lo = c?.let { loDelCelular(it, conSims) }.orEmpty()
         // 0.6.0: el mes de una venta es su `saleAt` (la hora real), si no su `soldAt`, si no la hora local de la venta del celular
         // (la última, como `loDelCelular`): también la que la lista todavía no trae.
+        // Codex r4 #8: la hora es la del cuerpo (`ocurrioAt`, la del toque): corregir el precio recrea la fila con otra fecha.
         val horaDeVenta = conSims.filter { it.tipo == TipoPieza.VENTA }.sortedBy { it.id }
-            .mapNotNull { p -> serieDeVenta(p.cuerpoJson)?.let { it to p.creadaAt } }.toMap()
+            .mapNotNull { p -> serieDeVenta(p.cuerpoJson)?.let { it to (ocurrioAt(p.cuerpoJson) ?: p.creadaAt) } }.toMap()
         val filas = c?.sims.orEmpty().mapNotNull { s ->
             val serie = normalizarSerie(s.serialNumber)
             val l = lo[serie]?.takeIf { s.custodyState != "SOLD" }
@@ -340,6 +341,8 @@ class MisSimsViewModel @Inject constructor(
         LoDelCelular.VENTA_NO_SUBIO -> FilaSim(s, EstadoFila.VENTA_POR_SUBIR, NO_SUBIO)
         else -> FilaSim(s, EstadoFila.VENTA_POR_SUBIR, "Por subir")
     }
+
+    private fun ocurrioAt(cuerpo: String?): Long? = fechaDe(campo(cuerpo, "ocurrioAt"))
 
     private fun fechaDe(iso: String?): Long? = iso?.let { runCatching { OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull() }
 

@@ -58,8 +58,11 @@ data class EstadoVenta(
     val buscando: Boolean = false,
     val registrando: Boolean = false,
     val guardada: Boolean = false,
-    /** Codex r3 #7: la foto de la galería se está copiando; «Registrar» espera (si no, saldría la anterior). */
-    val copiandoFoto: Boolean = false,
+    /**
+     * Codex r3 #7 y r4 #7: cuántas fotos de la galería se están copiando (pueden ser la de vinculación y la de portabilidad a
+     * la vez); «Registrar» espera a que terminen todas (si no, saldría la anterior).
+     */
+    val copiandoFotos: Int = 0,
 ) {
     val slots: List<Slot> get() = if (portabilidad) listOf(Slot.VINCULACION, Slot.PORTABILIDAD) else listOf(Slot.VINCULACION)
 
@@ -70,7 +73,7 @@ data class EstadoVenta(
     val falta: String?
         get() = when {
             sim == null -> "Escanea una SIM."
-            copiandoFoto -> ESPERA_LA_FOTO
+            copiandoFotos > 0 -> ESPERA_LA_FOTO
             precio == null -> "Escribe el importe que cobraste (pon 0 si fue sin costo; hasta 2 decimales)."
             else -> slots.firstNotNullOfOrNull { s ->
                 val nombre = if (s == Slot.VINCULACION) "vinculación" else "portabilidad"
@@ -146,7 +149,8 @@ class VentaViewModel @Inject constructor(
     }
 
     /** Lo avisa «Elegir de la galería» al empezar y al terminar de copiar (Codex r3 #7). */
-    fun alCopiarFoto(copiando: Boolean) = _estado.update { it.copy(copiandoFoto = copiando) }
+    fun alCopiarFoto(copiando: Boolean) =
+        _estado.update { it.copy(copiandoFotos = (it.copiandoFotos + if (copiando) 1 else -1).coerceAtLeast(0)) }
 
     fun alEscribirNumero(slot: Slot, n: String) = cambiar { copy(numeros = numeros + (slot to n.filter(Char::isDigit).take(10))) }
 

@@ -6,9 +6,11 @@ import com.jaac.avoqado_campo.checada.turnoVigente
 import com.jaac.avoqado_campo.identidad.HoraDeCampo
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.identidad.RelojAnclado
+import com.jaac.avoqado_campo.red.objetoJson
 import java.io.File
 import java.io.IOException
 import java.math.BigDecimal
+import java.time.Instant
 import java.util.UUID
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -84,7 +86,7 @@ class Encolador(
             if (exigirEntrada) {
                 val t = dao.turnoAhora()
                 val suEntrada = t?.llaveEntrada?.takeIf { t.timeEntryId == null }?.let { dao.porLlave(it)?.estado }
-                if (!puedeVender(t, staffId, hora.epochMs, suEntrada)) throw SinEntrada()
+                if (!puedeVender(t, staffId, v.venueId, hora.epochMs, suEntrada)) throw SinEntrada()
             }
             val cuerpo = CuerpoVenta(llave, normalizarSerie(v.serialNumber), v.precio.setScale(2), hora.iso, hora.origen, v.isPortabilidad)
             dao.insertar(pieza(TipoPieza.VENTA, llave, staffId, v.venueId, cuerpo, hora, v.resumen))
@@ -321,7 +323,13 @@ class Encolador(
                 dao.insertar(s.renacida(llave, hora).copy(cuerpoJson = texto, huella = huella(s.tipo, s.venueId, texto), dependeDe = null))
             }
             val t = dao.turnoAhora()
-            if (t?.llaveEntrada == e.llave) dao.guardarTurno(t.copy(llaveEntrada = null, timeEntryId = timeEntryId))
+            // Codex r4 #2: la hora del turno es la de la entrada que ya tenía el SERVIDOR (`clockInTime` del detalle del 409),
+            // no la del intento rechazado; sin ella, la de antes.
+            val delServidor = objetoJson(e.rechazoDatosJson)?.get("clockInTime")?.takeIf { it.isJsonPrimitive }
+                ?.let { runCatching { Instant.parse(it.asString).toEpochMilli() }.getOrNull() }
+            if (t?.llaveEntrada == e.llave) {
+                dao.guardarTurno(t.copy(llaveEntrada = null, timeEntryId = timeEntryId, abiertoAt = delServidor ?: t.abiertoAt))
+            }
         }
     }
 

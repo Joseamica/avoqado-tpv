@@ -125,7 +125,7 @@ fun Navegacion(
                             entradaAt = horaDeEntrada(t, yo.staffId),
                             enCustodia = cuantasEnCustodia(c, yo.venueIdDeLaSesion, conSimsS.value), articulo = c?.config?.etiquetaArticulo ?: "SIM",
                             porRevisar = cuantasPorRevisar(c, yo.venueIdDeLaSesion),
-                            puedeVender = puedeVender(t, yo.staffId, ahora, suEntrada),
+                            puedeVender = puedeVender(t, yo.staffId, yo.venueIdDeLaSesion, ahora, suEntrada),
                         ),
                         AccionesDeInicio(
                             vender = { nav.navigate("venta") }, sims = { nav.navigate("sims") }, checar = { nav.navigate("checada") },

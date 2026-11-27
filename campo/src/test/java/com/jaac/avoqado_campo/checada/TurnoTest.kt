@@ -53,13 +53,13 @@ class TurnoTest {
         assertEquals(ms("2026-11-03T22:00", tijuana), limiteDelTurno(entrada, tijuana, a22))
     }
 
-    // Codex r3 #3 (founder: «después de las 10 pm queda como olvidada»): con hora propia no hay margen.
-    @Test fun `con hora de corte propia el celular no da margen - vencido el corte ya no se vende`() {
-        assertEquals(ms("2026-11-03T22:00"), limiteEnElCelular(ms("2026-11-03T10:00"), mx, a22))
+    // Founder, 26-nov, «B» (Codex r4 #1): la hora exacta la aplica el SERVIDOR; el celular da su margen de 3 h también aquí.
+    @Test fun `con hora de corte propia el celular tambien da su margen de 3 h - con 22_00 se vende hasta la 01_00`() {
+        assertEquals(ms("2026-11-04T01:00"), limiteEnElCelular(ms("2026-11-03T10:00"), mx, a22))
         val t = TurnoLocal(1, "s1", "k", null, "v1", ms("2026-11-03T10:00"))
         val a22mx = a22.copy(zona = mx) // con la zona de la sucursal, no depende de la del celular de la prueba
-        assertTrue(tieneTurno(t, "s1", ms("2026-11-03T21:59"), regla = a22mx))
-        assertFalse(tieneTurno(t, "s1", ms("2026-11-03T22:00"), regla = a22mx))
+        assertTrue(tieneTurno(t, "s1", ms("2026-11-04T00:59"), regla = a22mx))
+        assertFalse(tieneTurno(t, "s1", ms("2026-11-04T01:00"), regla = a22mx))
     }
 
     @Test fun `con la regla de fabrica el margen de 3 h sigue como en la 0_5_0`() {
@@ -71,7 +71,7 @@ class TurnoTest {
         val tijuana22 = a22.copy(zona = tijuana)
         val entrada = ms("2026-11-03T19:30", tijuana) // 21:30 en CDMX
         assertEquals("vence esa noche, a las 22:00 de Tijuana", ms("2026-11-03T22:00", tijuana), limiteDelTurno(entrada, mx, tijuana22))
-        assertEquals(ms("2026-11-03T22:00", tijuana), limiteEnElCelular(entrada, mx, tijuana22))
+        assertEquals("más el margen de 3 h", ms("2026-11-04T01:00", tijuana), limiteEnElCelular(entrada, mx, tijuana22))
         assertEquals("sin zona de la sucursal: la del celular", ms("2026-11-04T22:00", mx), limiteDelTurno(entrada, mx, a22))
     }
 
@@ -103,8 +103,8 @@ class TurnoTest {
         val a1 = ms("2026-11-04T01:00")
         assertTrue("sin regla guardada: la de hoy (04:00 + 3 h)", turnoVigente(t, a1, mx))
         recordarReglaDeSalida("v1", a22)
-        assertTrue("con 22:00: a las 21:59 sigue", turnoVigente(t, ms("2026-11-03T21:59"), mx))
-        assertFalse("con 22:00: a las 22:00 ya venció (sin margen)", turnoVigente(t, ms("2026-11-03T22:00"), mx))
+        assertTrue("con 22:00: a las 23:30 sigue (margen hasta la 01:00)", turnoVigente(t, ms("2026-11-03T23:30"), mx))
+        assertFalse("con 22:00: a la 01:00 ya venció", turnoVigente(t, a1, mx))
         recordarReglaDeSalida("v2", a22)
         assertTrue("la regla de otra sucursal no le aplica", turnoVigente(t, a1, mx))
     }
@@ -136,10 +136,19 @@ class TurnoTest {
     @Test fun `la entrada que el servidor rechazo no deja vender`() {
         val t = TurnoLocal(1, "s1", "k", null, "v1", ms("2026-11-03T10:00"))
         val ahora = ms("2026-11-03T12:00")
-        assertTrue("por subir (sin red) sí cuenta", puedeVender(t, "s1", ahora, EstadoPieza.PENDIENTE))
-        assertTrue("ya se purgó o no se encontró: cuenta", puedeVender(t, "s1", ahora, null))
-        assertFalse(puedeVender(t, "s1", ahora, EstadoPieza.RECHAZADA))
-        assertTrue("ya la confirmó el SERVIDOR (trae su id)", puedeVender(t.copy(timeEntryId = "te"), "s1", ahora, EstadoPieza.RECHAZADA))
-        assertFalse("sin turno", puedeVender(null, "s1", ahora, null))
+        assertTrue("por subir (sin red) sí cuenta", puedeVender(t, "s1", "v1", ahora, EstadoPieza.PENDIENTE))
+        assertTrue("ya se purgó o no se encontró: cuenta", puedeVender(t, "s1", "v1", ahora, null))
+        assertFalse(puedeVender(t, "s1", "v1", ahora, EstadoPieza.RECHAZADA))
+        assertTrue("ya la confirmó el SERVIDOR (trae su id)", puedeVender(t.copy(timeEntryId = "te"), "s1", "v1", ahora, EstadoPieza.RECHAZADA))
+        assertFalse("sin turno", puedeVender(null, "s1", "v1", ahora, null))
+    }
+
+    // Codex r4 #3: la entrada de una sucursal no deja vender en otra (como la salida).
+    @Test fun `la entrada de otra sucursal no deja vender aqui`() {
+        val t = TurnoLocal(1, "s1", "k", "te", "v1", ms("2026-11-03T10:00"))
+        val ahora = ms("2026-11-03T12:00")
+        assertTrue(puedeVender(t, "s1", "v1", ahora, null))
+        assertFalse(puedeVender(t, "s1", "v2", ahora, null))
+        assertFalse("sin sucursal en la sesión", puedeVender(t, "s1", null, ahora, null))
     }
 }

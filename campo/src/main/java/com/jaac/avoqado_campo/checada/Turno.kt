@@ -84,20 +84,16 @@ fun limiteDelTurno(abiertoAtMs: Long, zona: ZoneId = ZoneId.systemDefault(), reg
 }
 
 /**
- * Margen del celular sobre el límite (Codex r1 #3): el celular no conoce la zona de la sucursal ni el horario de la persona,
- * y nunca debe declarar olvidado un turno ANTES que el SERVIDOR (las zonas de México difieren hasta 2 h; un nocturno con
- * horario largo alarga el límite del SERVIDOR una hora después de su salida). Sólo con la regla de fábrica, como en la 0.5.0.
+ * Margen del celular sobre el límite (Codex r1 #3): el celular no conoce el horario de la persona (ni, sin `timezone`, la zona
+ * de la sucursal) y nunca debe declarar olvidado un turno ANTES que el SERVIDOR (un horario largo alarga su límite hasta una
+ * hora después de la salida). Founder, 26-nov, «B» (Codex r4 #1): la app sólo exige una entrada válida; la hora exacta del
+ * corte la aplica el SERVIDOR. Por eso el margen va también con hora de corte propia: con corte a las 22:00, hasta la 01:00.
  */
 private const val MARGEN_DEL_CELULAR_MS = 3 * 3_600_000L
 
-/**
- * El límite con el que el celular decide. Con la regla de fábrica, el del SERVIDOR más su margen. Con hora de corte propia,
- * el corte justo (Codex r3 #3, founder: «después de las 10 pm queda como olvidada»): vencido, no se vende.
- */
-fun limiteEnElCelular(abiertoAtMs: Long, zona: ZoneId = ZoneId.systemDefault(), regla: ReglaDeSalida = ReglaDeSalida.DE_HOY): Long {
-    val l = limiteDelTurno(abiertoAtMs, zona, regla)
-    return if (l == Long.MAX_VALUE || regla.corte != null) l else l + MARGEN_DEL_CELULAR_MS
-}
+/** El límite con el que el celular decide: el del SERVIDOR más su margen. */
+fun limiteEnElCelular(abiertoAtMs: Long, zona: ZoneId = ZoneId.systemDefault(), regla: ReglaDeSalida = ReglaDeSalida.DE_HOY): Long =
+    limiteDelTurno(abiertoAtMs, zona, regla).let { if (it == Long.MAX_VALUE) it else it + MARGEN_DEL_CELULAR_MS }
 
 /**
  * ¿El turno local sigue vivo a [ahoraMs]? Uno de un día ya terminado es «olvidado»: deja de ofrecer «Checar salida» y la
@@ -113,13 +109,15 @@ fun tieneTurno(t: TurnoLocal?, staffId: String?, ahoraMs: Long, regla: ReglaDeSa
     t != null && staffId != null && t.staffId == staffId && turnoVigente(t, ahoraMs, regla = regla)
 
 /**
- * Sin esto no se vende (0.6.0): su turno vigente y que el SERVIDOR no haya rechazado su entrada (Codex r3 #1: la entrada sin
- * red rechazada sigue en el celular, en «Ventas pendientes por subir»). [estadoDeSuEntrada]: el de la pieza de la entrada
- * (`llaveEntrada`); con `timeEntryId` el SERVIDOR ya la confirmó.
+ * Sin esto no se vende en [venueId] (0.6.0): su turno vigente, de ESA sucursal (Codex r4 #3, como la salida), y que el
+ * SERVIDOR no haya rechazado su entrada (Codex r3 #1: la entrada sin red rechazada sigue en el celular, en «Ventas pendientes
+ * por subir»). [estadoDeSuEntrada]: el de la pieza de la entrada (`llaveEntrada`); con `timeEntryId` el SERVIDOR ya la confirmó.
  */
 fun puedeVender(
-    t: TurnoLocal?, staffId: String?, ahoraMs: Long, estadoDeSuEntrada: String?, regla: ReglaDeSalida = reglaDeSalida(t?.venueId),
-): Boolean = tieneTurno(t, staffId, ahoraMs, regla) && (t?.timeEntryId != null || estadoDeSuEntrada != EstadoPieza.RECHAZADA)
+    t: TurnoLocal?, staffId: String?, venueId: String?, ahoraMs: Long, estadoDeSuEntrada: String?,
+    regla: ReglaDeSalida = reglaDeSalida(t?.venueId),
+): Boolean = tieneTurno(t, staffId, ahoraMs, regla) && venueId != null && t?.venueId == venueId &&
+    (t?.timeEntryId != null || estadoDeSuEntrada != EstadoPieza.RECHAZADA)
 
 /** El turno abierto que se quedó de un día anterior: la hora de su entrada, para decírselo a la persona; null = no hay. */
 fun turnoOlvidado(t: TurnoLocal?, staffId: String?, ahoraMs: Long, zona: ZoneId = ZoneId.systemDefault()): Long? =

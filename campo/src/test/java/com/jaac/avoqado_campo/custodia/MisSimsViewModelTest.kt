@@ -242,6 +242,18 @@ class MisSimsViewModelTest {
         assertEquals(java.time.Instant.parse("2026-11-20T18:00:00Z").toEpochMilli(), fecha("S5"))
     }
 
+    // Codex r4 #8: la venta que se corrigió de precio el 1-dic conserva su hora (la del cuerpo, 30-nov) y no cambia de mes.
+    @Test fun `la venta del celular usa la hora de su cuerpo, no la de la fila recreada por corregir el precio`() {
+        val corregida = Pieza(
+            id = 7, tipo = TipoPieza.VENTA, llave = "kv7", staffId = "s1", venueId = "v1",
+            cuerpoJson = """{"llave":"kv7","serialNumber":"S2","precioVisto":150.00,"ocurrioAt":"2026-11-30T23:58:00Z"}""",
+            estado = EstadoPieza.HECHA, resultadoJson = conPago, creadaAt = java.time.Instant.parse("2026-12-01T10:00:00Z").toEpochMilli(), resumen = "",
+        )
+        cola.value = listOf(corregida)
+        ponerCopia(sim("S2", "PROMOTER_HELD"), yaLlegadas = emptyList())
+        assertEquals(java.time.Instant.parse("2026-11-30T23:58:00Z").toEpochMilli(), vm().estado.value.exitosas.single().fecha)
+    }
+
     // Codex r3 #7: mientras la foto de la galería se copia, «Enviar» no sale con la foto anterior.
     @Test fun `mientras se copia la foto de la galeria no se envia la correccion`() {
         ponerCopia(sim("S1", "SOLD", verificacion = "FAILED"))

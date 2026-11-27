@@ -194,6 +194,14 @@ class LedgerApprovalRecoveryRoomTest {
         assertThat(pasadas).isAtMost(2)
     }
 
+    /** 🔴 Codex d5-minimo código r4 #2: el orden por último toque es sólo de la PAX; la Nexgo sigue por antigüedad, como hoy. */
+    @Test fun `D5 minimo · la Nexgo conserva su orden por antiguedad`() = runTest {
+        dao.insert(angelPay("vieja").copy(state = "REGISTRO_FALLIDO", verifyAttempts = 1, leaseUntil = now - 60_000L,
+            createdAt = now - 3_600_000L, updatedAt = now - 3_600_000L))
+        repeat(50) { i -> dao.insert(angelPay("nueva-$i").copy(createdAt = now - 180_000L, updatedAt = now - 180_000L)) }
+        assertThat(dao.getApprovalRecoveryCandidates("venue", now - LedgerApprovalRecovery.ESPERA_MS, now).first().attemptId).isEqualTo("vieja")
+    }
+
     /** 🔴 Codex d5-minimo r1 #5: quitar el tope es sólo de la PAX. Una venta de la Nexgo con sus 5 intentos sigue como hoy (sin POST). */
     @Test fun `D5 minimo · la Nexgo conserva su tope de cinco intentos`() = runTest {
         dao.insert(angelPay("n5").copy(state = "REGISTRO_FALLIDO", verifyAttempts = 5))

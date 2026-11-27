@@ -132,7 +132,7 @@ fun Navegacion(
                             enCustodia = cuantasEnCustodia(c, yo.venueIdDeLaSesion, conSimsS.value), articulo = c?.config?.etiquetaArticulo ?: "SIM",
                             porRevisar = cuantasPorRevisar(c, yo.venueIdDeLaSesion),
                             puedeVender = puedeVender(t, yo.staffId, yo.venueIdDeLaSesion, ahora, suEntrada?.estado),
-                            entradaRechazada = rechazada?.let { it.rechazoMensaje?.takeIf(String::isNotBlank) ?: "revísala en «Ventas pendientes por subir»" },
+                            entradaRechazada = rechazada?.let { motivoDeEntradaRechazada(it.rechazoCode, it.rechazoMensaje) },
                         ),
                         AccionesDeInicio(
                             vender = { nav.navigate("venta") }, sims = { nav.navigate("sims") }, checar = { nav.navigate("checada") },
@@ -159,4 +159,14 @@ fun Navegacion(
             }
         }
     }
+}
+
+/**
+ * El motivo de la banda «Tu entrada no se aceptó: …». Con YA_TIENE_ENTRADA el texto del SERVIDOR («Primero marca la salida»)
+ * pide algo que Pendientes no ofrece: ahí se resuelve con «Usar esa entrada» o «Quitar» (full-testing r2, W-1).
+ */
+internal fun motivoDeEntradaRechazada(code: String?, mensaje: String?): String = when {
+    code == "YA_TIENE_ENTRADA" -> "ya tienes otra entrada abierta; resuélvelo en «Ventas pendientes por subir»"
+    !mensaje.isNullOrBlank() -> mensaje
+    else -> "revísala en «Ventas pendientes por subir»"
 }

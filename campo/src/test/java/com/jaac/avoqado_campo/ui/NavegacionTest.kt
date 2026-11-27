@@ -159,4 +159,14 @@ class NavegacionTest {
         val t = ZonedDateTime.of(2026, 11, 11, 9, 2, 0, 0, ZoneId.of("America/Mexico_City")).toInstant().toEpochMilli()
         assertEquals("9:02", horaCorta(t))
     }
+
+    // full-testing r2, W-1: con YA_TIENE_ENTRADA la banda no repite «Primero marca la salida» (Pendientes no lo ofrece).
+    @Test fun `el motivo de la entrada rechazada no pide marcar la salida cuando ya habia otra entrada`() {
+        assertEquals(
+            "ya tienes otra entrada abierta; resuélvelo en «Ventas pendientes por subir»",
+            motivoDeEntradaRechazada("YA_TIENE_ENTRADA", "Ya tienes una entrada abierta. Primero marca la salida."),
+        )
+        assertEquals("El control de asistencia está apagado", motivoDeEntradaRechazada("ATTENDANCE_DISABLED", "El control de asistencia está apagado"))
+        assertEquals("revísala en «Ventas pendientes por subir»", motivoDeEntradaRechazada(null, " "))
+    }
 }

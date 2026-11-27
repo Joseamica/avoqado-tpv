@@ -59,4 +59,33 @@ class ChipRechazaTrasAprobacionFuenteTest {
             assertTrue("[$nombre] el cierre EMV con éxito ya no marca el fin del SDK", despues.contains("marcarFinDelSdk(preparationAttemptId)"))
         }
     }
+
+    /**
+     * 🔴 D5 · Cobro simple (t2-decisiones #13, 26-nov): medido en el portal de Blumon TPV, el −11 tras el aprobado deja el cargo. Ese caso
+     * (y sólo ése) NO va a la duda: sigue por el mismo camino que un cierre con éxito (fin del SDK, «Cobrado», registro con la llave del
+     * intento y `success` con `paymentId` al POS). Las demás salidas del cierre siguen en la duda (la prueba de arriba).
+     */
+    @Test
+    fun `el menos 11 tras el aprobado sigue el camino del cobro en las dos variantes, los demas fallos la duda`() {
+        for ((nombre, archivo) in variantes) {
+            val fuente = archivo.readText()
+            val tramo = entre(fuente, "val completeResult = completeEmvTransUseCase.run(completeParams)", "handlePaymentSuccess(", nombre)
+
+            val regla = "val elCargoSeQueda = completeResult.isLeft && sessionSnapshot.mode != PaymentMode.REFUND &&\n" +
+                "                        com.jaac.avoqado_tpv.features.payment.domain.CierreDelChip.elCargoSeQueda(completeResult.leftValue(), emvCodeForKernel)"
+            assertTrue("[$nombre] falta la regla del −11 (sólo ventas, con el código que se le pasó al kernel)", tramo.contains(regla))
+
+            val cobro = entre(tramo, "if (elCargoSeQueda) {", "} else if (completeResult.isLeft) {", nombre)
+            for (prohibido in listOf("return@launch", "showUnresolvedAuthorization", "markChipRechazoTrasAprobacion", "PaymentState.Error(", "authorizationApproved = false")) {
+                assertFalse("[$nombre] el −11 no debe tocar «$prohibido»", cobro.contains(prohibido))
+            }
+            assertTrue("[$nombre] la regla va ANTES de la duda", tramo.indexOf(regla) < tramo.indexOf("} else if (completeResult.isLeft) {"))
+
+            // Sale de la rama y llega al mismo fin del SDK y al mismo registro que un cierre con éxito.
+            val despues = tramo.substring(tramo.indexOf("REGRESÓ con éxito"))
+            val fin = despues.indexOf("marcarFinDelSdk(preparationAttemptId)")
+            assertTrue("[$nombre] tras el −11 no se marca el fin del SDK", fin >= 0)
+            assertTrue("[$nombre] tras el −11 no se publica el éxito", despues.indexOf("_state.value = exitoConAvisoDeLaLibreta(PaymentState.Success(") > fin)
+        }
+    }
 }

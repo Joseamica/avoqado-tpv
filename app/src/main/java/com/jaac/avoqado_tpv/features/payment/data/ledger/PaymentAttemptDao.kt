@@ -37,11 +37,23 @@ interface PaymentAttemptDao {
 
     // 🔴 29-sep-2026: sólo VENTAS — esta recuperación registra con los registradores de VENTA. Una devolución aprobada sin
     // registrar la cierra su cola (`pending_refunds`); hoy sólo la dejaba fuera que su contexto no se deja leer como venta.
+    // 🔴 Cobro simple · D5 mínimo (26-nov; rescate de F1 `7d12a7c8` + `a1cca768`): en la PAX (Blumon TPV) sin tope de intentos; la Nexgo
+    // conserva su tope de hoy (Codex d5-minimo r1 #5). Con `verify_attempts < 5`, cinco
+    // fallos del SERVIDOR sacaban de toda pasada a un aprobado: cargo con cero Payment. Un aprobado nunca se abandona; la pausa crece hasta
+    // 32 min (`LedgerApprovalRecovery`). Y el turno va por el ÚLTIMO TOQUE: el reclamo escribe `lease_until` (la hora del intento más su
+    // pausa) y nadie más la adelanta en un aprobado, así que `COALESCE(lease_until, created_at)` es «cuándo volvió a estar libre». Por
+    // antigüedad, sin tope, los viejos que fallan siempre ocupaban las 50 filas y un aprobado nuevo no entraba nunca.
     @Query("""SELECT * FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE'
         AND state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
-        AND (host_approved = 1 OR state = 'AUTORIZADO') AND created_at < :olderThan AND verify_attempts < 5
-        AND (lease_until IS NULL OR lease_until < :now) ORDER BY created_at ASC LIMIT 50""")
+        AND (host_approved = 1 OR state = 'AUTORIZADO') AND created_at < :olderThan AND (verify_attempts < 5 OR processor = 'BLUMON')
+        AND (lease_until IS NULL OR lease_until < :now) ORDER BY COALESCE(lease_until, created_at) ASC, attempt_id ASC LIMIT 50""")
     suspend fun getApprovalRecoveryCandidates(venueId: String, olderThan: Long, now: Long): List<PaymentAttemptEntity>
+
+    /** 🔴 Cobro simple · D5 mínimo (Codex r1 #9 del plan T2): cuándo vence la pausa más próxima de un aprobado reservado (para agendar su vuelta). */
+    @Query("""SELECT MIN(lease_until) FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE'
+        AND state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
+        AND (host_approved = 1 OR state = 'AUTORIZADO') AND (verify_attempts < 5 OR processor = 'BLUMON') AND lease_until >= :now""")
+    suspend fun proximoVencimientoDeAprobacion(venueId: String, now: Long): Long?
 
     @Query("""UPDATE payment_attempts SET lease_until = :leaseUntil, verify_attempts = verify_attempts + 1
         WHERE attempt_id = :attemptId AND venue_id = :venueId AND host_approved IS NULL

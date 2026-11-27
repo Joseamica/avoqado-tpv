@@ -59,6 +59,11 @@ class LedgerShadowSweepWorker @AssistedInject constructor(
                     approvalRecovery.cuandoHaceFaltaOtraPasada(venueId, System.currentTimeMillis())
                         ?.let { LedgerSweepScheduler.runApprovalFollowUp(applicationContext, it) }
                 }.onFailure { if (it is CancellationException) throw it; Timber.w(it, "📒 [LedgerSweep] no se agendó la pasada de seguimiento") }
+                // 🔴 Cobro simple · D5 mínimo: y el aprobado que esta pasada intentó y falló vuelve cuando vence su pausa (aparte).
+                runCatching {
+                    approvalRecovery.cuandoVenceLaPausa(venueId, System.currentTimeMillis())
+                        ?.let { LedgerSweepScheduler.agendarFinDePausa(applicationContext, it) }
+                }.onFailure { if (it is CancellationException) throw it; Timber.w(it, "📒 [LedgerSweep] no se agendó el fin de la pausa") }
                 // Checkpoint 2 · N3: lo barato y de Avoqado va en su propio worker con RED; este barrido sigue offline.
                 LedgerSweepScheduler.runServerRecoveryNow(applicationContext)
             }

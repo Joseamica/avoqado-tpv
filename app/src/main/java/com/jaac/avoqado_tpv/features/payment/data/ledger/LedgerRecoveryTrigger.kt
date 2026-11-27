@@ -31,6 +31,10 @@ class LedgerRecoveryTrigger @Inject constructor(
     fun instalar() {
         ledger.onUncertaintyBorn = { attemptId ->
             LedgerSweepScheduler.runServerRecoveryNow(appContext, initialDelayMinutes = RESPALDO_MINUTOS)
+            // 🔴 Cobro simple · D5 mínimo (Codex d5-minimo r1 #3): un aprobado cuyo registro falló (y la cola tampoco lo tomó) lo registra la
+            // recuperación de aprobados, y nadie pedía su primera pasada: esperaba a reconectar, entrar o las 6 h. Se pide para cuando cumple
+            // su espera de 2 min. Si la cola sí lo tomó, la pasada no encuentra nada.
+            LedgerSweepScheduler.runApprovalFollowUp(appContext, LedgerApprovalRecovery.ESPERA_MS + LedgerApprovalRecovery.MARGEN_MS)
             val venueId = secureStorage.getVenueId()
             if (venueId != null) {
                 scope.launch {

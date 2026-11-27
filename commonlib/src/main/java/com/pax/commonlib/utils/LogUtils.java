@@ -20,7 +20,8 @@ import android.util.Log;
 
 
 public class LogUtils {
-    private static final boolean IS_DEBUG = true;
+    // D14: apagado. En true, emv y commonlib escriben datos de la tarjeta (TLV, APDU, 8A, 91, 9F10) al registro del aparato.
+    private static final boolean IS_DEBUG = false;
 
     private LogUtils() {
 

@@ -68,7 +68,7 @@ fun MisSimsScreen(vm: MisSimsViewModel, obligatoria: Boolean, onRegresar: () -> 
         )
         c != null -> PantallaDeCorreccion(
             estado, c, { camara = true }, vm::alEscribirNumeroDeCorreccion, vm::enviarCorreccion, vm::cancelarCorreccion,
-            onGaleria = { vm.alTomarFotoDeCorreccion(it.absolutePath) },
+            onGaleria = { vm.alTomarFotoDeCorreccion(it.absolutePath) }, copiandoFoto = vm::alCopiarFotoDeCorreccion,
         )
         else -> MisSimsContenido(
             estado,
@@ -224,12 +224,15 @@ private fun Fila(f: FilaSim) {
 @Composable
 private fun PantallaDeCorreccion(
     e: EstadoMisSims, c: Correccion, foto: () -> Unit, numero: (String) -> Unit, enviar: () -> Unit, cancelar: () -> Unit,
-    onGaleria: (File) -> Unit = {},
+    onGaleria: (File) -> Unit = {}, copiandoFoto: (Boolean) -> Unit = {},
 ) {
     PantallaCampo(
         "Corregir evidencia", onRegresar = cancelar, regresarHabilitado = !e.ocupado,
         abajo = {
-            BotonPrincipal(if (e.ocupado) "Guardando…" else "Enviar corrección", enviar, enabled = !e.ocupado && c.foto != null, cargando = e.ocupado)
+            BotonPrincipal(
+                if (e.ocupado) "Guardando…" else "Enviar corrección", enviar,
+                enabled = !e.ocupado && !e.copiandoFoto && c.foto != null, cargando = e.ocupado,
+            )
             BotonSecundario("Cancelar", cancelar, enabled = !e.ocupado)
         },
     ) {
@@ -239,7 +242,7 @@ private fun PantallaDeCorreccion(
         }
         if (c.foto != null) Text("📷 Foto ✓", color = ColoresCampo.VerdeTexto, fontWeight = FontWeight.SemiBold)
         BotonSecundario(if (c.foto != null) "Tomar otra foto" else "📷 Tomar la foto", foto, enabled = !e.ocupado)
-        BotonDeGaleria(enabled = !e.ocupado, onFoto = onGaleria)
+        BotonDeGaleria(enabled = !e.ocupado, onFoto = onGaleria, onCopiando = copiandoFoto)
         OutlinedTextField(
             c.numero, numero, Modifier.fillMaxWidth(), singleLine = true, enabled = !e.ocupado, shape = MaterialTheme.shapes.small,
             label = { Text(if (c.photoLabel == "Portabilidad") "Número portado (si cambia)" else "Número de vinculación (si cambia)") },

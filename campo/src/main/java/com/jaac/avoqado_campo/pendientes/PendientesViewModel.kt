@@ -21,6 +21,7 @@ import com.jaac.avoqado_campo.identidad.EstadoDelCelular
 import com.jaac.avoqado_campo.identidad.Identidad
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import com.jaac.avoqado_campo.red.Conectividad
+import com.jaac.avoqado_campo.venta.ESPERA_LA_FOTO
 import com.jaac.avoqado_campo.red.objetoJson
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -49,7 +50,10 @@ data class FilaPendiente(val id: Long, val resumen: String, val texto: String, v
 data class CorreccionDeEvidencia(
     val id: Long, val photoLabel: String, val pideFoto: Boolean, val foto: String? = null, val numero: String = "", val pideNumero: Boolean = false,
 )
-data class EstadoPendientes(val ocupado: Boolean = false, val error: String? = null, val corrigiendo: CorreccionDeEvidencia? = null)
+/** [copiandoFoto] (Codex r3 #7): la foto de la galería se está copiando; «Guardar corrección» espera. */
+data class EstadoPendientes(
+    val ocupado: Boolean = false, val error: String? = null, val corrigiendo: CorreccionDeEvidencia? = null, val copiandoFoto: Boolean = false,
+)
 
 private val QUITAR = Boton(Accion.QUITAR, "Quitar de mi celular")
 private val ENTENDIDO = Boton(Accion.ENTENDIDO, "Entendido")
@@ -201,6 +205,7 @@ class PendientesViewModel @Inject constructor(
         c.foto?.takeIf { it != archivo }?.let { File(it).delete() }
         _estado.update { it.copy(corrigiendo = c.copy(foto = archivo)) }
     }
+    fun alCopiarFoto(copiando: Boolean) = _estado.update { it.copy(copiandoFoto = copiando) }
     fun alEscribirNumero(n: String) = _estado.update { it.copy(corrigiendo = it.corrigiendo?.copy(numero = n.filter(Char::isDigit).take(10))) }
     fun cancelarCorreccion() {
         _estado.value.corrigiendo?.foto?.let { runCatching { File(it).delete() } }
@@ -216,6 +221,7 @@ class PendientesViewModel @Inject constructor(
     fun enviarCorreccion() {
         val c = _estado.value.corrigiendo ?: return
         val falta = when {
+            _estado.value.copiandoFoto -> ESPERA_LA_FOTO
             c.pideFoto && c.foto == null -> "Toma la foto otra vez."
             (c.pideNumero || c.numero.isNotEmpty()) && c.numero.length !in 9..10 -> "El número lleva 9 o 10 dígitos."
             else -> null

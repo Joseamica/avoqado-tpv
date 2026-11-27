@@ -72,10 +72,11 @@ internal fun comprimirCruda(dir: File, nombre: String, cruda: File): File {
 
 /**
  * «Elegir de la galería», junto a «📷 Tomar la foto»: el selector del sistema (sin permisos). Lo que no se pudo leer lo dice
- * aquí mismo, en llano.
+ * aquí mismo, en llano. [onCopiando] (Codex r3 #7): avisa mientras la foto se copia, para que «Registrar» o «Enviar» esperen
+ * (si no, saldría la foto anterior); siempre termina en false, también si la pantalla se cierra a media copia.
  */
 @Composable
-fun BotonDeGaleria(enabled: Boolean, onFoto: (File) -> Unit) {
+fun BotonDeGaleria(enabled: Boolean, onCopiando: (Boolean) -> Unit = {}, onFoto: (File) -> Unit) {
     val context = LocalContext.current
     val alcance = rememberCoroutineScope()
     var copiando by remember { mutableStateOf(false) }
@@ -83,6 +84,7 @@ fun BotonDeGaleria(enabled: Boolean, onFoto: (File) -> Unit) {
     val elegir = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult // la persona no eligió nada
         copiando = true
+        onCopiando(true)
         error = null
         alcance.launch {
             try {
@@ -95,6 +97,7 @@ fun BotonDeGaleria(enabled: Boolean, onFoto: (File) -> Unit) {
                 error = NO_SE_GUARDO_LA_FOTO
             } finally {
                 copiando = false
+                onCopiando(false)
             }
         }
     }

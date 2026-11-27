@@ -27,6 +27,12 @@ import java.io.File
  * bajo UN candado propio (R8-1), que también toma el borrado del celular ([borrar]); y nadie escribe si el celular se está
  * borrando o cambió de activación mientras bajaba (R7-1, I2).
  */
+/**
+ * La copia más vieja que esta versión todavía lee (Codex r3 #5): la de la 0.5.0 (código 5) trae lo mismo sin los campos nuevos,
+ * que son opcionales; tirarla al actualizar dejaba sin «Mis ventas» ni escáner a quien abría la 0.6.0 sin señal.
+ */
+private const val LEIBLE_DESDE = 5
+
 class RepositorioDeCopia(
     context: Context,
     private val api: CampoApi,
@@ -42,7 +48,7 @@ class RepositorioDeCopia(
     private val _copia = MutableStateFlow(leerArchivo()?.takeIf { vigente(it) }.also(::recordarRegla))
     val copia: StateFlow<Copia?> = _copia
 
-    /** La copia vigente; la de otra versión de la app, otra activación u otra sucursal se borra y da null. */
+    /** La copia vigente; la de una versión que no se lee, otra activación u otra sucursal se borra y da null. */
     suspend fun leer(): Copia? = candado.withLock {
         val c = leerArchivo()
         if (c == null || !vigente(c)) {
@@ -121,7 +127,7 @@ class RepositorioDeCopia(
     // Gson no respeta los no-nulos de Kotlin: un archivo a medias trae null donde el tipo dice que no.
     @Suppress("SENSELESS_COMPARISON")
     private fun vigente(c: Copia, yo: Instantanea = quienSoy.instantanea()) = c.sims != null && c.config != null &&
-        c.versionApp == BuildConfig.VERSION_CODE && c.generacion == yo.generacion && c.venueId == yo.sesion?.venueId
+        c.versionApp in LEIBLE_DESDE..BuildConfig.VERSION_CODE && c.generacion == yo.generacion && c.venueId == yo.sesion?.venueId
 
     /** Serie normalizada → marca, de las ventas y custodias que siguen por subir (las HECHA ya están en `mis-sims`). */
     private suspend fun marcasDeLaCola(): Map<String, String> {

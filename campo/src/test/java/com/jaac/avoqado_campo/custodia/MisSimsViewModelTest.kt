@@ -220,16 +220,46 @@ class MisSimsViewModelTest {
     }
 
     // 0.6.0: «Mis ventas» por mes. La del SERVIDOR trae `soldAt`; la del celular que la lista aún no trae, la hora de la venta.
-    @Test fun `cada venta trae su fecha - la del servidor por soldAt y la del celular por la hora de la venta`() {
-        cola.value = listOf(venta("S2", EstadoPieza.HECHA, 5).copy(resultadoJson = conPago, creadaAt = 1_795_000_000_000))
+    // Codex r3 #8: `saleAt` (la hora real de la venta) manda; si no viene, `soldAt` (la de subida); si no, la hora local.
+    @Test fun `cada venta trae su fecha - saleAt, si no soldAt, si no la hora local de la venta`() {
+        val local = 1_795_000_000_000L
+        cola.value = listOf(
+            venta("S2", EstadoPieza.HECHA, 5).copy(resultadoJson = conPago, creadaAt = local),
+            venta("S4", EstadoPieza.HECHA, 6).copy(resultadoJson = conPago, creadaAt = local + 1),
+        )
         ponerCopia(
-            sim("S1", "SOLD").copy(soldAt = "2026-11-20T18:00:00.000Z"), sim("S2", "PROMOTER_HELD"), sim("S3", "SOLD"),
-            yaLlegadas = emptyList(),
+            sim("S1", "SOLD").copy(soldAt = "2026-12-01T00:05:00.000Z", saleAt = "2026-11-30T23:58:00.000Z"),
+            sim("S2", "PROMOTER_HELD"), sim("S3", "SOLD"), sim("S4", "SOLD"),
+            sim("S5", "SOLD").copy(soldAt = "2026-11-20T18:00:00.000Z"),
+            yaLlegadas = listOf(6),
         )
         val e = vm().estado.value
-        assertEquals(java.time.Instant.parse("2026-11-20T18:00:00Z").toEpochMilli(), e.exitosas.single { it.sim.serialNumber == "S1" }.fecha)
-        assertEquals(1_795_000_000_000, e.exitosas.single { it.sim.serialNumber == "S2" }.fecha)
-        assertEquals("sin soldAt (SERVIDOR viejo): sin fecha", null, e.exitosas.single { it.sim.serialNumber == "S3" }.fecha)
+        fun fecha(s: String) = e.exitosas.single { it.sim.serialNumber == s }.fecha
+        assertEquals("saleAt gana a soldAt", java.time.Instant.parse("2026-11-30T23:58:00Z").toEpochMilli(), fecha("S1"))
+        assertEquals("vendida en el celular, la lista aún no la trae", local, fecha("S2"))
+        assertEquals("sin saleAt ni soldAt (SERVIDOR viejo) ni venta del celular: sin fecha", null, fecha("S3"))
+        assertEquals("sin saleAt ni soldAt: la hora local de su venta", local + 1, fecha("S4"))
+        assertEquals(java.time.Instant.parse("2026-11-20T18:00:00Z").toEpochMilli(), fecha("S5"))
+    }
+
+    // Codex r3 #7: mientras la foto de la galería se copia, «Enviar» no sale con la foto anterior.
+    @Test fun `mientras se copia la foto de la galeria no se envia la correccion`() {
+        ponerCopia(sim("S1", "SOLD", verificacion = "FAILED"))
+        coEvery { encolador.evidenciaSuelta(any(), any()) } returns "k"
+        val v = vm()
+        v.empezarCorreccion("S1", "Vinculacion")
+        v.alTomarFotoDeCorreccion(tmp.newFile("vieja.jpg").path)
+        v.alCopiarFotoDeCorreccion(true)
+        v.enviarCorreccion()
+        coVerify(exactly = 0) { encolador.evidenciaSuelta(any(), any()) }
+        assertEquals("Espera a que se guarde la foto.", v.estado.value.error)
+        val nueva = tmp.newFile("nueva.jpg").path
+        v.alTomarFotoDeCorreccion(nueva)
+        v.alCopiarFotoDeCorreccion(false)
+        val enviada = slot<EvidenciaSueltaNueva>()
+        coEvery { encolador.evidenciaSuelta(any(), capture(enviada)) } returns "k"
+        v.enviarCorreccion()
+        assertEquals(nueva, enviada.captured.archivoFoto)
     }
 
     private fun venta(serie: String, estado: String, id: Long) = Pieza(

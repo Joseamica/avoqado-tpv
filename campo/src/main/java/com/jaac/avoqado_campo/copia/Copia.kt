@@ -13,7 +13,7 @@ import com.jaac.avoqado_campo.red.RespuestaModulos
 
 /**
  * Lo que el celular necesita para vender sin señal: las SIMs de la persona y la configuración de la sucursal. Es de UNA
- * activación ([generacion]), de UNA sucursal y de UNA versión de la app; si no coincide, se tira (R7-1).
+ * activación ([generacion]), de UNA sucursal y de una versión que esta app sabe leer (desde la 0.5.0); si no, se tira (R7-1).
  */
 data class Copia(
     val versionApp: Int,
@@ -43,8 +43,10 @@ data class SimEnCopia(
     val paymentId: String?,
     val rejectionReasons: List<String>,
     val reviewNotes: String?,
-    /** 0.6.0: cuándo se vendió (ISO, del SERVIDOR) para «Mis ventas» por mes; null = copia vieja o SERVIDOR sin el campo. */
+    /** 0.6.0: cuándo se marcó vendida en el SERVIDOR (ISO; en una venta sin red, la hora de subida). null = copia vieja o sin el campo. */
     val soldAt: String? = null,
+    /** 0.6.0 (Codex r3 #8): la hora real de la venta (ISO, la de su verificación). Manda sobre [soldAt] para el mes. */
+    val saleAt: String? = null,
 )
 
 /** Lo que el celular ya hizo con una SIM y todavía no sube (vive mientras su pieza siga por subir). */
@@ -69,8 +71,10 @@ data class ConfigDeSucursal(
     // campo): la regla de hoy. Nulables a propósito: Gson no pone los valores por defecto de Kotlin.
     val salidaOlvidadaEnabled: Boolean? = null,
     val salidaOlvidadaCorte: String? = null,
+    /** La zona de la sucursal («America/Mexico_City»), con la que el SERVIDOR decide el límite (Codex r3 #3). */
+    val zonaDeLaSucursal: String? = null,
 ) {
-    fun reglaDeSalida(): ReglaDeSalida = reglaDe(salidaOlvidadaEnabled, salidaOlvidadaCorte)
+    fun reglaDeSalida(): ReglaDeSalida = reglaDe(salidaOlvidadaEnabled, salidaOlvidadaCorte, zonaDeLaSucursal)
 }
 
 const val MODULO_DE_SIMS = "SERIALIZED_INVENTORY"
@@ -90,6 +94,7 @@ fun configDe(r: RespuestaModulos): ConfigDeSucursal {
         modulo = modulo,
         salidaOlvidadaEnabled = r.asistencia?.salidaOlvidadaEnabled,
         salidaOlvidadaCorte = r.asistencia?.salidaOlvidadaCorte,
+        zonaDeLaSucursal = r.asistencia?.timezone,
     )
 }
 
@@ -99,6 +104,7 @@ fun MiSimDto.aSim(localmente: String?) = SimEnCopia(
     categoria = category?.name.orEmpty(), precio = category?.suggestedPrice, localmente = localmente,
     verificationStatus = verificationStatus, verificationId = verificationId, paymentId = paymentId,
     rejectionReasons = rejectionReasons.orEmpty(), reviewNotes = reviewNotes, soldAt = soldAt,
+    saleAt = saleAt,
 )
 
 /** D1 (Codex r3): lo último que ESTE celular hizo con una SIM y que la lista todavía no trae. */

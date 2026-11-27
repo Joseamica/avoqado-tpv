@@ -4,13 +4,13 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.jaac.avoqado_campo.checada.tieneTurno
 import com.jaac.avoqado_campo.cola.CelularBorrandose
 import com.jaac.avoqado_campo.cola.Disparador
 import com.jaac.avoqado_campo.cola.Encolador
 import com.jaac.avoqado_campo.cola.EvidenciaNueva
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.cola.SimYaEnCola
+import com.jaac.avoqado_campo.cola.SinEntrada
 import com.jaac.avoqado_campo.cola.VentaNueva
 import com.jaac.avoqado_campo.cola.normalizarSerie
 import com.jaac.avoqado_campo.copia.ConfigDeSucursal
@@ -36,6 +36,9 @@ import javax.inject.Inject
 /** El mosaico del Inicio y «Registrar venta» sin una entrada vigente en el celular (0.6.0). */
 internal const val CHECA_TU_ENTRADA = "Checa tu entrada para vender"
 
+/** Codex r3 #7: la foto de la galería todavía se está copiando. */
+internal const val ESPERA_LA_FOTO = "Espera a que se guarde la foto."
+
 /** B7: `suggestedPrice` "0" → de caja; mayor que 0 → efectivo fijo; null → lo escribe el promotor. */
 enum class TipoDePrecio { DE_CAJA, DE_PROMOTOR, LIBRE }
 
@@ -55,6 +58,8 @@ data class EstadoVenta(
     val buscando: Boolean = false,
     val registrando: Boolean = false,
     val guardada: Boolean = false,
+    /** Codex r3 #7: la foto de la galería se está copiando; «Registrar» espera (si no, saldría la anterior). */
+    val copiandoFoto: Boolean = false,
 ) {
     val slots: List<Slot> get() = if (portabilidad) listOf(Slot.VINCULACION, Slot.PORTABILIDAD) else listOf(Slot.VINCULACION)
 
@@ -65,6 +70,7 @@ data class EstadoVenta(
     val falta: String?
         get() = when {
             sim == null -> "Escanea una SIM."
+            copiandoFoto -> ESPERA_LA_FOTO
             precio == null -> "Escribe el importe que cobraste (pon 0 si fue sin costo; hasta 2 decimales)."
             else -> slots.firstNotNullOfOrNull { s ->
                 val nombre = if (s == Slot.VINCULACION) "vinculación" else "portabilidad"
@@ -139,6 +145,9 @@ class VentaViewModel @Inject constructor(
         copy(fotos = fotos + (slot to archivo))
     }
 
+    /** Lo avisa «Elegir de la galería» al empezar y al terminar de copiar (Codex r3 #7). */
+    fun alCopiarFoto(copiando: Boolean) = _estado.update { it.copy(copiandoFoto = copiando) }
+
     fun alEscribirNumero(slot: Slot, n: String) = cambiar { copy(numeros = numeros + (slot to n.filter(Char::isDigit).take(10))) }
 
     /** Sólo con precio LIBRE (B7): importe de 0 o más con hasta 2 decimales; 0 = sin costo, como «Regalar» de la PAX. */
@@ -162,12 +171,6 @@ class VentaViewModel @Inject constructor(
         val sim = e.sim!!
         _estado.update { it.copy(registrando = true, error = null) }
         viewModelScope.launch {
-            // 0.6.0: sin entrada no se vende. También aquí: la pantalla pudo quedar abierta y el turno vencer (salida olvidada).
-            if (!withContext(NonCancellable) { tieneTurno(dao.turnoAhora(), yo.staffId, encolador.ahoraMs()) }) {
-                val error = if (quienSoy.generacion != generacion) "Espera un momento." else CHECA_TU_ENTRADA
-                _estado.update { it.copy(registrando = false, error = error) }
-                return@launch
-            }
             try {
                 // Salir de la pantalla a media transacción no la corta: lo que se tocó se guarda o se deshace entero.
                 withContext(NonCancellable) {
@@ -178,6 +181,9 @@ class VentaViewModel @Inject constructor(
                             evidencias = e.slots.map { s -> EvidenciaNueva(s.photoLabel, e.numeros[s].takeIf { e.pideNumero(s) }, e.fotos.getValue(s)) },
                             resumen = "Venta de ${e.config?.etiquetaArticulo ?: "SIM"} ${sim.serialNumber}",
                         ),
+                        // 0.6.0 · Codex r3 #1 y #2: sin entrada vigente (ni con la rechazada) no se vende; lo decide la misma
+                        // transacción que escribe la venta, con la misma hora que la fecha (la pantalla pudo quedar abierta).
+                        exigirEntrada = true,
                     )
                     borrarFotosQueNoSeEncolaron(e) // H5: aquí, y no después, para que salir de la pantalla no las salte
                 }
@@ -185,6 +191,9 @@ class VentaViewModel @Inject constructor(
                 throw c
             } catch (_: CelularBorrandose) {
                 _estado.update { it.copy(registrando = false, error = "Espera un momento.") }
+                return@launch
+            } catch (_: SinEntrada) {
+                _estado.update { it.copy(registrando = false, error = CHECA_TU_ENTRADA) }
                 return@launch
             } catch (_: SimYaEnCola) {
                 _estado.update { it.copy(registrando = false, error = "Esta SIM ya está vendida (o por subir).") }

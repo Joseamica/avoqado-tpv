@@ -1,5 +1,6 @@
 package com.jaac.avoqado_campo.checada
 
+import com.jaac.avoqado_campo.cola.EstadoPieza
 import com.jaac.avoqado_campo.cola.TurnoLocal
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -52,8 +53,42 @@ class TurnoTest {
         assertEquals(ms("2026-11-03T22:00", tijuana), limiteDelTurno(entrada, tijuana, a22))
     }
 
-    @Test fun `el celular espera su margen de 3 h tambien con hora de corte`() {
-        assertEquals(ms("2026-11-04T01:00"), limiteEnElCelular(ms("2026-11-03T10:00"), mx, a22))
+    // Codex r3 #3 (founder: «después de las 10 pm queda como olvidada»): con hora propia no hay margen.
+    @Test fun `con hora de corte propia el celular no da margen - vencido el corte ya no se vende`() {
+        assertEquals(ms("2026-11-03T22:00"), limiteEnElCelular(ms("2026-11-03T10:00"), mx, a22))
+        val t = TurnoLocal(1, "s1", "k", null, "v1", ms("2026-11-03T10:00"))
+        val a22mx = a22.copy(zona = mx) // con la zona de la sucursal, no depende de la del celular de la prueba
+        assertTrue(tieneTurno(t, "s1", ms("2026-11-03T21:59"), regla = a22mx))
+        assertFalse(tieneTurno(t, "s1", ms("2026-11-03T22:00"), regla = a22mx))
+    }
+
+    @Test fun `con la regla de fabrica el margen de 3 h sigue como en la 0_5_0`() {
+        assertEquals(ms("2026-11-04T07:00"), limiteEnElCelular(ms("2026-11-03T09:00"), mx, ReglaDeSalida.DE_HOY))
+    }
+
+    // Codex r3 #3: la sucursal de Tijuana con corte a las 22:00 y el celular en hora de CDMX.
+    @Test fun `la zona de la sucursal manda sobre la del celular`() {
+        val tijuana22 = a22.copy(zona = tijuana)
+        val entrada = ms("2026-11-03T19:30", tijuana) // 21:30 en CDMX
+        assertEquals("vence esa noche, a las 22:00 de Tijuana", ms("2026-11-03T22:00", tijuana), limiteDelTurno(entrada, mx, tijuana22))
+        assertEquals(ms("2026-11-03T22:00", tijuana), limiteEnElCelular(entrada, mx, tijuana22))
+        assertEquals("sin zona de la sucursal: la del celular", ms("2026-11-04T22:00", mx), limiteDelTurno(entrada, mx, a22))
+    }
+
+    // Codex r3 #4: el corte de cada día se arma por FECHA, como el SERVIDOR (no se arrastra el salto de horario).
+    @Test fun `primavera en Tijuana - entra 01_40 del 8-mar, corte 02_30, vence 02_30 PDT del 9-mar`() {
+        val r = ReglaDeSalida(corte = LocalTime.of(2, 30), zona = tijuana)
+        assertEquals(
+            java.time.Instant.parse("2026-03-09T09:30:00Z").toEpochMilli(),
+            limiteDelTurno(ms("2026-03-08T01:40", tijuana), mx, r),
+        )
+    }
+
+    // Otoño: la 01:30 ocurre dos veces; como el SERVIDOR, cuenta la primera (45 min después: no alcanza) y va la de mañana.
+    @Test fun `otoño en Tijuana - con dos 01_30 toma la primera, como el SERVIDOR`() {
+        val r = ReglaDeSalida(corte = LocalTime.of(1, 30), zona = tijuana)
+        val entrada = java.time.Instant.parse("2026-11-01T07:45:00Z").toEpochMilli() // 00:45 PDT
+        assertEquals(java.time.Instant.parse("2026-11-02T09:30:00Z").toEpochMilli(), limiteDelTurno(entrada, mx, r))
     }
 
     @Test fun `con la salida olvidada apagada el turno no vence`() {
@@ -68,8 +103,8 @@ class TurnoTest {
         val a1 = ms("2026-11-04T01:00")
         assertTrue("sin regla guardada: la de hoy (04:00 + 3 h)", turnoVigente(t, a1, mx))
         recordarReglaDeSalida("v1", a22)
-        assertTrue("con 22:00: a las 23:30 sigue (margen hasta la 01:00)", turnoVigente(t, ms("2026-11-03T23:30"), mx))
-        assertFalse("con 22:00: a la 01:00 ya venció", turnoVigente(t, a1, mx))
+        assertTrue("con 22:00: a las 21:59 sigue", turnoVigente(t, ms("2026-11-03T21:59"), mx))
+        assertFalse("con 22:00: a las 22:00 ya venció (sin margen)", turnoVigente(t, ms("2026-11-03T22:00"), mx))
         recordarReglaDeSalida("v2", a22)
         assertTrue("la regla de otra sucursal no le aplica", turnoVigente(t, a1, mx))
     }
@@ -93,5 +128,18 @@ class TurnoTest {
         assertEquals(ReglaDeSalida.DE_HOY, reglaDe(true, "7:00"))
         assertEquals(LocalTime.of(0, 0), reglaDe(null, "00:00").corte)
         assertFalse(reglaDe(false, null).activa)
+        assertEquals(tijuana, reglaDe(true, "22:00", "America/Tijuana").zona)
+        assertNull("zona que no existe: la del celular", reglaDe(true, "22:00", "Marte/Olimpo").zona)
+    }
+
+    // Codex r3 #1: la entrada sin red que el SERVIDOR rechazó no abre turno para vender, aunque siga en el celular.
+    @Test fun `la entrada que el servidor rechazo no deja vender`() {
+        val t = TurnoLocal(1, "s1", "k", null, "v1", ms("2026-11-03T10:00"))
+        val ahora = ms("2026-11-03T12:00")
+        assertTrue("por subir (sin red) sí cuenta", puedeVender(t, "s1", ahora, EstadoPieza.PENDIENTE))
+        assertTrue("ya se purgó o no se encontró: cuenta", puedeVender(t, "s1", ahora, null))
+        assertFalse(puedeVender(t, "s1", ahora, EstadoPieza.RECHAZADA))
+        assertTrue("ya la confirmó el SERVIDOR (trae su id)", puedeVender(t.copy(timeEntryId = "te"), "s1", ahora, EstadoPieza.RECHAZADA))
+        assertFalse("sin turno", puedeVender(null, "s1", ahora, null))
     }
 }

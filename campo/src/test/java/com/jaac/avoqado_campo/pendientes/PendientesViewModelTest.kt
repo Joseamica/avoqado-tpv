@@ -177,6 +177,23 @@ class PendientesViewModelTest {
         assertFalse(segunda.exists())
     }
 
+    // Codex r3 #7: mientras la foto de la galería se copia, «Guardar corrección» no sale con la foto anterior.
+    @Test fun `mientras se copia la foto de la galeria no se guarda la correccion`() = runBlocking {
+        val llave = encolador.evidenciaSuelta(
+            quienSoy.generacion, EvidenciaSueltaNueva("v1", "pay1", "ver1", "Vinculacion", null, foto(), "SIM 1"),
+        )
+        dao.rechazar(dao.porLlave(llave)!!, "FOTO_NO_SUBIO", "La foto no subió")
+        val m = nuevoVm()
+        m.empezarCorreccion(dao.porLlave(llave)!!.id)
+        esperar { m.estado.value.let { it.corrigiendo != null && !it.ocupado } }
+        m.alTomarFoto(foto())
+        m.alCopiarFoto(true)
+        m.enviarCorreccion()
+        assertEquals("Espera a que se guarde la foto.", m.estado.value.error)
+        assertTrue("sigue abierta, sin guardar", m.estado.value.corrigiendo != null)
+        assertEquals(EstadoPieza.RECHAZADA, dao.porLlave(llave)!!.estado)
+    }
+
     @Test fun `la foto de una correccion que se esta enviando no la borran ni otra foto ni Atras, y Atras no la cancela (H5)`() = runBlocking {
         val llave = encolador.evidenciaSuelta(
             quienSoy.generacion, EvidenciaSueltaNueva("v1", "pay1", "ver1", "Vinculacion", null, foto(), "SIM 1"),

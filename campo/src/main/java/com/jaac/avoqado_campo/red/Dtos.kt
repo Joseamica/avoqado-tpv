@@ -91,8 +91,9 @@ data class MiSimDto(
     val id: String?, val serialNumber: String?, val custodyState: String?, val custodyVersion: Int?, val category: CategoriaDto?,
     val verificationStatus: String?, val verificationId: String?, val paymentId: String?,
     val rejectionReasons: List<String>?, val reviewNotes: String?,
-    /** 0.6.0, opcional: un SERVIDOR viejo no lo manda. */
+    /** 0.6.0, opcionales: un SERVIDOR viejo no los manda. `saleAt`: la hora real de la venta. */
     val soldAt: String? = null,
+    val saleAt: String? = null,
 )
 data class MisSimsDto(val items: List<MiSimDto?>?) : Validable {
     override fun valida() = items != null && items.all { it?.serialNumber != null && it.custodyState != null }
@@ -110,7 +111,7 @@ data class AsistenciaDto(
 data class ConfigModuloDto(val labels: EtiquetasDto?, val features: FuncionesDto?, val attendance: AsistenciaDto?)
 data class ModuloDto(val code: String?, val config: ConfigModuloDto?)
 /** 0.6.0: la salida olvidada de la sucursal, junto a `modules`; opcional (un SERVIDOR viejo no la manda). */
-data class SalidaOlvidadaDto(val salidaOlvidadaEnabled: Boolean?, val salidaOlvidadaCorte: String?)
+data class SalidaOlvidadaDto(val salidaOlvidadaEnabled: Boolean?, val salidaOlvidadaCorte: String?, val timezone: String? = null)
 data class RespuestaModulos(val modules: List<ModuloDto?>?, val asistencia: SalidaOlvidadaDto? = null) : Validable {
     override fun valida() = modules != null
 }

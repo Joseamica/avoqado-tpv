@@ -1,6 +1,7 @@
 package com.jaac.avoqado_campo.cola
 
 import com.jaac.avoqado_campo.BuildConfig
+import com.jaac.avoqado_campo.checada.puedeVender
 import com.jaac.avoqado_campo.checada.turnoVigente
 import com.jaac.avoqado_campo.identidad.HoraDeCampo
 import com.jaac.avoqado_campo.identidad.QuienSoy
@@ -16,6 +17,9 @@ class CelularBorrandose : Exception("El celular se está borrando")
 
 /** Ya hay una VENTA viva (no HECHA ni DESCARTADA) de esa SIM en la cola: no se escribió nada. */
 class SimYaEnCola : Exception("Esta SIM ya está vendida (o por subir)")
+
+/** 0.6.0: sin entrada vigente en el celular (o con la que el SERVIDOR rechazó) no se vende. No se escribió nada. */
+class SinEntrada : Exception("Checa tu entrada para vender")
 
 /** `replaceIndex` sale del `photoLabel` (Vinculacion → 0, Portabilidad → 1), nunca suelto. */
 data class EvidenciaNueva(val photoLabel: String, val numero: String?, val archivoFoto: String)
@@ -67,11 +71,21 @@ class Encolador(
     private val dirCola: File,
     private val env: String = BuildConfig.STORAGE_ENV,
 ) {
-    suspend fun venta(generacion: String, v: VentaNueva): String = llaveNueva().also { llave ->
+    /**
+     * [exigirEntrada] (0.6.0, Codex r3 #1 y #2): la venta NUEVA de «Vender SIM» lo pide. Dentro de la MISMA transacción y con la
+     * MISMA hora que la fecha, se revisa que haya entrada vigente y no rechazada; si no, [SinEntrada] y nada escrito. Las
+     * ventas que rehace la cola (corregir el precio) no pasan por aquí.
+     */
+    suspend fun venta(generacion: String, v: VentaNueva, exigirEntrada: Boolean = false): String = llaveNueva().also { llave ->
         enTransaccion(generacion) {
             // Defensa en la base (Tarea 10): dentro de la transacción, dos registros de la misma SIM no pasan los dos.
             if (dao.ventaConSerieEnCola(v.serialNumber) != null) throw SimYaEnCola()
             val hora = reloj.ahora()
+            if (exigirEntrada) {
+                val t = dao.turnoAhora()
+                val suEntrada = t?.llaveEntrada?.takeIf { t.timeEntryId == null }?.let { dao.porLlave(it)?.estado }
+                if (!puedeVender(t, staffId, hora.epochMs, suEntrada)) throw SinEntrada()
+            }
             val cuerpo = CuerpoVenta(llave, normalizarSerie(v.serialNumber), v.precio.setScale(2), hora.iso, hora.origen, v.isPortabilidad)
             dao.insertar(pieza(TipoPieza.VENTA, llave, staffId, v.venueId, cuerpo, hora, v.resumen))
             v.evidencias.forEach {

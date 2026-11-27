@@ -11,7 +11,7 @@ import com.jaac.avoqado_campo.cola.Pieza
 import com.jaac.avoqado_campo.cola.PiezaDao
 import com.jaac.avoqado_campo.cola.SimYaEnCola
 import com.jaac.avoqado_campo.cola.TipoPieza
-import com.jaac.avoqado_campo.cola.TurnoLocal
+import com.jaac.avoqado_campo.cola.SinEntrada
 import com.jaac.avoqado_campo.cola.VentaNueva
 import com.jaac.avoqado_campo.copia.ConfigDeSucursal
 import com.jaac.avoqado_campo.copia.Copia
@@ -68,7 +68,6 @@ class VentaViewModelTest {
     private val venta = slot<VentaNueva>()
 
     private val serie = "8952020012345678901F"
-    private val AHORA = 1_795_000_000_000L
 
     private fun sim(estado: String = "PROMOTER_HELD", precio: String? = "150.00", localmente: String? = null) =
         SimEnCopia(serie, estado, 1, "Prepago", precio, localmente, null, null, null, emptyList(), null)
@@ -102,10 +101,7 @@ class VentaViewModelTest {
         coEvery { dao.conSimsAhora() } returns emptyList()
         coEvery { copia.actualizar(any()) } returns false
         coEvery { copia.marcar(any(), any(), any()) } just runs
-        coEvery { encolador.venta(quienSoy.generacion, capture(venta)) } returns "llave"
-        // 0.6.0: sin entrada no se vende. La de aquí es la checada sin red (sólo su llave): ya cuenta.
-        coEvery { dao.turnoAhora() } returns TurnoLocal(staffId = "s1", llaveEntrada = "e1", timeEntryId = null, venueId = "v1", abiertoAt = AHORA)
-        every { encolador.ahoraMs() } returns AHORA + 60_000
+        coEvery { encolador.venta(quienSoy.generacion, capture(venta), true) } returns "llave"
     }
 
     @After fun tearDown() {
@@ -253,7 +249,7 @@ class VentaViewModelTest {
         assertEquals(TipoDePrecio.LIBRE, v.estado.value.tipoDePrecio)
         v.listaParaRegistrar().registrar()
         listOf("-1", "1.234", "abc", "").forEach { v.alEscribirPrecio(it); v.registrar() }
-        coVerify(exactly = 0) { encolador.venta(any(), any()) }
+        coVerify(exactly = 0) { encolador.venta(any(), any(), any()) }
         v.alEscribirPrecio("120.50")
         v.registrar()
         assertEquals(0, venta.captured.precio.compareTo(BigDecimal("120.50")))
@@ -274,7 +270,7 @@ class VentaViewModelTest {
         val v = vm(copiaCon(sim()))
         v.alEscanear(serie)
         v.registrar()
-        coVerify(exactly = 0) { encolador.venta(any(), any()) }
+        coVerify(exactly = 0) { encolador.venta(any(), any(), any()) }
         assertEquals("Falta la foto de vinculación.", v.estado.value.error)
     }
 
@@ -284,7 +280,7 @@ class VentaViewModelTest {
         v.listaParaRegistrar()
         v.alEscribirNumero(Slot.VINCULACION, "12345678")
         v.registrar()
-        coVerify(exactly = 0) { encolador.venta(any(), any()) }
+        coVerify(exactly = 0) { encolador.venta(any(), any(), any()) }
         v.alEscribirNumero(Slot.VINCULACION, "55 1234 5678")
         v.registrar()
         assertEquals("5512345678", venta.captured.evidencias.single().numero)
@@ -298,7 +294,7 @@ class VentaViewModelTest {
         v.listaParaRegistrar().registrar()
         v.alTomarFoto(Slot.PORTABILIDAD, "/tmp/p.jpg")
         v.registrar()
-        coVerify(exactly = 0) { encolador.venta(any(), any()) }
+        coVerify(exactly = 0) { encolador.venta(any(), any(), any()) }
         v.alEscribirNumero(Slot.PORTABILIDAD, "551234567")
         v.registrar()
         assertTrue(venta.captured.isPortabilidad)
@@ -317,7 +313,7 @@ class VentaViewModelTest {
     @Test fun `dos registrar seguidos son una sola venta`() {
         val v = vm(copiaCon(sim()))
         val espera = CompletableDeferred<String>()
-        coEvery { encolador.venta(any(), any()) } coAnswers { espera.await() }
+        coEvery { encolador.venta(any(), any(), any()) } coAnswers { espera.await() }
         v.alEscanear(serie)
         v.listaParaRegistrar()
         v.registrar()
@@ -325,7 +321,7 @@ class VentaViewModelTest {
         assertTrue(v.estado.value.registrando)
         espera.complete("llave")
         v.registrar()
-        coVerify(exactly = 1) { encolador.venta(any(), any()) }
+        coVerify(exactly = 1) { encolador.venta(any(), any(), any()) }
     }
 
     @Test fun `al guardar marca la SIM, despierta al subidor y confirma`() {
@@ -342,7 +338,7 @@ class VentaViewModelTest {
 
     @Test fun `durante el borrado dice espera un momento y no marca nada`() {
         val v = vm(copiaCon(sim()))
-        coEvery { encolador.venta(any(), any()) } throws CelularBorrandose()
+        coEvery { encolador.venta(any(), any(), any()) } throws CelularBorrandose()
         v.alEscanear(serie)
         v.listaParaRegistrar().registrar()
         assertEquals("Espera un momento.", v.estado.value.error)
@@ -359,12 +355,12 @@ class VentaViewModelTest {
         assertTrue(v.estado.value.guardada)
         assertNull(v.estado.value.error)
         v.registrar()
-        coVerify(exactly = 1) { encolador.venta(any(), any()) }
+        coVerify(exactly = 1) { encolador.venta(any(), any(), any()) }
     }
 
     @Test fun `la misma SIM ya en la cola al registrar dice que ya esta vendida`() {
         val v = vm(copiaCon(sim()))
-        coEvery { encolador.venta(any(), any()) } throws SimYaEnCola()
+        coEvery { encolador.venta(any(), any(), any()) } throws SimYaEnCola()
         v.alEscanear(serie)
         v.listaParaRegistrar().registrar()
         assertEquals("Esta SIM ya está vendida (o por subir).", v.estado.value.error)
@@ -412,8 +408,9 @@ class VentaViewModelTest {
         assertTrue(f.exists()) // es del Encolador (aquí, un mock que no la mueve)
     }
 
-    @Test fun `sin entrada no se registra la venta y pide checar entrada`() {
-        coEvery { dao.turnoAhora() } returns null
+    // Codex r3 #2: la guarda va en la transacción de la venta (Encolador); la pantalla dice lo mismo y conserva la foto.
+    @Test fun `sin entrada (o vencida o rechazada) no se registra la venta y pide checar entrada`() {
+        coEvery { encolador.venta(any(), any(), true) } throws SinEntrada()
         val v = vm(copiaCon(sim()))
         v.alEscanear(serie)
         v.listaParaRegistrar().registrar()
@@ -421,31 +418,37 @@ class VentaViewModelTest {
         assertFalse(v.estado.value.guardada)
         assertFalse(v.estado.value.registrando)
         assertEquals("la foto se queda para cuando cheque", "/tmp/v.jpg", v.estado.value.fotos[Slot.VINCULACION])
-        coVerify(exactly = 0) { encolador.venta(any(), any()) }
+        coVerify(exactly = 0) { copia.marcar(any(), any(), any()) }
     }
 
-    @Test fun `con la pantalla abierta y el turno ya vencido (salida olvidada) no se registra`() {
-        every { encolador.ahoraMs() } returns AHORA + 3 * 24 * 3_600_000L
+    @Test fun `la venta nueva siempre pide la entrada al Encolador`() {
         val v = vm(copiaCon(sim()))
         v.alEscanear(serie)
         v.listaParaRegistrar().registrar()
-        assertEquals(CHECA_TU_ENTRADA, v.estado.value.error)
-        coVerify(exactly = 0) { encolador.venta(any(), any()) }
+        assertTrue(v.estado.value.guardada)
+        coVerify(exactly = 1) { encolador.venta(any(), any(), true) }
+        coVerify(exactly = 0) { encolador.venta(any(), any(), false) }
     }
 
-    @Test fun `la entrada de otra persona no cuenta`() {
-        coEvery { dao.turnoAhora() } returns TurnoLocal(staffId = "s9", llaveEntrada = "e1", timeEntryId = "te", venueId = "v1", abiertoAt = AHORA)
+    // Codex r3 #7: mientras la foto de la galería se copia, no se registra (saldría la foto anterior).
+    @Test fun `mientras se copia la foto de la galeria no se registra`() {
         val v = vm(copiaCon(sim()))
         v.alEscanear(serie)
-        v.listaParaRegistrar().registrar()
-        assertEquals(CHECA_TU_ENTRADA, v.estado.value.error)
-        coVerify(exactly = 0) { encolador.venta(any(), any()) }
+        v.listaParaRegistrar()
+        v.alCopiarFoto(true)
+        assertEquals(ESPERA_LA_FOTO, v.estado.value.falta)
+        v.registrar()
+        coVerify(exactly = 0) { encolador.venta(any(), any(), any()) }
+        v.alTomarFoto(Slot.VINCULACION, "/tmp/v2.jpg")
+        v.alCopiarFoto(false)
+        v.registrar()
+        assertEquals("/tmp/v2.jpg", venta.captured.evidencias.single().archivoFoto)
     }
 
     @Test fun `registrar lee la generacion antes que la sesion - otra persona entre las dos no recibe la venta (H2)`() {
         val v = vm(copiaCon(sim()))
         // Como el Encolador (EncoladorTest H2): con una generación que ya no es la vigente no escribe nada.
-        coEvery { encolador.venta(any(), any()) } coAnswers {
+        coEvery { encolador.venta(any(), any(), any()) } coAnswers {
             if (firstArg<String>() != quienSoy.generacion) throw CelularBorrandose()
             "llave"
         }

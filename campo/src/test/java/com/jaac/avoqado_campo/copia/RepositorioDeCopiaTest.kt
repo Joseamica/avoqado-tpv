@@ -105,30 +105,45 @@ class RepositorioDeCopiaTest {
 
     // ---------- 0.6.0: la fecha de venta y la hora de corte de la salida olvidada ----------
 
-    @Test fun `la copia guardada por la 0_5_0 (sin soldAt ni hora de corte) abre igual y usa la regla de hoy`() = runBlocking {
+    // Codex r3 #5: lo que de verdad escribió la 0.5.0 (código 5, Gson sin nulos): al actualizar sin señal se lee y no se borra.
+    @Test fun `la copia que escribio la 0_5_0 se lee sin red, sin soldAt ni saleAt, y no se borra`() = runBlocking {
         archivo.writeText(
-            """{"versionApp":${BuildConfig.VERSION_CODE},"venueId":"v1","generacion":"${quienSoy.generacion}","sims":[""" +
+            """{"versionApp":5,"venueId":"v1","generacion":"${quienSoy.generacion}","sims":[""" +
                 """{"serialNumber":"8952140000002","custodyState":"SOLD","custodyVersion":4,"categoria":"Prepago","precio":"50.00",""" +
-                """"rejectionReasons":[]}],""" +
-                """"config":{"etiquetaArticulo":"SIM","etiquetaCodigo":"ICCID","portabilidad":false,"numeroDeVinculacion":false,""" +
-                """"fotoEntrada":false,"gpsEntrada":false,"fotoSalida":false,"gpsSalida":false,"modulo":true},"bajadaAt":1}""",
+                """"verificationStatus":"FAILED","verificationId":"sv2","paymentId":"pay2","rejectionReasons":["FOTO_BORROSA"],""" +
+                """"reviewNotes":"Toma otra foto"},""" +
+                """{"serialNumber":"8952140000001","custodyState":"PROMOTER_HELD","custodyVersion":3,"categoria":"E-SIM",""" +
+                """"localmente":"VENDIDA_EN_EL_CELULAR","rejectionReasons":[]}],""" +
+                """"config":{"etiquetaArticulo":"SIM","etiquetaCodigo":"ICCID","portabilidad":true,"numeroDeVinculacion":true,""" +
+                """"fotoEntrada":true,"gpsEntrada":false,"fotoSalida":false,"gpsSalida":true,"modulo":true},"bajadaAt":1,"yaLlegadas":[3]}""",
         )
-        val c = repo().leer()!!
-        assertNull(c.sims.single().soldAt)
+        val r = repo()
+        assertEquals("al abrir la app ya está", 5, r.copia.value?.versionApp)
+        val c = r.leer()!!
+        assertTrue(archivo.exists())
+        assertEquals(2, c.sims.size)
+        assertNull(c.sims[0].soldAt)
+        assertNull(c.sims[0].saleAt)
+        assertEquals(listOf(3L), c.yaLlegadas)
         assertEquals(com.jaac.avoqado_campo.checada.ReglaDeSalida.DE_HOY, com.jaac.avoqado_campo.checada.reglaDeSalida("v1"))
     }
 
     @Test fun `la hora de corte baja con la config, se guarda y sin red se usa la ultima que bajo`() = runBlocking {
-        modulos = MODULOS_CON_TODO.dropLast(1) + ""","asistencia":{"salidaOlvidadaEnabled":true,"salidaOlvidadaCorte":"22:00"}}"""
+        modulos = MODULOS_CON_TODO.dropLast(1) +
+            ""","asistencia":{"salidaOlvidadaEnabled":true,"salidaOlvidadaCorte":"22:00","timezone":"America/Tijuana"}}"""
         val r = repo()
         assertTrue(r.actualizar("v1"))
         assertEquals("22:00", r.copia.value!!.config.salidaOlvidadaCorte)
         assertEquals(java.time.LocalTime.of(22, 0), com.jaac.avoqado_campo.checada.reglaDeSalida("v1").corte)
-        assertEquals("2026-11-20T18:00:00.000Z", r.copia.value!!.sims.first { it.serialNumber == "8952140000002" }.soldAt)
+        assertEquals(java.time.ZoneId.of("America/Tijuana"), com.jaac.avoqado_campo.checada.reglaDeSalida("v1").zona)
+        val vendida = r.copia.value!!.sims.first { it.serialNumber == "8952140000002" }
+        assertEquals("2026-11-20T18:00:00.000Z", vendida.soldAt)
+        assertEquals("2026-11-19T23:58:00.000Z", vendida.saleAt)
         // Sin red: la app se abre de nuevo y la regla sale de la copia del celular.
         com.jaac.avoqado_campo.checada.recordarReglaDeSalida(null, null)
         repo()
         assertEquals(java.time.LocalTime.of(22, 0), com.jaac.avoqado_campo.checada.reglaDeSalida("v1").corte)
+        assertEquals(java.time.ZoneId.of("America/Tijuana"), com.jaac.avoqado_campo.checada.reglaDeSalida("v1").zona)
         // Borrar el celular la olvida.
         repo().borrar()
         assertEquals(com.jaac.avoqado_campo.checada.ReglaDeSalida.DE_HOY, com.jaac.avoqado_campo.checada.reglaDeSalida("v1"))
@@ -172,8 +187,8 @@ class RepositorioDeCopiaTest {
 
     // ---------- la copia que ya no sirve se tira ----------
 
-    @Test fun `una copia de versionApp vieja se tira al leer`() = runBlocking {
-        copiaEnArchivo(versionApp = BuildConfig.VERSION_CODE - 1)
+    @Test fun `una copia de antes de la 0_5_0 (codigo 4) se tira al leer`() = runBlocking {
+        copiaEnArchivo(versionApp = 4)
         val r = repo()
         assertNull(r.leer())
         assertNull(r.copia.value)
@@ -273,7 +288,7 @@ class RepositorioDeCopiaTest {
             SimEnCopia(
                 "8952140000002", "SOLD", 4, "Prepago", "50.00", null,
                 "FAILED", "sv2", "pay2", listOf("FOTO_BORROSA", "NUMERO_NO_COINCIDE"), "Toma otra foto",
-                soldAt = "2026-11-20T18:00:00.000Z",
+                soldAt = "2026-11-20T18:00:00.000Z", saleAt = "2026-11-19T23:58:00.000Z",
             ),
             fallida,
         )
@@ -381,7 +396,7 @@ class RepositorioDeCopiaTest {
              "category":{"id":"c1","name":"E-SIM de promotor","suggestedPrice":null},
              "verificationStatus":null,"verificationId":null,"paymentId":null,"rejectionReasons":null,"reviewNotes":null},
             {"id":"i2","serialNumber":"8952140000002","custodyState":"SOLD","custodyVersion":4,
-             "category":{"id":"c2","name":"Prepago","suggestedPrice":"50.00"},"soldAt":"2026-11-20T18:00:00.000Z",
+             "category":{"id":"c2","name":"Prepago","suggestedPrice":"50.00"},"soldAt":"2026-11-20T18:00:00.000Z","saleAt":"2026-11-19T23:58:00.000Z",
              "verificationStatus":"FAILED","verificationId":"sv2","paymentId":"pay2",
              "rejectionReasons":["FOTO_BORROSA","NUMERO_NO_COINCIDE"],"reviewNotes":"Toma otra foto"},
             {"id":"i3","serialNumber":"8952140000003","custodyState":"PROMOTER_PENDING","custodyVersion":2,

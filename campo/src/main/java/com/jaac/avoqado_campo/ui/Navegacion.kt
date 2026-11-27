@@ -14,6 +14,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.jaac.avoqado_campo.ayuda.AyudaScreen
 import com.jaac.avoqado_campo.checada.ChecadaScreen
+import com.jaac.avoqado_campo.checada.puedeVender
 import com.jaac.avoqado_campo.checada.tieneTurno
 import com.jaac.avoqado_campo.cola.EstadoPieza
 import com.jaac.avoqado_campo.cola.PiezaDao
@@ -108,18 +109,23 @@ fun Navegacion(
                     val yo = identidadS.value
                     val t = turnoS.value
                     val c = copiaS.value
+                    val ahora = System.currentTimeMillis()
+                    // Codex r3 #1: la entrada sin red que el SERVIDOR rechazó (sigue en la cola) no deja vender.
+                    val suEntrada = t?.llaveEntrada?.takeIf { t.timeEntryId == null }
+                        ?.let { l -> piezasS.value.firstOrNull { it.llave == l }?.estado }
                     val esperan = piezasS.value.filter { it.estado == EstadoPieza.PENDIENTE && it.venueId != yo.venueIdDeLaSesion }
                         .mapNotNull { p -> yo.sucursales.firstOrNull { it.venueId == p.venueId }?.nombre }.distinct()
                     InicioScreen(
                         DatosDeInicio(
                             nombre = yo.nombre, pendientes = visiblesEnPendientes(piezasS.value).size, necesitaPin = yo.necesitaPin, esperanSucursal = esperan,
                             // D3: un turno de un día ya terminado ya no es «turno abierto» (el Inicio ofrece «Checar entrada»).
-                            turnoAbierto = tieneTurno(t, yo.staffId, System.currentTimeMillis()), gps = gpsS.value,
+                            turnoAbierto = tieneTurno(t, yo.staffId, ahora), gps = gpsS.value,
                             version = versionS.value, obligatoria = obligatoriaS.value, paso = pasoS.value,
                             sucursal = yo.sucursales.firstOrNull { it.venueId == yo.venueIdDeLaSesion }?.nombre,
                             entradaAt = horaDeEntrada(t, yo.staffId),
                             enCustodia = cuantasEnCustodia(c, yo.venueIdDeLaSesion, conSimsS.value), articulo = c?.config?.etiquetaArticulo ?: "SIM",
                             porRevisar = cuantasPorRevisar(c, yo.venueIdDeLaSesion),
+                            puedeVender = puedeVender(t, yo.staffId, ahora, suEntrada),
                         ),
                         AccionesDeInicio(
                             vender = { nav.navigate("venta") }, sims = { nav.navigate("sims") }, checar = { nav.navigate("checada") },

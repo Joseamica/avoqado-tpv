@@ -297,10 +297,18 @@ class InicioScreenTest {
     }
 
     @Test fun `con entrada - Vender abre la venta`() {
-        inicio(base.copy(turnoAbierto = true))
+        inicio(base.copy(turnoAbierto = true, puedeVender = true))
         compose.onAllNodesWithText(CHECA_TU_ENTRADA).assertCountEquals(0)
         compose.onNodeWithText("Vender SIM").performClick()
         assertEquals(listOf("vender"), toques)
+    }
+
+    // Codex r3 #1: la entrada sin red que el SERVIDOR rechazó sigue en el celular, pero no deja vender.
+    @Test fun `con la entrada rechazada - Vender se bloquea igual que sin entrada`() {
+        inicio(base.copy(turnoAbierto = true, puedeVender = false))
+        compose.onNodeWithText(CHECA_TU_ENTRADA).assertExists()
+        compose.onNodeWithText("Vender SIM").performClick()
+        assertEquals(listOf("checar"), toques)
     }
 
     @Test fun `Mis ventas por mes - abre el mas reciente, los demas cerrados, y un toque abre otro`() {

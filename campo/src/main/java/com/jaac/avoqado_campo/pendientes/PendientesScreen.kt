@@ -59,7 +59,7 @@ fun PendientesScreen(vm: PendientesViewModel, onRegresar: () -> Unit, onMisSims:
         )
         c != null -> Correccion(
             e, c, { camara = true }, vm::alEscribirNumero, vm::enviarCorreccion, vm::cancelarCorreccion,
-            onGaleria = { vm.alTomarFoto(it.absolutePath) },
+            onGaleria = { vm.alTomarFoto(it.absolutePath) }, copiandoFoto = vm::alCopiarFoto,
         )
         else -> PendientesContenido(filas, e, onRegresar) { id, accion ->
             when (accion) {
@@ -141,12 +141,12 @@ private fun FilaPorSubir(f: FilaPendiente) {
 @Composable
 private fun Correccion(
     e: EstadoPendientes, c: CorreccionDeEvidencia, foto: () -> Unit, numero: (String) -> Unit, enviar: () -> Unit, cancelar: () -> Unit,
-    onGaleria: (File) -> Unit,
+    onGaleria: (File) -> Unit, copiandoFoto: (Boolean) -> Unit,
 ) {
     PantallaCampo(
         "Corregir evidencia", onRegresar = cancelar, regresarHabilitado = !e.ocupado,
         abajo = {
-            BotonPrincipal(if (e.ocupado) "Guardando…" else "Guardar corrección", enviar, enabled = !e.ocupado, cargando = e.ocupado)
+            BotonPrincipal(if (e.ocupado) "Guardando…" else "Guardar corrección", enviar, enabled = !e.ocupado && !e.copiandoFoto, cargando = e.ocupado)
             BotonSecundario("Cancelar", cancelar, enabled = !e.ocupado)
         },
     ) {
@@ -154,7 +154,7 @@ private fun Correccion(
         BotonSecundario(
             if (c.foto != null) "Tomar otra foto" else if (c.pideFoto) "📷 Tomar la foto" else "Tomar otra foto (si hace falta)", foto, enabled = !e.ocupado,
         )
-        BotonDeGaleria(enabled = !e.ocupado, onFoto = onGaleria)
+        BotonDeGaleria(enabled = !e.ocupado, onFoto = onGaleria, onCopiando = copiandoFoto)
         OutlinedTextField(
             c.numero, numero, Modifier.fillMaxWidth(), singleLine = true, enabled = !e.ocupado, shape = MaterialTheme.shapes.small,
             label = { Text(if (c.photoLabel == "Portabilidad") "Número portado" else "Número de vinculación") },

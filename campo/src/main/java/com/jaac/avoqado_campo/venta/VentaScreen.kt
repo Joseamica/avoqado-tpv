@@ -92,7 +92,7 @@ fun VentaScreen(vm: VentaViewModel, obligatoria: Boolean, onRegresar: () -> Unit
                 escanear = { escaneando = true }, buscar = vm::alEscanear, foto = { fotoDe = it }, numero = vm::alEscribirNumero,
                 precio = vm::alEscribirPrecio, portabilidad = vm::alCambiarPortabilidad, registrar = vm::registrar,
                 otra = vm::venderOtra, regresar = onRegresar, pendientes = onPendientes,
-                galeria = { s, f -> vm.alTomarFoto(s, f.absolutePath) },
+                galeria = { s, f -> vm.alTomarFoto(s, f.absolutePath) }, copiandoFoto = vm::alCopiarFoto,
             ),
             obligatoria,
         )
@@ -105,6 +105,7 @@ class AccionesDeVenta(
     val regresar: () -> Unit, val pendientes: () -> Unit = {},
     /** La foto ya copiada de la galería y comprimida, como la de la cámara (0.6.0). */
     val galeria: (Slot, File) -> Unit = { _, _ -> },
+    val copiandoFoto: (Boolean) -> Unit = {},
 )
 
 @Composable
@@ -236,7 +237,7 @@ private fun Evidencia(s: Slot, e: EstadoVenta, a: AccionesDeVenta) {
         }
         if (lista) Text("📷 Foto ✓", color = ColoresCampo.VerdeTexto, fontWeight = FontWeight.SemiBold)
         BotonSecundario(if (lista) "Tomar otra foto" else "📷 Tomar la foto", { a.foto(s) }, enabled = !e.registrando)
-        BotonDeGaleria(enabled = !e.registrando) { a.galeria(s, it) }
+        BotonDeGaleria(enabled = !e.registrando, onCopiando = a.copiandoFoto) { a.galeria(s, it) }
     }
 }
 

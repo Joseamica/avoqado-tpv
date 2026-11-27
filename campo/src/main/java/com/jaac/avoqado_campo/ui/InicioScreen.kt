@@ -62,6 +62,8 @@ data class DatosDeInicio(
     val version: VersionNueva? = null, val obligatoria: Boolean = false, val paso: PasoDeActualizacion = PasoDeActualizacion.Quieto,
     val sucursal: String? = null, val entradaAt: Long? = null, val enCustodia: Int? = null, val articulo: String = "SIM",
     val porRevisar: Int = 0,
+    /** 0.6.0: turno vigente y su entrada no rechazada (Codex r3 #1); sin esto, «Vender» lleva a «Checar entrada». */
+    val puedeVender: Boolean = false,
 )
 
 class AccionesDeInicio(
@@ -121,7 +123,7 @@ fun InicioScreen(d: DatosDeInicio, a: AccionesDeInicio) {
         ParDeMosaicos(
             {
                 // 0.6.0: sin entrada no se vende; el mosaico lo dice y lleva a «Checar entrada».
-                if (d.turnoAbierto) Mosaico("Vender ${d.articulo}", null, a.vender, it, enabled = !d.obligatoria, principal = true)
+                if (d.puedeVender) Mosaico("Vender ${d.articulo}", null, a.vender, it, enabled = !d.obligatoria, principal = true)
                 else Mosaico("Vender ${d.articulo}", CHECA_TU_ENTRADA, a.checar, it, enabled = !d.obligatoria)
             },
             { Mosaico("Mis SIMs", d.enCustodia?.let { n -> "$n en tu custodia" }, a.sims, it) },
@@ -286,6 +288,7 @@ private fun InicioPreview() = TemaCampo {
             DatosDeInicio(
                 "Ana Ruiz", 3, necesitaPin = false, esperanSucursal = emptyList(), turnoAbierto = true, gps = null,
                 sucursal = "Walmart Coapa", entradaAt = 1_794_236_520_000, enCustodia = 24,
+                puedeVender = true,
             ),
             AccionesDeInicio({}, {}, {}, {}, {}, {}),
         )

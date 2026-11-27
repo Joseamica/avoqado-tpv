@@ -129,11 +129,14 @@ class LedgerApprovalRecovery(
      * que no cupo en la página de 50. Lo que esta pasada ya intentó quedó con lease y no cuenta (no hay vuelta sin fin; su
      * reintento sigue el backoff de siempre). Devuelve en cuántos ms, o null si no hace falta o si no se puede registrar
      * ahora (sin sesión o sin red no se sondea: entrar y reconectar vuelven a pedir la pasada).
+     * 🔴 Cobro simple · D5 mínimo (Codex código r2 #1): sólo las que NUNCA se intentaron (`lease_until` nulo). Sin el tope de 5, una
+     * pasada larga con 503 dejaba vencer la pausa de las primeras y esto pedía otra pasada sobre las mismas, sin fin. Un reintento va con
+     * los barridos de siempre (arrancar, entrar, reconectar, 6 h).
      */
     suspend fun cuandoHaceFaltaOtraPasada(venueId: String, now: Long): Long? {
         if (!puedeRegistrar()) return null
         val siguiente = dao.getApprovalRecoveryCandidates(venueId, Long.MAX_VALUE, now)
-            .filter { it.venueId == venueId }
+            .filter { it.venueId == venueId && it.leaseUntil == null }
             .minOfOrNull { it.createdAt } ?: return null
         return (siguiente + ESPERA_MS - now).coerceAtLeast(0L) + MARGEN_MS
     }

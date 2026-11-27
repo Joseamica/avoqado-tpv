@@ -88,6 +88,10 @@ class ChipRechazaTrasAprobacionFuenteTest {
             assertTrue("[$nombre] tras el −11 no se publica el éxito", despues.indexOf("_state.value = exitoConAvisoDeLaLibreta(PaymentState.Success(") > fin)
             // Codex d5-minimo código r1 #5: nada sale del flujo entre el cierre y el registro (el tramo termina justo en `handlePaymentSuccess(`).
             assertFalse("[$nombre] algo sale del flujo antes de registrar el cobro", despues.contains("return@launch"))
+            // Codex código r2 #2: y entre el cierre de la duda y ese camino no cabe nada (una salida ahí sólo la alcanzaría el −11).
+            assertTrue("[$nombre] hay código entre el final de la duda y el camino del cobro", tramo.contains(
+                "                        showUnresolvedAuthorization()\n                        return@launch\n                    }\n" +
+                    "                    // 🔒 B1: `CompleteEmvTrans` REGRESÓ con éxito"))
         }
     }
 }

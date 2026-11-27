@@ -194,6 +194,22 @@ class LedgerApprovalRecoveryRoomTest {
         assertThat(pasadas).isAtMost(2)
     }
 
+    /**
+     * 🔴 Cobro simple · D5 mínimo (Codex código r2 #1): sin tope, una fila que ya se intentó y cuya pausa venció no pide otra pasada
+     * de seguimiento (eso encadenaba barridos sobre los mismos 503 sin fin); sólo la que nunca se intentó la pide.
+     */
+    @Test fun `D5 minimo · un reintento vencido no encadena pasadas de seguimiento, uno nuevo si`() = runTest {
+        dao.insert(blumon("ya-intentada"))
+        coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } returns Result.failure(java.io.IOException("503"))
+        val t = System.currentTimeMillis()
+        LedgerApprovalRecovery(dao, fast, order).recover("venue", t)
+        val vencida = dao.getById("ya-intentada")!!.leaseUntil!! + 1
+        assertThat(LedgerApprovalRecovery(dao, fast, order).cuandoHaceFaltaOtraPasada("venue", vencida)).isNull()
+        dao.insert(blumon("nueva").copy(createdAt = vencida - 60_000L, updatedAt = vencida - 60_000L))
+        assertThat(LedgerApprovalRecovery(dao, fast, order).cuandoHaceFaltaOtraPasada("venue", vencida))
+            .isEqualTo(LedgerApprovalRecovery.ESPERA_MS - 60_000L + LedgerApprovalRecovery.MARGEN_MS)
+    }
+
     /** 🔴 Codex d5-minimo r1 #5: quitar el tope es sólo de la PAX. Una venta de la Nexgo con sus 5 intentos sigue como hoy (sin POST). */
     @Test fun `D5 minimo · la Nexgo conserva su tope de cinco intentos`() = runTest {
         dao.insert(angelPay("n5").copy(state = "REGISTRO_FALLIDO", verifyAttempts = 5))

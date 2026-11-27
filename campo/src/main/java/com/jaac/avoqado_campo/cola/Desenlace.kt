@@ -25,9 +25,22 @@ fun desenlaceDe(tipo: String, cuerpo: String, pidioNumero: Boolean = false): Lec
     return when (tipo) {
         TipoPieza.EVIDENCIA -> evidencia(o, pidioNumero)
         TipoPieza.CUSTODIA_ACEPTAR -> custodia(o)
+        TipoPieza.SALIDA -> salida(o)
         else -> HECHA
     }
 }
+
+/**
+ * La salida llegó después de la hora de corte de la sucursal (o el gerente ya había corregido ese turno): el SERVIDOR la anota
+ * como evidencia y contesta `salidaNoUsada: true`. Para el promotor no es «hecha»: su turno quedó como «Salida olvidada» y lo
+ * revisa su gerente (revisión de apps viejas, Codex 26-nov).
+ */
+private fun salida(o: JsonObject): Lectura =
+    if (o.txt("salidaNoUsada") == "true") {
+        aviso(SALIDA_ANOTADA, "Tu salida llegó después de la hora de corte de tu tienda: quedó anotada y la revisa tu gerente.")
+    } else HECHA
+
+const val SALIDA_ANOTADA = "SALIDA_ANOTADA"
 
 /**
  * H4: ¿el 2xx trae el dato que el SERVIDOR siempre manda cuando lo aplicó? Sin él (`200 {}` de algo en medio) no es HECHA: la

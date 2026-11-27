@@ -423,6 +423,15 @@ class SubidorTest {
         assertEquals(Desenlace.HECHA, desenlaceDe(TipoPieza.VENTA, """{"paymentId":"p","repetida":true}""").desenlace)
     }
 
+    // Revisión de apps viejas (Codex, 26-nov): una salida que llegó después de la hora de corte el SERVIDOR la anota sin usarla.
+    @Test fun `desenlaceDe - la salida anotada sin usar es AVISO, la normal es HECHA`() {
+        val anotada = desenlaceDe(TipoPieza.SALIDA, """{"timeEntryId":"te","hora":"2026-11-27T04:00:00Z","totalHours":0,"salidaNoUsada":true}""")
+        assertEquals(Desenlace.AVISO, anotada.desenlace)
+        assertEquals(SALIDA_ANOTADA, anotada.code)
+        assertEquals("Tu salida llegó después de la hora de corte de tu tienda: quedó anotada y la revisa tu gerente.", anotada.texto)
+        assertEquals(Desenlace.HECHA, desenlaceDe(TipoPieza.SALIDA, """{"timeEntryId":"te","totalHours":8}""").desenlace)
+    }
+
     @Test fun `desenlaceDe - las formas de la gracia (R2-3, R3-1)`() {
         val custodia = """{"resuelto":"APLICADO","resultado":{"recuperadoDeLaBitacora":true,"eventos":[{"serialNumber":"S1"}],"faltan":["S2"]}}"""
         val l = desenlaceDe(TipoPieza.CUSTODIA_ACEPTAR, custodia)

@@ -46,7 +46,9 @@ TPV (`/avoqado:release-production`).
 - Límite conocido: en los segundos en que una venta hecha sin red está subiendo, si «Mis ventas» se actualiza justo entre que
   la SIM queda vendida y se crea su verificación, esa venta puede salir en el mes de subida hasta la siguiente actualización.
 - Mientras se copia una foto de la galería tampoco se puede buscar otra SIM, y si la copia falla el aviso sale junto a esa foto.
-
+- Una salida que llega después de la hora de corte de la tienda (el SERVIDOR la anota sin usarla) ya no se ve como «hecha»: sale
+  en «Ventas pendientes por subir» el aviso «Tu salida llegó después de la hora de corte de tu tienda: quedó anotada y la revisa tu
+  gerente.».
 
 ## 0.5.0 (código 5) — lo que pidió PlayTelecom en sus pruebas (Asana 1220750328814319, 20-nov)
 - Venta sin costo: si la SIM no trae precio fijo, el importe puede ser $0 (como «Regalar (Gratis)» en la terminal); la

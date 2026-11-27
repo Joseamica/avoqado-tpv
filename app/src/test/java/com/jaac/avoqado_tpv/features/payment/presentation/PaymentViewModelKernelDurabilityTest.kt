@@ -986,6 +986,47 @@ class PaymentViewModelKernelDurabilityTest {
         excepcionSinContacto(kernel, estadoQueDeja = PaymentAttemptEntity.STATE_KERNEL_ACTIVO, vecesQueCorrio = { veces.get() })
     }
 
+    /**
+     * Cobro simple · paso 2 (R5; rescate de F1 `bb527bfa`): la llamada al lector YA regresó (pidió ir en línea) y la lectura de los datos
+     * de la tarjeta lanza ANTES de pedir la autorización: nada salió al banco. Antes la fila se quedaba `KERNEL_ACTIVO` y el lector contaba
+     * hasta su tope (150 s) con la terminal rechazando la siguiente venta. Ahora se descarta EN EL ACTO y «Reintentar» sirve.
+     */
+    @Test
+    fun `paso 2 una excepcion al leer la tarjeta antes del banco suelta el lector en el acto y la siguiente venta entra`() = runTest {
+        val db = baseEnMemoria()
+        val dao = db.paymentAttemptDao()
+        var reloj = 1_000_000L
+        mockPaymentAttemptLedger = PaymentAttemptLedger(dao, mockTpvSettingsRepository).apply { relojMonotonico = { reloj } }
+        val enLinea = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransResponse>(relaxed = true) {
+            every { transResult!!.transResult } returns com.paxsz.module.emv.process.enums.TransResultEnum.RESULT_REQ_ONLINE
+        }
+        val kernel = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>()
+        coEvery { kernel.run(any()) } returns com.blumonpay.pax.utils.clean.Either.Right(enLinea)
+        val saleCtls = mockk<com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_ctls.SaleCtlsUseCase>(relaxed = true)
+        val vm = createViewModel(startDetectCardUseCase = detectQueDevuelveUnToque(mutableListOf()), startCtlssTransUseCase = kernel, saleCtlsUseCase = saleCtls)
+        val lecturas = java.util.concurrent.atomic.AtomicInteger(0)
+        val tag = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.get_tag_value.GetTagValueUseCase>()
+        coEvery { tag.run(any()) } answers { lecturas.incrementAndGet(); throw IllegalStateException("tags rotos") }
+        PaymentViewModel::class.java.getDeclaredField("getTagValueUseCase\$delegate").apply { isAccessible = true }.set(vm, lazyOf(tag))
+        try {
+            vm.selectMerchant(testMerchantA)
+            esperarA { vm.currentMerchant.value != null }
+            vm.startPayment("100.00")
+            esperarA { lecturas.get() > 0 }
+            assertWithMessage("el arnés debe ALCANZAR la lectura que lanza; estado = ${vm.state.value}").that(lecturas.get()).isAtLeast(1)
+            esperarA { vm.state.value is PaymentState.Error }
+            io.mockk.coVerify(exactly = 0) { saleCtls.run(any()) }
+            val error = vm.state.value as PaymentState.Error
+            assertWithMessage("«Reintentar» sirve; estado = $error").that(error.canRetry).isTrue()
+            assertWithMessage("no es la pantalla de la duda").that(error.unresolvedAttemptId).isNull()
+            assertWithMessage("el lector se soltó en el acto, sin esperar el tope").that(mockPaymentAttemptLedger.hayLectorEnUso()).isFalse()
+            assertThat(dao.findUnresolvedCharge()).isNull()
+            assertThat(mockPaymentAttemptLedger.retencionDelAparato()).isNull()
+            assertWithMessage("la siguiente venta reserva en el mismo proceso, en el mismo segundo")
+                .that(mockPaymentAttemptLedger.openAttempt("siguiente-venta", testVenueId, "BLUMON", 10000, 0, "FAST", "{}")).isTrue()
+        } finally { vm.viewModelScope.cancel(); db.close() }
+    }
+
     @Test
     fun `resolver la fila del kernel devuelve la terminal a la siguiente venta`() = runTest {
         val db = androidx.room.Room.inMemoryDatabaseBuilder(

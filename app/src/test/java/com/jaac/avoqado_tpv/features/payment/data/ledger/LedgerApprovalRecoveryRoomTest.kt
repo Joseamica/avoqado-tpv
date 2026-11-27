@@ -194,30 +194,6 @@ class LedgerApprovalRecoveryRoomTest {
         assertThat(pasadas).isAtMost(2)
     }
 
-    /**
-     * 🔴 Cobro simple · D5 mínimo (Codex r1 #9 del plan T2): tras un registro fallido la fila queda reservada hasta su pausa, y la consulta
-     * de «¿hace falta otra pasada?» no la veía: si era la única, nadie volvía hasta la reconexión o las 6 h. Ahora la pasada de seguimiento se
-     * agenda para cuando vence su pausa.
-     */
-    @Test fun `D5 minimo · tras un registro fallido la siguiente vuelta queda agendada para cuando vence su pausa`() = runTest {
-        dao.insert(blumon("r1"))
-        coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } returns Result.failure(java.io.IOException("503"))
-        val t = System.currentTimeMillis()
-        val recuperacion = LedgerApprovalRecovery(dao, fast, order)
-        recuperacion.recover("venue", t)
-        val pausa = dao.getById("r1")!!.leaseUntil!!
-        assertThat(pausa).isGreaterThan(t)
-        // La pasada corta no la cuenta (está reservada); el fin de su pausa sí.
-        assertThat(recuperacion.cuandoHaceFaltaOtraPasada("venue", t)).isNull()
-        assertThat(recuperacion.cuandoVenceLaPausa("venue", t)).isEqualTo(pausa - t + LedgerApprovalRecovery.MARGEN_MS)
-        assertThat(LedgerApprovalRecovery(dao, fast, order, puedeRegistrar = { false }).cuandoVenceLaPausa("venue", t)).isNull()
-        // Ya registrada, no queda nada que agendar.
-        coEvery { fast.recordPayment(any(), any(), "AUTH", "REF") } returns Result.success(receipt)
-        recuperacion.recover("venue", pausa + 1)
-        assertThat(dao.getById("r1")!!.state).isEqualTo("REGISTRADO")
-        assertThat(recuperacion.cuandoVenceLaPausa("venue", pausa + 1)).isNull()
-    }
-
     /** 🔴 Codex d5-minimo r1 #5: quitar el tope es sólo de la PAX. Una venta de la Nexgo con sus 5 intentos sigue como hoy (sin POST). */
     @Test fun `D5 minimo · la Nexgo conserva su tope de cinco intentos`() = runTest {
         dao.insert(angelPay("n5").copy(state = "REGISTRO_FALLIDO", verifyAttempts = 5))
@@ -225,7 +201,6 @@ class LedgerApprovalRecoveryRoomTest {
         val t = System.currentTimeMillis() + 3_600_000L
         assertThat(LedgerApprovalRecovery(dao, fast, order).recover("venue", t)).isEqualTo(0)
         coVerify(exactly = 0) { fast.recordPayment(any(), any(), any(), any()) }
-        assertThat(LedgerApprovalRecovery(dao, fast, order).cuandoVenceLaPausa("venue", t)).isNull()
     }
 
 }

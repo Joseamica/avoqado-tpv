@@ -138,18 +138,6 @@ class LedgerApprovalRecovery(
         return (siguiente + ESPERA_MS - now).coerceAtLeast(0L) + MARGEN_MS
     }
 
-    /**
-     * 🔴 Cobro simple · D5 mínimo (Codex r1 #9 del plan T2): sin tope, un aprobado que falló queda reservado hasta su pausa y
-     * [cuandoHaceFaltaOtraPasada] no lo cuenta: si era el único, nadie volvía hasta la reconexión, entrar o las 6 h. Esto dice en cuántos
-     * ms vence la pausa más próxima ([PaymentAttemptDao.proximoVencimientoDeAprobacion]); se agenda APARTE
-     * ([LedgerSweepScheduler.agendarFinDePausa], que siempre reemplaza) para no ponerse delante de la pasada corta de un aprobado nuevo
-     * (Codex d5-minimo r1 #4). La pausa más corta es de 5 min, así que no hay vuelta sin fin.
-     */
-    suspend fun cuandoVenceLaPausa(venueId: String, now: Long): Long? {
-        if (!puedeRegistrar()) return null
-        return dao.proximoVencimientoDeAprobacion(venueId, now)?.let { it - now + MARGEN_MS }
-    }
-
     private suspend fun restoreContext(row: PaymentAttemptEntity): PaymentContext? {
         val gson = Gson()
         val operation = row.operationId?.toIntOrNull()

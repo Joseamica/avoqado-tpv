@@ -49,12 +49,6 @@ interface PaymentAttemptDao {
         AND (lease_until IS NULL OR lease_until < :now) ORDER BY COALESCE(lease_until, created_at) ASC, attempt_id ASC LIMIT 50""")
     suspend fun getApprovalRecoveryCandidates(venueId: String, olderThan: Long, now: Long): List<PaymentAttemptEntity>
 
-    /** 🔴 Cobro simple · D5 mínimo (Codex r1 #9 del plan T2): cuándo vence la pausa más próxima de un aprobado reservado (para agendar su vuelta). */
-    @Query("""SELECT MIN(lease_until) FROM payment_attempts WHERE venue_id = :venueId AND kind = 'SALE'
-        AND state IN ('HOST_RESPONDIO','AUTORIZADO','REGISTRO_FALLIDO')
-        AND (host_approved = 1 OR state = 'AUTORIZADO') AND (verify_attempts < 5 OR processor = 'BLUMON') AND lease_until >= :now""")
-    suspend fun proximoVencimientoDeAprobacion(venueId: String, now: Long): Long?
-
     @Query("""UPDATE payment_attempts SET lease_until = :leaseUntil, verify_attempts = verify_attempts + 1
         WHERE attempt_id = :attemptId AND venue_id = :venueId AND host_approved IS NULL
         AND state IN ('AUTORIZANDO','INDETERMINADO')

@@ -60,32 +60,6 @@ class LedgerRecoveryTriggerTest {
         coVerify(exactly = 1) { recuperacion.liberarDudasLocales("v1", any()) }
     }
 
-    /**
-     * 🔴 Cobro simple · D5 mínimo (Codex d5-minimo r1 #3): un aprobado cuyo registro falló y que la cola tampoco tomó lo registra la
-     * recuperación de aprobados; nadie pedía su primera pasada (esperaba a reconectar, entrar o las 6 h). Al nacer la incertidumbre se pide
-     * para cuando la fila cumple su espera.
-     */
-    @Test fun `al nacer una incertidumbre tambien se pide la pasada de aprobados para cuando cumple su espera`() {
-        coEvery { libreta.cuarentenaDeHuerfanos(any()) } returns 0
-        every { almacen.getVenueId() } returns "v1"
-        coEvery { recuperacion.liberarDudasLocales("v1", any()) } returns LedgerServerRecovery.Solas()
-        coEvery { recuperacion.recoverOne(any(), any()) } throws IllegalStateException("sin red")
-        val aviso = io.mockk.slot<(String) -> Unit>()
-        io.mockk.mockkObject(LedgerSweepScheduler)
-        try {
-            every { LedgerSweepScheduler.runServerRecoveryNow(any(), any(), any()) } returns Unit
-            every { LedgerSweepScheduler.runApprovalFollowUp(any(), any()) } returns Unit
-            disparador.instalar()
-            io.mockk.verify { libreta.onUncertaintyBorn = capture(aviso) }
-            aviso.captured("a1")
-            io.mockk.verify(exactly = 1) {
-                LedgerSweepScheduler.runApprovalFollowUp(any(), LedgerApprovalRecovery.ESPERA_MS + LedgerApprovalRecovery.MARGEN_MS)
-            }
-        } finally {
-            io.mockk.unmockkObject(LedgerSweepScheduler)
-        }
-    }
-
     @Test fun `sin dudas que esperar no hay nada mas que hacer`() = runTest {
         coEvery { recuperacion.liberarDudasLocales("v1", any()) } returns LedgerServerRecovery.Solas()
         assertThat(disparador.liberarTrasArrancar("v1")).isFalse()

@@ -86,6 +86,8 @@ class ChipRechazaTrasAprobacionFuenteTest {
             val fin = despues.indexOf("marcarFinDelSdk(preparationAttemptId)")
             assertTrue("[$nombre] tras el −11 no se marca el fin del SDK", fin >= 0)
             assertTrue("[$nombre] tras el −11 no se publica el éxito", despues.indexOf("_state.value = exitoConAvisoDeLaLibreta(PaymentState.Success(") > fin)
+            // Codex d5-minimo código r1 #5: nada sale del flujo entre el cierre y el registro (el tramo termina justo en `handlePaymentSuccess(`).
+            assertFalse("[$nombre] algo sale del flujo antes de registrar el cobro", despues.contains("return@launch"))
         }
     }
 }

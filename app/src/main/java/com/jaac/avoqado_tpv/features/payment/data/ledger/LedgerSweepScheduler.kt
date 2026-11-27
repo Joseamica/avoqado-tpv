@@ -6,8 +6,6 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
-import androidx.work.Worker
-import androidx.work.WorkerParameters
 import timber.log.Timber
 import java.util.concurrent.TimeUnit
 
@@ -98,23 +96,6 @@ object LedgerSweepScheduler {
 
     private const val FOLLOW_UP_WORK_NAME = "ledger_aprobacion_reciente"
 
-    /**
-     * 🔴 Cobro simple · D5 mínimo: despierta la recuperación cuando vence la pausa más próxima de un aprobado que falló
-     * ([LedgerApprovalRecovery.cuandoVenceLaPausa]). Va APARTE de la pasada de seguimiento: en esa cadena (`APPEND_OR_REPLACE`) una
-     * espera de 32 min se pondría delante de la pasada corta de un aprobado nuevo (Codex d5-minimo r1 #4). Aquí siempre REEMPLAZA (sólo
-     * queda la más próxima, nunca se apilan) y lo que corre es [LedgerFinDePausaWorker], que sólo pide la pasada: el barrido que agenda
-     * esto nunca se cancela a sí mismo.
-     */
-    fun agendarFinDePausa(context: Context, delayMs: Long) {
-        val request = OneTimeWorkRequestBuilder<LedgerFinDePausaWorker>()
-            .setInitialDelay(delayMs.coerceAtLeast(0L), TimeUnit.MILLISECONDS)
-            .build()
-        WorkManager.getInstance(context).enqueueUniqueWork(FIN_DE_PAUSA_WORK_NAME, ExistingWorkPolicy.REPLACE, request)
-        Timber.d("📒 [LedgerSweep] fin de pausa de un aprobado en %d s", delayMs / 1000)
-    }
-
-    private const val FIN_DE_PAUSA_WORK_NAME = "ledger_aprobacion_fin_de_pausa"
-
     /** One-shot catch-up sweep at login/startup (KEEP — repeated starts don't stack). */
     fun runOnceNow(context: Context) {
         val request = OneTimeWorkRequestBuilder<LedgerShadowSweepWorker>()
@@ -127,13 +108,5 @@ object LedgerSweepScheduler {
             request
         )
         Timber.d("📒 [LedgerSweep] One-shot sweep requested")
-    }
-}
-
-/** 🔴 Cobro simple · D5 mínimo: al vencer la pausa de un aprobado, sólo pide la pasada de la recuperación ([LedgerSweepScheduler.agendarFinDePausa]). */
-class LedgerFinDePausaWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
-    override fun doWork(): Result {
-        LedgerSweepScheduler.runApprovalFollowUp(applicationContext, 0L)
-        return Result.success()
     }
 }

@@ -152,6 +152,14 @@ internal class LectorPax(private val pax: Pax, private val red: Red) : LectorDeT
     }
 
     /**
+     * [b] bajo el candado del lector y sólo si [folio] sigue siendo el dueño: el `stopPolling` de «Cancelar medición» nunca cae
+     * en el sondeo de otro folio (el folio no puede cambiar de manos mientras corre). `false` = ya no era el dueño.
+     */
+    fun siEsDueno(folio: AttemptId, b: () -> Unit): Boolean = synchronized(candado) {
+        (turno?.folio == folio).also { if (it) b() }
+    }
+
+    /**
      * Sin esperar y sólo al dueño: lo marca (ya no sondeará y, si ya leyó, no entrega la lectura, también durante el cierre); en
      * `SONDEANDO` (sondeo, kernel o tags) además ordena `stopPolling`. A otro folio no le hace nada.
      */

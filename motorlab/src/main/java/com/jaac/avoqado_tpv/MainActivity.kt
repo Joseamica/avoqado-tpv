@@ -56,6 +56,11 @@ class MainActivity : Activity() {
         lecturaSeca = boton("Lectura seca de \$25.50") { lab.orden(Orden.LecturaSeca) }
         resultado = TextView(this)
         // La medición de chip (26-nov): sin dinero y sin red. Los dos modos se eligen tocando su botón; el texto dice el elegido.
+        // Arriba del botón, la regla de privacidad: las bibliotecas de PAX escriben al registro del aparato (`LogUtils.IS_DEBUG`).
+        val reglaDelChip = TextView(this).apply {
+            text = "Medir chip: SÓLO con una tarjeta de pruebas de Blumon, nunca una real (ni en sandbox). El kernel escribe datos de " +
+                "la tarjeta en el registro del aparato: logcat -c antes y después de cada sesión, y el registro nunca se descarga."
+        }
         val sondeo = Button(this).apply {
             text = "Sondeo: ${sondeoElegido.texto}"
             setOnClickListener {
@@ -99,7 +104,7 @@ class MainActivity : Activity() {
         val columna = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
-            listOf(cabeza, lecturaSeca, resultado, sondeo, cierre, medir, cancelarMedicion, medicion, serie, posId, fisica, guardar, importe, cobrar, cancelar, mudo, folios).forEach { addView(it) }
+            listOf(cabeza, lecturaSeca, resultado, reglaDelChip, sondeo, cierre, medir, cancelarMedicion, medicion, serie, posId, fisica, guardar, importe, cobrar, cancelar, mudo, folios).forEach { addView(it) }
         }
         setContentView(ScrollView(this).apply { addView(columna) })
         pintar() // este hilo ES el carril: el primer cuadro ya trae el estado vigente, no una pantalla vacía con «Cobrar» encendido

@@ -8,8 +8,10 @@ import com.pax.dal.entity.EPedType
 import com.pax.dal.entity.EPiccType
 import com.pax.dal.entity.EReaderType
 import com.pax.dal.entity.PollingResult
+import com.pax.jemv.clcommon.ACType
 import com.pax.jemv.clcommon.RetCode
 import com.pax.jemv.device.DeviceManager
+import com.pax.jemv.emv.api.EMVApi
 import com.paxsz.module.emv.param.EmvProcessParam
 import com.paxsz.module.emv.param.EmvTransParam
 import com.paxsz.module.emv.process.contact.EmvProcess
@@ -157,9 +159,24 @@ internal class PaxDeLaTerminal(private val contexto: Context) : Pax, ChipDePrueb
         return if (EmvProcess.getInstance().getTlv(tag, b) == RetCode.EMV_OK && b.length > 0) b.data.copyOf(b.length) else null
     }
 
-    override fun completar(respuesta: IssuerRspData): Kernel {
-        val r = EmvProcess.getInstance().completeTransProcess(respuesta)
-        return Kernel(null, r.resultCode, r.transResult, r.cvmResult)
+    /**
+     * La secuencia de `EmvProcess.completeTransProcess` (8A, 89, el 91 con SU regla y `EMVCompleteTrans`), con una marca justo
+     * antes y justo después de la llamada nativa, para medir sólo ésa. Sin sus líneas de log ni `EMVGetScriptResult` (sólo
+     * alimentaba un log). El resultado se arma igual que el SDK ([resultadoDeLaSegunda]).
+     */
+    override fun completar(respuesta: IssuerRspData, alEntrar: () -> Unit, alSalir: () -> Unit): Completado {
+        if (respuesta.respCode.isNotEmpty()) EMVApi.EMVSetTLVData(0x8A.toShort(), respuesta.respCode, respuesta.respCode.size)
+        if (respuesta.authCode.isNotEmpty()) EMVApi.EMVSetTLVData(0x89.toShort(), respuesta.authCode, respuesta.authCode.size)
+        val entrega91 = if (respuesta.authData.isEmpty()) null else ReglaDel91.pide(EmvProcess.getInstance())
+        if (entrega91 == true) EMVApi.EMVSetTLVData(0x91.toShort(), respuesta.authData, respuesta.authData.size)
+        val ac = ACType()
+        alEntrar()
+        val ret = try {
+            EMVApi.EMVCompleteTrans(respuesta.onlineResult.toInt(), respuesta.script, respuesta.script.size, ac)
+        } finally {
+            alSalir()
+        }
+        return Completado(resultadoDeLaSegunda(ret, ac.type), tipoDeAc(ac.type), entrega91)
     }
 
     override fun cerrarIcc() = AppManager.dal.icc.close(RANURA)

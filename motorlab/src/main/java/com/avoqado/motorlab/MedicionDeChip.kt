@@ -1,15 +1,20 @@
 package com.avoqado.motorlab
 
 import com.avoqado.cobropropio.dominio.AttemptId
+import com.pax.jemv.clcommon.ACType
 import com.pax.jemv.clcommon.OnlineResult
 import com.pax.jemv.clcommon.RetCode
 import com.paxsz.module.emv.process.contact.CandidateAID
+import com.paxsz.module.emv.process.contact.EmvProcess
 import com.paxsz.module.emv.process.contact.IEmvTransProcessListener
 import com.paxsz.module.emv.process.entity.IssuerRspData
+import com.paxsz.module.emv.process.enums.AidsEnum
+import com.paxsz.module.emv.process.enums.CvmResultEnum
 import com.paxsz.module.emv.process.enums.TransResultEnum
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.lang.reflect.Method
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -32,6 +37,9 @@ internal enum class ModoDeCierre(val texto: String) {
 
 /** Qué lector ganó el sondeo. */
 internal enum class Gano { CHIP, ANTENA, VENCIO, PARADO, OTRO }
+
+/** La segunda generación: lo que regresó, el criptograma de la tarjeta y si el 91 se le entregó (null = no había 91). */
+internal class Completado(val kernel: Kernel, val ac: String, val entrego91: Boolean?)
 
 /**
  * Lo nativo de la medición; lo de verdad es [PaxDeLaTerminal]. Todo corre en el hilo del kernel de la medición, salvo
@@ -56,8 +64,8 @@ internal interface ChipDePrueba {
     /** `EmvProcess.getTlv`. La medición sólo pide 9F34 y 95 (lo vigila `PrivacidadTest`). */
     fun tagDelChip(tag: Int): ByteArray?
 
-    /** `completeTransProcess`: por dentro, `EMVCompleteTrans` (la segunda generación). */
-    fun completar(respuesta: IssuerRspData): Kernel
+    /** La segunda generación: llama [alEntrar] justo antes de `EMVCompleteTrans` y [alSalir] justo después. */
+    fun completar(respuesta: IssuerRspData, alEntrar: () -> Unit, alSalir: () -> Unit): Completado
 
     fun pararSondeo()
     fun cerrarIcc()
@@ -90,6 +98,43 @@ internal fun respuestaDeMentira(c: ModoDeCierre): IssuerRspData = IssuerRspData(
     }
 }
 
+/**
+ * La regla con la que `EmvProcess.completeTransProcess` decide si le entrega el 91 a la tarjeta (por el AIP según la marca, o
+ * porque el CDOL2 lo pide): sus métodos privados, por reflexión, para usar LA MISMA regla y poder decir si se entregó.
+ * ponytail: si `:emv` les cambia el nombre, el paso sale «falló» y `MedicionDeChipTest` lo avisa antes.
+ */
+internal object ReglaDel91 {
+    private fun privado(nombre: String, vararg tipos: Class<*>): Method =
+        EmvProcess::class.java.getDeclaredMethod(nombre, *tipos).apply { isAccessible = true }
+
+    private val tipoDeAid = privado("getAidType")
+    private val porAip = privado("validateIsArpcSupportedByAIP", AidsEnum::class.java)
+    private val porCdol2 = privado("isArpcSupportedByCDOL2")
+
+    fun pide(emv: EmvProcess): Boolean = porAip.invoke(emv, tipoDeAid.invoke(emv)) == true || porCdol2.invoke(emv) == true
+}
+
+/** El resultado tal como lo arma `completeTransProcess`: ret ≠ 0 ⇒ rechazada con ese código; TC ⇒ aprobada; AAC ⇒ rechazada con 1. */
+internal fun resultadoDeLaSegunda(ret: Int, ac: Int): Kernel {
+    val aprobada = ret == RetCode.EMV_OK && ac == ACType.AC_TC
+    val codigo = if (ret == RetCode.EMV_OK && ac == ACType.AC_AAC) 1 else ret
+    val r = if (aprobada) TransResultEnum.RESULT_ONLINE_APPROVED else TransResultEnum.RESULT_ONLINE_CARD_DENIED
+    return Kernel(null, codigo, r, CvmResultEnum.CVM_NO_CVM)
+}
+
+internal fun tipoDeAc(ac: Int): String = when (ac) {
+    ACType.AC_TC -> "TC"
+    ACType.AC_AAC -> "AAC"
+    ACType.AC_ARQC -> "ARQC"
+    else -> "otro ($ac)"
+}
+
+/** «Abrió» sólo si el sondeo regresó algo que lo prueba: vencido sin tarjeta, o una tarjeta. PARADO y OTRO, tal cual. */
+internal fun textoDeLaReapertura(r: Result<Gano>): String = r.fold(
+    { g -> if (g == Gano.VENCIO || g == Gano.CHIP || g == Gano.ANTENA) "abrió · $g" else "$g (no prueba que abrió)" },
+    { "no abrió (${it.javaClass.simpleName})" },
+)
+
 internal fun hex(b: ByteArray?): String = b?.takeIf { it.isNotEmpty() }?.joinToString("") { "%02X".format(it) } ?: "—"
 
 internal enum class Paso(val texto: String) {
@@ -99,10 +144,12 @@ internal enum class Paso(val texto: String) {
     SONDEO("Sondeo (tope 60 s)"),
     PRIMERA("Lectura y primera generación"),
     CODIGOS("Códigos"),
-    SEGUNDA("Segunda generación (EMVCompleteTrans)"),
+    SEGUNDA("Segunda generación (paso completo)"),
+    NATIVA("EMVCompleteTrans (sólo la llamada nativa)"),
     RETIRO("Retiro de la tarjeta (tope 60 s)"),
     CIERRE("Cierre del lector"),
     REAPERTURA("Segundo sondeo inmediato (0.5 s)"),
+    CIERRE_PENDIENTE("Cierre pendiente (reintento)"),
 }
 
 /** Una llamada nativa medida, en ms desde el toque. [abandonada] = la medición dejó de esperarla en el tope. */
@@ -112,20 +159,39 @@ internal class Llamada(val paso: Paso, val desde: Long, val aviso: Long) {
     var abandonada = false
 }
 
+/** Cómo terminó: el lector se soltó con un cierre acreditado, o se quedó apartado porque no se pudo cerrar bien. */
+internal enum class Desenlace { SUELTO, CIERRE_PENDIENTE }
+
 /** El registro de una medición: sólo tiempos (ms desde el toque) y códigos. Se lee y se escribe bajo su propio candado. */
-internal class Medicion(val numero: Int, val sondeo: ModoDeSondeo, val cierre: ModoDeCierre, private val t0: Long, val tope: Long) {
+internal class Medicion(
+    val numero: Int,
+    val sondeo: ModoDeSondeo,
+    val cierre: ModoDeCierre,
+    private val t0: Long,
+    val tope: Long,
+    /** El folio con el que la medición aparta el lector de [LectorPax]. */
+    val folio: AttemptId = AttemptId.nuevo(),
+) {
     val llamadas = mutableListOf<Llamada>()
+    val notas = mutableListOf<String>()
 
     /** Cuándo el kernel confirmó la tarjeta (`showConfirmCard`, después de leer los datos de la aplicación). */
     var msLectura: Long? = null
     val nip = mutableListOf<String>()
+    var nativa: Llamada? = null
 
     @Volatile var cancelada = false
     var msCancelar: Long? = null
-    var cancelar: String? = null
+
+    /** La llamada que corría al tocar Cancelar (la más adentro: la nativa, si estaba dentro), tomada en ese instante. */
+    var vivaAlCancelar: Llamada? = null
+    var cancelInput: String? = null
+    var stopPolling: String? = null
     var fin: Long? = null
 
-    @Volatile var lectorSuelto = false
+    /** El último cierre del lector salió bien en todos sus pasos (sólo en el hilo del kernel). */
+    @Volatile var cierreOk = false
+    @Volatile var desenlace: Desenlace? = null
 
     fun ms(ahora: Long) = ahora - t0
 }
@@ -146,33 +212,49 @@ internal fun textoDeLaMedicion(m: Medicion, ahora: Long): String = synchronized(
     buildString {
         appendLine("Medición n.º ${m.numero} · ${m.sondeo.texto} · cierre: ${m.cierre.texto} · sin dinero, sin red")
         for (l in m.llamadas) {
+            if (l.paso == Paso.NATIVA) {
+                appendLine("  ${l.paso.texto}: ${tiempo(l, t, m.tope)}${restoDelPaso(m, l)}")
+                continue
+            }
             appendLine("${l.paso.texto}: ${l.resultado ?: "…"} · ${tiempo(l, t, m.tope)}")
             if (l.paso == Paso.PRIMERA) {
                 val insercion = m.llamadas.firstOrNull { it.paso == Paso.SONDEO }?.hasta
-                appendLine("  inserción → lectura: ${entre(insercion, m.msLectura)} · primera generación: ${entre(m.msLectura, l.hasta)}")
+                appendLine(
+                    "  inserción → lectura: ${entre(insercion, m.msLectura)} · " +
+                        "lectura → fin (autenticación, CVM, riesgo y primera generación): ${entre(m.msLectura, l.hasta)}",
+                )
                 appendLine("Oyente de NIP: " + m.nip.ifEmpty { listOf("no se llamó") }.joinToString("; "))
             }
         }
+        m.notas.forEach { appendLine(it) }
         m.msCancelar?.let { c ->
-            val viva = m.llamadas.lastOrNull { it.desde <= c } // van una tras otra: la última que empezó es la que corría
-            appendLine(
-                "Cancelar: a los $c ms · ${m.cancelar ?: "…"}" + when {
-                    viva == null || (viva.hasta ?: c) < c -> " · no había llamada en curso"
-                    viva.hasta == null -> " · «${viva.paso.texto}» sigue sin regresar"
-                    else -> " · «${viva.paso.texto}» regresó ${viva.hasta!! - c} ms después"
-                },
-            )
+            val viva = m.vivaAlCancelar
+            val efecto = when {
+                viva == null -> "no había llamada en curso"
+                viva.hasta == null -> "«${viva.paso.texto}» sigue sin regresar"
+                else -> "«${viva.paso.texto}» regresó a los ${viva.hasta} ms"
+            }
+            appendLine("Cancelar: a los $c ms · cancelInput ${m.cancelInput ?: "…"} · stopPolling ${m.stopPolling ?: "…"} · $efecto")
         }
         append(
             when {
                 m.fin == null -> "En curso ($t ms)"
-                m.lectorSuelto -> "Terminada a los ${m.fin} ms · lector suelto"
+                m.desenlace == Desenlace.SUELTO -> "Terminada a los ${m.fin} ms · cierre acreditado · lector suelto"
+                m.desenlace == Desenlace.CIERRE_PENDIENTE ->
+                    "CIERRE PENDIENTE: el lector sigue apartado («Cobrar», la lectura seca y «Medir» se rechazan); cierra y abre la app"
                 m.llamadas.any { it.abandonada && it.hasta == null } ->
-                    "Se dejó de esperar a los ${m.fin} ms: el lector sigue apartado hasta que regrese la llamada"
-                else -> "Soltando el lector (${m.fin} ms)"
+                    "Se dejó de esperar a los ${m.fin} ms · cierre pendiente: el lector sigue apartado hasta que la llamada regrese y se cierre bien"
+                else -> "Cerrando el lector antes de soltarlo (${m.fin} ms)"
             },
         )
     }
+}
+
+private fun restoDelPaso(m: Medicion, nativa: Llamada): String {
+    val paso = m.llamadas.lastOrNull { it.paso == Paso.SEGUNDA } ?: return ""
+    val finNativa = nativa.hasta ?: return ""
+    val finPaso = paso.hasta ?: return ""
+    return " · resto del paso: ${(finPaso - paso.desde) - (finNativa - nativa.desde)} ms"
 }
 
 private fun entre(a: Long?, b: Long?): String = if (a != null && b != null) "${b - a} ms" else "—"
@@ -190,6 +272,13 @@ private fun tiempo(l: Llamada, t: Long, tope: Long): String {
 }
 
 private fun textoDelKernel(k: Kernel) = "código ${k.codigo} · ${k.resultado ?: "—"} · CVM ${k.cvm ?: "—"}"
+
+private fun textoDeLaSegunda(c: Completado) = "código ${c.kernel.codigo} · ${c.kernel.resultado ?: "—"} · AC ${c.ac} · 91: " +
+    when (c.entrego91) {
+        null -> "no hay (banco no contestó)"
+        true -> "se entregó a la tarjeta"
+        false -> "no se entregó (el SDK lo omite: ni el AIP ni el CDOL2 lo piden)"
+    }
 
 private fun falla(t: Throwable) = "falló (${t.javaClass.simpleName})" // sólo la clase: el mensaje puede traer la tarjeta
 
@@ -213,7 +302,8 @@ internal class OyenteDeMedicion(private val m: Medicion, private val ahora: () -
  * «Medir chip (sin dinero)»: una medición a la vez, dueña del lector como un cobro (el folio de [LectorPax]: mientras mide,
  * «Cobrar» y la lectura seca se rechazan, y al revés). Cada llamada nativa corre en UN hilo del kernel; la medición la espera
  * hasta [aviso] (la pantalla dice «sigue ocupada») y hasta [tope] (dice «no regresó» y ya no toca el lector). El folio se suelta
- * en ese mismo hilo, así que una llamada que no regresa deja el lector apartado hasta que regrese, y entonces se ve cuándo.
+ * en ese mismo hilo y SÓLO con un cierre acreditado: tras una llamada que regresó tarde o un cierre que falló se cierra una vez
+ * más, y si tampoco sale bien el lector se queda apartado («cierre pendiente»).
  */
 internal class MedidorDeChip(
     private val chip: ChipDePrueba,
@@ -244,54 +334,77 @@ internal class MedidorDeChip(
         }
     }
 
-    /** `cancelInput` y `stopPolling` desde otro hilo, para medir qué destraba al kernel. Vale mientras el lector siga apartado. */
+    /**
+     * `cancelInput` y luego `stopPolling`, desde otro hilo, para medir qué destraba al kernel; cada uno con la hora en que regresó.
+     * Vale mientras la medición no haya terminado.
+     */
     fun cancelar() {
-        val m = actual?.takeIf { !it.lectorSuelto } ?: return avisar("no hay medición que cancelar")
-        val ya = synchronized(m) { (m.msCancelar != null).also { if (!it) m.msCancelar = m.ms(ahora()) } }
+        val m = actual?.takeIf { it.desenlace == null } ?: return avisar("no hay medición que cancelar")
+        val ya = synchronized(m) {
+            (m.msCancelar != null).also {
+                if (!it) {
+                    m.msCancelar = m.ms(ahora())
+                    m.vivaAlCancelar = m.llamadas.lastOrNull { l -> l.hasta == null } // en ese instante, no por horas en ms
+                }
+            }
+        }
         if (ya) return avisar("ya se pidió cancelar")
         m.cancelada = true
         publicar()
         thread(isDaemon = true, name = "motorlab-cancelar") {
             val nip = intento { chip.cancelarNip() }
-            val sondeo = intento { chip.pararSondeo() }
-            synchronized(m) { m.cancelar = "cancelInput $nip · stopPolling $sondeo" }
+            synchronized(m) { m.cancelInput = "$nip a los ${m.ms(ahora())} ms" }
+            publicar()
+            var sondeo = "no se llamó: el lector ya no era de esta medición"
+            // Justo antes y bajo el candado del lector: si la medición ya lo soltó, este stopPolling no cae en el sondeo de otro.
+            lector.siEsDueno(m.folio) { sondeo = intento { chip.pararSondeo() } + " a los ${m.ms(ahora())} ms" }
+            synchronized(m) { m.stopPolling = sondeo }
             publicar()
         }
     }
 
     private fun correr(sondeo: ModoDeSondeo, cierre: ModoDeCierre) {
-        val folio = AttemptId.nuevo()
-        if (!lector.siguienteFolio(folio)) {
-            return avisar("no se acepta «Medir»: el lector tiene otro dueño (un cobro, una lectura seca o una llamada que no ha regresado)")
+        val m = Medicion(medidas + 1, sondeo, cierre, ahora(), tope)
+        if (!lector.siguienteFolio(m.folio)) {
+            return avisar("no se acepta «Medir»: el lector tiene otro dueño (un cobro, una lectura seca o una medición sin cerrar)")
         }
+        medidas++
         avisoDeLaPantalla = null
-        val m = Medicion(++medidas, sondeo, cierre, ahora(), tope)
         actual = m
         try {
             pasos(m)
         } finally {
             corriendo.set(false) // antes de que la pantalla diga que terminó: un «Medir» que llegue después ya no choca con ésta
             synchronized(m) { m.fin = m.ms(ahora()) }
+            // En el hilo del kernel, detrás de cualquier llamada que no haya regresado. El lector sólo se suelta con un cierre
+            // acreditado: si no lo hubo (una llamada abandonada o un cierre que falló), se intenta una vez más aquí.
             kernel.execute {
-                lector.soltarFolio(folio)
-                m.lectorSuelto = true
+                if (!m.cierreOk) anotar(m, nueva(m, Paso.CIERRE_PENDIENTE, aviso), { it }) { cerrar(m, m.sondeo == ModoDeSondeo.CHIP_Y_ANTENA) }
+                if (m.cierreOk) lector.soltarFolio(m.folio)
+                m.desenlace = if (m.cierreOk) Desenlace.SUELTO else Desenlace.CIERRE_PENDIENTE
                 publicar()
             }
             publicar()
         }
     }
 
-    /** En orden; `null` de [llamada] = no regresó en el tope: ya no se toca el lector (ni se cierra). */
+    /** En orden; `null` de [llamada] = no regresó en el tope: ya no se toca el lector hasta que regrese. */
     private fun pasos(m: Medicion) {
+        val conAntena = m.sondeo == ModoDeSondeo.CHIP_Y_ANTENA
         llamada(m, Paso.AL_EMPEZAR, { if (it) "sí" else "no" }) { chip.tarjetaPuesta() } ?: return
         val contacto = llamada(m, Paso.PREPARAR_CHIP, { "código $it" }) { chip.prepararContacto(IMPORTE_DE_MEDICION) } ?: return
-        val conAntena = m.sondeo == ModoDeSondeo.CHIP_Y_ANTENA
-        if (conAntena) llamada(m, Paso.PREPARAR_ANTENA, { "código $it" }) { chip.prepararAntena(IMPORTE_DE_MEDICION) } ?: return
+        if (conAntena) {
+            val antena = llamada(m, Paso.PREPARAR_ANTENA, { "código $it" }) { chip.prepararAntena(IMPORTE_DE_MEDICION) } ?: return
+            if (antena.getOrNull() != RetCode.EMV_OK) {
+                nota(m, "No medible: falló preparar la antena (no se sondeó)")
+                llamada(m, Paso.CIERRE, { it }) { cerrar(m, true) }
+                return
+            }
+        }
         if (contacto.getOrNull() == RetCode.EMV_OK && !m.cancelada && !leer(m, conAntena)) return
-        llamada(m, Paso.CIERRE, { it }) { cerrar(conAntena) } ?: return
-        llamada(m, Paso.REAPERTURA, { it }) {
-            val abrio = runCatching { chip.sondearChip(false, REAPERTURA_MS) }.fold({ "abrió · $it" }) { "no abrió (${it.javaClass.simpleName})" }
-            "$abrio · cierre: ${cerrar(false)}"
+        llamada(m, Paso.CIERRE, { it }) { cerrar(m, conAntena) } ?: return
+        llamada(m, Paso.REAPERTURA, { it }) { // el mismo modo que el primero
+            "${textoDeLaReapertura(runCatching { chip.sondearChip(conAntena, REAPERTURA_MS) })} · cierre: ${cerrar(m, conAntena)}"
         }
     }
 
@@ -299,34 +412,56 @@ internal class MedidorDeChip(
     private fun leer(m: Medicion, conAntena: Boolean): Boolean {
         val gano = llamada(m, Paso.SONDEO, { it.name }, esperaTarjeta + aviso) { chip.sondearChip(conAntena, esperaTarjeta) } ?: return false
         if (gano.getOrNull() != Gano.CHIP) return true
+        if (m.cancelada) {
+            nota(m, "No entró al kernel: se tocó Cancelar")
+            return true
+        }
         val primera = llamada(m, Paso.PRIMERA, ::textoDelKernel) { chip.leerChip(OyenteDeMedicion(m, ahora)) } ?: return false
         val k = primera.getOrNull()
         if (k != null && k.codigo == RetCode.EMV_OK) {
             llamada(m, Paso.CODIGOS, { it }) { "9F34 ${hex(chip.tagDelChip(0x9F34))} · 95 ${hex(chip.tagDelChip(0x95))}" } ?: return false
-            if (k.resultado == TransResultEnum.RESULT_REQ_ONLINE && !m.cancelada) {
-                llamada(m, Paso.SEGUNDA, ::textoDelKernel) { chip.completar(respuestaDeMentira(m.cierre)) } ?: return false
+            if (k.resultado == TransResultEnum.RESULT_REQ_ONLINE && m.cancelada) {
+                nota(m, "Sin segunda generación: se tocó Cancelar")
+            } else if (k.resultado == TransResultEnum.RESULT_REQ_ONLINE) {
+                llamada(m, Paso.SEGUNDA, ::textoDeLaSegunda) {
+                    chip.completar(respuestaDeMentira(m.cierre), { entraNativa(m) }, { saleNativa(m) })
+                } ?: return false
             }
         }
         return llamada(m, Paso.RETIRO, { it }, esperaRetiro + aviso) { esperarRetiro(m) } != null
     }
 
-    private fun esperarRetiro(m: Medicion): String {
-        val limite = ahora() + esperaRetiro
-        while (chip.tarjetaPuesta()) { // si `detect` lanza, el paso sale «falló»: un error del lector NO es «retirada»
-            if (m.cancelada) return "dejó de esperar: se tocó Cancelar"
-            if (ahora() >= limite) return "no la retiraron en ${esperaRetiro / 1000} s"
-            Thread.sleep(CADA_RETIRO_MS)
-        }
-        return "retirada"
+    private fun entraNativa(m: Medicion) {
+        synchronized(m) { m.nativa = nueva(m, Paso.NATIVA, aviso) }
     }
 
-    /** Cada paso con su resultado; nunca se traga un error (el laboratorio viejo lo hacía). */
-    private fun cerrar(conAntena: Boolean): String {
+    private fun saleNativa(m: Medicion) {
+        synchronized(m) { m.nativa?.hasta = m.ms(ahora()) }
+    }
+
+    /** El plazo se revisa también cuando `detect` dice «sin tarjeta» tarde: pasado el plazo nunca es «retirada». */
+    private fun esperarRetiro(m: Medicion): String {
+        val limite = ahora() + esperaRetiro
+        while (true) {
+            val puesta = chip.tarjetaPuesta() // si lanza, el paso sale «falló»: un error del lector NO es «retirada»
+            when {
+                ahora() >= limite -> return "no la retiraron en ${esperaRetiro / 1000} s" +
+                    if (puesta) "" else " (detect dijo «sin tarjeta» ya vencido el plazo)"
+                !puesta -> return "retirada"
+                m.cancelada -> return "dejó de esperar: se tocó Cancelar"
+            }
+            Thread.sleep(CADA_RETIRO_MS)
+        }
+    }
+
+    /** Cada paso con su resultado; nunca se traga un error (el laboratorio viejo lo hacía). Anota si quedó acreditado. */
+    private fun cerrar(m: Medicion, conAntena: Boolean): String {
         val fallas = listOfNotNull(
             falloDe("stopPolling") { chip.pararSondeo() },
             falloDe("icc.close") { chip.cerrarIcc() },
             if (conAntena) falloDe("picc.close") { chip.cerrarPicc() } else null,
         )
+        m.cierreOk = fallas.isEmpty()
         return if (fallas.isEmpty()) "todo bien" else "falló: " + fallas.joinToString()
     }
 
@@ -334,26 +469,32 @@ internal class MedidorDeChip(
 
     private fun intento(b: () -> Unit): String = runCatching(b).fold({ "bien" }, ::falla)
 
+    private fun nota(m: Medicion, texto: String) {
+        synchronized(m) { m.notas += texto }
+    }
+
+    private fun nueva(m: Medicion, paso: Paso, avisoMs: Long): Llamada =
+        Llamada(paso, m.ms(ahora()), avisoMs).also { synchronized(m) { m.llamadas += it } }
+
+    /** Corre [b] aquí mismo y anota su resultado y la hora en que regresó. */
+    private fun <T> anotar(m: Medicion, l: Llamada, describir: (T) -> String, b: () -> T): Result<T> =
+        runCatching(b).also { r ->
+            synchronized(m) {
+                l.resultado = r.fold(describir, ::falla)
+                l.hasta = m.ms(ahora())
+            }
+        }
+
     /** Corre [b] en el hilo del kernel y lo espera hasta [avisoMs] y luego hasta [tope]. `null` = no regresó (queda abandonada). */
     private fun <T> llamada(m: Medicion, paso: Paso, describir: (T) -> String, avisoMs: Long = aviso, b: () -> T): Result<T>? {
-        val l = Llamada(paso, m.ms(ahora()), avisoMs)
-        synchronized(m) { m.llamadas += l }
-        val f = kernel.submit(
-            Callable {
-                runCatching(b).also { r ->
-                    synchronized(m) {
-                        l.resultado = r.fold(describir, ::falla)
-                        l.hasta = m.ms(ahora())
-                    }
-                }
-            },
-        )
+        val l = nueva(m, paso, avisoMs)
+        val f = kernel.submit(Callable { anotar(m, l, describir, b) })
         publicar()
         val r = esperar(f, avisoMs) ?: run {
             publicar() // «sigue ocupada»
             esperar(f, (tope - avisoMs).coerceAtLeast(0))
         }
-        if (r == null) synchronized(m) { l.abandonada = true }
+        if (r == null) synchronized(m) { m.llamadas.filter { it.hasta == null }.forEach { it.abandonada = true } }
         publicar()
         return r
     }

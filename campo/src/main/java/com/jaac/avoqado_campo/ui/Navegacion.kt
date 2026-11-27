@@ -119,7 +119,8 @@ fun Navegacion(
                         DatosDeInicio(
                             nombre = yo.nombre, pendientes = visiblesEnPendientes(piezasS.value).size, necesitaPin = yo.necesitaPin, esperanSucursal = esperan,
                             // D3: un turno de un día ya terminado ya no es «turno abierto» (el Inicio ofrece «Checar entrada»).
-                            turnoAbierto = tieneTurno(t, yo.staffId, ahora), gps = gpsS.value,
+                            // Codex r5 #1: el turno de otra sucursal no es «Turno abierto» aquí (Checar ofrece la entrada de ésta).
+                            turnoAbierto = tieneTurno(t, yo.staffId, ahora) && t?.venueId == yo.venueIdDeLaSesion, gps = gpsS.value,
                             version = versionS.value, obligatoria = obligatoriaS.value, paso = pasoS.value,
                             sucursal = yo.sucursales.firstOrNull { it.venueId == yo.venueIdDeLaSesion }?.nombre,
                             entradaAt = horaDeEntrada(t, yo.staffId),

@@ -1,6 +1,7 @@
 package com.jaac.avoqado_campo.venta
 
 import android.content.Context
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -19,6 +20,9 @@ import com.jaac.avoqado_campo.copia.MarcaLocal
 import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.copia.SimEnCopia
 import com.jaac.avoqado_campo.copia.loDelCelular
+import com.jaac.avoqado_campo.fotos.Galeria
+import com.jaac.avoqado_campo.fotos.ImagenIlegible
+import com.jaac.avoqado_campo.fotos.NO_SE_GUARDO_LA_FOTO
 import com.jaac.avoqado_campo.identidad.QuienSoy
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -59,10 +63,10 @@ data class EstadoVenta(
     val registrando: Boolean = false,
     val guardada: Boolean = false,
     /**
-     * Codex r3 #7 y r4 #7: cuántas fotos de la galería se están copiando (pueden ser la de vinculación y la de portabilidad a
-     * la vez); «Registrar» espera a que terminen todas (si no, saldría la anterior).
+     * Codex r3 #7, r4 #7 y r5 #4: los espacios cuya foto de la galería se está copiando (pueden ser los dos a la vez);
+     * «Registrar» espera a que terminen todas. Mientras copia, ese espacio no tiene foto: nunca sale la anterior.
      */
-    val copiandoFotos: Int = 0,
+    val copiandoEn: Set<Slot> = emptySet(),
 ) {
     val slots: List<Slot> get() = if (portabilidad) listOf(Slot.VINCULACION, Slot.PORTABILIDAD) else listOf(Slot.VINCULACION)
 
@@ -73,7 +77,7 @@ data class EstadoVenta(
     val falta: String?
         get() = when {
             sim == null -> "Escanea una SIM."
-            copiandoFotos > 0 -> ESPERA_LA_FOTO
+            copiandoEn.isNotEmpty() -> ESPERA_LA_FOTO
             precio == null -> "Escribe el importe que cobraste (pon 0 si fue sin costo; hasta 2 decimales)."
             else -> slots.firstNotNullOfOrNull { s ->
                 val nombre = if (s == Slot.VINCULACION) "vinculación" else "portabilidad"
@@ -94,15 +98,20 @@ class VentaViewModel @Inject constructor(
     private val dao: PiezaDao,
     private val quienSoy: QuienSoy,
     @ApplicationContext private val context: Context,
+    private val galeria: Galeria = Galeria(context),
 ) : ViewModel() {
     private val _estado = MutableStateFlow(EstadoVenta())
     val estado: StateFlow<EstadoVenta> = _estado
+
+    /** Sube con cada venta nueva (escanear, «Vender otra»): la copia de galería de la venta anterior no se cuela (r5 #4). */
+    private var tanda = 0
 
     /** B8: sólo SIMs de la copia en `PROMOTER_HELD` (o con su aceptación encolada); sin la SIM, con señal se refresca una vez. */
     fun alEscanear(texto: String) {
         val serie = Iccid.canonica(texto)
         if (serie.isEmpty() || _estado.value.buscando || _estado.value.registrando) return
         borrarFotosSinRegistrar()
+        tanda++
         _estado.value = EstadoVenta(buscando = true)
         viewModelScope.launch {
             val venueId = quienSoy.sesion?.venueId
@@ -148,9 +157,33 @@ class VentaViewModel @Inject constructor(
         copy(fotos = fotos + (slot to archivo))
     }
 
-    /** Lo avisa «Elegir de la galería» al empezar y al terminar de copiar (Codex r3 #7). */
-    fun alCopiarFoto(copiando: Boolean) =
-        _estado.update { it.copy(copiandoFotos = (it.copiandoFotos + if (copiando) 1 else -1).coerceAtLeast(0)) }
+    /**
+     * Codex r5 #4: la foto elegida de la galería se copia AQUÍ, en el alcance del ViewModel: abrir la cámara de la otra foto ya
+     * no la cancela. La de ese espacio se quita al empezar; si la copia no termina, el espacio queda vacío (nunca la anterior).
+     * Una copia que termina cuando ya empezó otra venta ([tanda]) se tira.
+     */
+    fun alElegirDeGaleria(slot: Slot, uri: Uri) {
+        val e = _estado.value
+        if (e.registrando || e.guardada || slot in e.copiandoEn) return
+        val mia = tanda
+        e.fotos[slot]?.let { File(it).delete() }
+        _estado.update { it.copy(fotos = it.fotos - slot, copiandoEn = it.copiandoEn + slot, error = null) }
+        viewModelScope.launch {
+            var error: String? = null
+            try {
+                val f = galeria.copiar(uri)
+                if (tanda == mia) alTomarFoto(slot, f.absolutePath) else f.delete()
+            } catch (c: CancellationException) {
+                throw c
+            } catch (x: ImagenIlegible) {
+                error = x.message
+            } catch (x: Exception) {
+                error = NO_SE_GUARDO_LA_FOTO
+            } finally {
+                if (tanda == mia) _estado.update { it.copy(copiandoEn = it.copiandoEn - slot, error = error ?: it.error) }
+            }
+        }
+    }
 
     fun alEscribirNumero(slot: Slot, n: String) = cambiar { copy(numeros = numeros + (slot to n.filter(Char::isDigit).take(10))) }
 
@@ -223,6 +256,7 @@ class VentaViewModel @Inject constructor(
     fun venderOtra() {
         if (_estado.value.registrando) return
         borrarFotosSinRegistrar()
+        tanda++
         _estado.value = EstadoVenta()
     }
 

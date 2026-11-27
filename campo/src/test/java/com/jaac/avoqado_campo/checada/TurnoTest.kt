@@ -117,7 +117,15 @@ class TurnoTest {
         assertFalse("sin turno", tieneTurno(null, "s1", ahora))
         assertFalse("ya marcó salida", tieneTurno(t.copy(llaveEntrada = null), "s1", ahora))
         assertFalse("vencido (salida olvidada)", tieneTurno(t, "s1", ms("2026-11-05T10:00")))
-        assertNull(refEntrada(t, "s1", ms("2026-11-05T10:00")))
+        assertNull(refEntrada(t, "s1", "v1", ms("2026-11-05T10:00")))
+    }
+
+    // Codex r5 #1: en la sucursal B, la entrada de A no se ofrece para «Marcar salida» (Checar ofrece la entrada de B).
+    @Test fun `la entrada de otra sucursal no es la de aqui para checar`() {
+        val t = TurnoLocal(1, "s1", "k", "te", "v1", ms("2026-11-03T10:00"))
+        val ahora = ms("2026-11-03T12:00")
+        assertEquals(RefEntrada.PorId("te"), refEntrada(t, "s1", "v1", ahora))
+        assertNull(refEntrada(t, "s1", "v2", ahora))
     }
 
     @Test fun `la hora de corte llega como HH_mm y una mal escrita es la de hoy`() {

@@ -52,6 +52,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -102,9 +103,11 @@ class PendientesViewModelTest {
         db.close()
     }
 
+    private val galeria = mockk<com.jaac.avoqado_campo.fotos.Galeria>()
+
     private fun nuevoVm() = PendientesViewModel(
         dao, encolador, quienSoy, mockk<RepositorioDeCopia>(relaxed = true), conectividad,
-        ApplicationProvider.getApplicationContext<Context>(),
+        ApplicationProvider.getApplicationContext<Context>(), galeria,
     ).also { vm = it }
 
     private fun foto() = tmp.newFile("f${System.nanoTime()}.jpg").also { it.writeBytes(ByteArray(10) { 7 }) }.absolutePath
@@ -177,21 +180,30 @@ class PendientesViewModelTest {
         assertFalse(segunda.exists())
     }
 
-    // Codex r3 #7: mientras la foto de la galería se copia, «Guardar corrección» no sale con la foto anterior.
+    // Codex r3 #7 y r5 #4: la copia de la galería la hace el ViewModel; mientras copia, «Guardar corrección» espera y la foto
+    // anterior ya no cuenta.
     @Test fun `mientras se copia la foto de la galeria no se guarda la correccion`() = runBlocking {
         val llave = encolador.evidenciaSuelta(
             quienSoy.generacion, EvidenciaSueltaNueva("v1", "pay1", "ver1", "Vinculacion", null, foto(), "SIM 1"),
         )
         dao.rechazar(dao.porLlave(llave)!!, "FOTO_NO_SUBIO", "La foto no subió")
+        val espera = CompletableDeferred<File>()
+        coEvery { galeria.copiar(any()) } coAnswers { espera.await() }
         val m = nuevoVm()
         m.empezarCorreccion(dao.porLlave(llave)!!.id)
         esperar { m.estado.value.let { it.corrigiendo != null && !it.ocupado } }
-        m.alTomarFoto(foto())
-        m.alCopiarFoto(true)
+        val vieja = File(foto())
+        m.alTomarFoto(vieja.path)
+        m.alElegirDeGaleria(mockk())
+        esperar { m.estado.value.copiandoFoto }
+        assertNull(m.estado.value.corrigiendo!!.foto)
+        assertFalse(vieja.exists())
         m.enviarCorreccion()
         assertEquals("Espera a que se guarde la foto.", m.estado.value.error)
-        assertTrue("sigue abierta, sin guardar", m.estado.value.corrigiendo != null)
         assertEquals(EstadoPieza.RECHAZADA, dao.porLlave(llave)!!.estado)
+        val nueva = File(foto())
+        espera.complete(nueva)
+        esperar { m.estado.value.corrigiendo?.foto == nueva.path && !m.estado.value.copiandoFoto }
     }
 
     @Test fun `la foto de una correccion que se esta enviando no la borran ni otra foto ni Atras, y Atras no la cancela (H5)`() = runBlocking {

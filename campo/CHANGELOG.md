@@ -9,18 +9,22 @@ TPV (`/avoqado:release-production`).
 ## 0.6.0 (código 6) — lo que pidió el cliente en sus pruebas del 26-nov (Asana 1220750328814319)
 - «Mis ventas» por mes: dentro de «Por revisar», «Exitosas» y «Rechazadas», las ventas van por mes, del más reciente al más
   viejo («noviembre 2026 (45)»), en la zona del celular. Va abierto el mes actual (o el más reciente) y los demás cerrados: un
-  toque los abre. La fecha es la hora real de la venta (`saleAt`); si el SERVIDOR no la manda, `soldAt`; si tampoco, la hora
-  local de la venta del celular (también la que la lista todavía no trae; corregir el precio no la cambia). Lo que no trae fecha va al final, en «Sin fecha».
+  toque los abre. La fecha es la hora real de la venta (`saleAt`); si el SERVIDOR no la manda y la venta se hizo en este
+  celular, la hora del toque (también la que la lista todavía no trae; corregir el precio no la cambia); si no, `soldAt`; y al
+  final, la hora local de su fila. Lo que no trae fecha va al final, en «Sin fecha».
   «Por subir» no cambia. La copia guardada por la 0.5.0 se sigue leyendo sin red: al actualizar no se pierden «Mis ventas» ni
   las SIMs del escáner.
 - Foto de la galería: junto a «📷 Tomar la foto» está «Elegir de la galería» (selector del sistema, sin permisos) en Vender
   (vinculación y portabilidad), en «Corregir evidencia» de «Mis ventas» y en «Ventas pendientes por subir». La imagen se copia
   al celular antes de nada y pasa por la misma compresión que la de la cámara, también sin red; si no se puede leer, lo dice.
-  Mientras se copia («Guardando…»), «Registrar venta», «Enviar corrección» y «Guardar corrección» esperan; con dos fotos
-  copiándose a la vez, «Registrar venta» espera a las dos.
+  La copia la hace la pantalla de fondo, así que abrir la cámara de la otra foto no la corta. Mientras se copia («Guardando…»)
+  ese espacio no tiene foto (nunca se registra la anterior), y «Registrar venta», «Enviar corrección» y «Guardar corrección»
+  esperan; con dos fotos copiándose a la vez, «Registrar venta» espera a las dos.
 - No se vende sin entrada: sin turno abierto en el celular (también uno checado sin red), el mosaico «Vender SIM» dice «Checa tu
   entrada para vender» y lleva a «Checar entrada». Lo mismo con una entrada sin red que el SERVIDOR rechazó, también tras
-  reabrir la app, y con la entrada de otra sucursal. Al usar la entrada que ya tenía el SERVIDOR («Usar esa entrada»), la hora
+  reabrir la app, y con la entrada de otra sucursal. Con la entrada de una sucursal y la sesión en otra, «Checar» ofrece la
+  entrada de ésta (nunca la salida de la otra); esa entrada se guarda normal y, si el SERVIDOR ya tenía una, se usa con
+  «Usar esa entrada». El celular guarda un solo turno: el de la otra sucursal se reemplaza en el celular sin mandarle salida. Al usar la entrada que ya tenía el SERVIDOR («Usar esa entrada»), la hora
   del turno es la de esa entrada, no la del intento rechazado. «Registrar venta» lo revisa en la misma escritura de la venta y con la misma hora que la fecha: si el turno
   venció con la pantalla abierta, no se guarda. Subir fotos pendientes y corregir evidencia no piden entrada.
 - La hora de corte de la salida olvidada viene de la sucursal (`asistencia` de `GET tpv/modules`), en la zona de la sucursal

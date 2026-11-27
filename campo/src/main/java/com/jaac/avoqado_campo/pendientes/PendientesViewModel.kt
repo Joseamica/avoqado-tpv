@@ -1,6 +1,7 @@
 package com.jaac.avoqado_campo.pendientes
 
 import android.content.Context
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -20,6 +21,9 @@ import com.jaac.avoqado_campo.copia.RepositorioDeCopia
 import com.jaac.avoqado_campo.identidad.EstadoDelCelular
 import com.jaac.avoqado_campo.identidad.Identidad
 import com.jaac.avoqado_campo.identidad.QuienSoy
+import com.jaac.avoqado_campo.fotos.Galeria
+import com.jaac.avoqado_campo.fotos.ImagenIlegible
+import com.jaac.avoqado_campo.fotos.NO_SE_GUARDO_LA_FOTO
 import com.jaac.avoqado_campo.red.Conectividad
 import com.jaac.avoqado_campo.venta.ESPERA_LA_FOTO
 import com.jaac.avoqado_campo.red.objetoJson
@@ -143,6 +147,7 @@ class PendientesViewModel @Inject constructor(
     private val copia: RepositorioDeCopia,
     conectividad: Conectividad,
     @ApplicationContext private val context: Context,
+    private val galeria: Galeria = Galeria(context),
 ) : ViewModel() {
     val filas: StateFlow<List<FilaPendiente>> = combine(dao.pendientesDeVer(), quienSoy.identidad, conectividad.cambios) { lista, yo, red ->
         val vivas = lista.map { it.llave }.toSet()
@@ -205,7 +210,32 @@ class PendientesViewModel @Inject constructor(
         c.foto?.takeIf { it != archivo }?.let { File(it).delete() }
         _estado.update { it.copy(corrigiendo = c.copy(foto = archivo)) }
     }
-    fun alCopiarFoto(copiando: Boolean) = _estado.update { it.copy(copiandoFoto = copiando) }
+    /**
+     * Codex r5 #4: la foto elegida de la galería se copia AQUÍ (abrir la cámara no la cancela). La anterior se quita al empezar:
+     * si la copia no termina, la corrección queda sin foto nueva, nunca con la que se había elegido antes.
+     */
+    fun alElegirDeGaleria(uri: Uri) {
+        val e = _estado.value
+        val c = e.corrigiendo ?: return
+        if (e.ocupado || e.copiandoFoto) return
+        c.foto?.let { File(it).delete() }
+        _estado.update { it.copy(corrigiendo = c.copy(foto = null), copiandoFoto = true, error = null) }
+        viewModelScope.launch {
+            var error: String? = null
+            try {
+                val f = galeria.copiar(uri)
+                if (_estado.value.corrigiendo?.id == c.id) alTomarFoto(f.absolutePath) else f.delete()
+            } catch (x: CancellationException) {
+                throw x
+            } catch (x: ImagenIlegible) {
+                error = x.message
+            } catch (x: Exception) {
+                error = NO_SE_GUARDO_LA_FOTO
+            } finally {
+                _estado.update { it.copy(copiandoFoto = false, error = error ?: it.error) }
+            }
+        }
+    }
     fun alEscribirNumero(n: String) = _estado.update { it.copy(corrigiendo = it.corrigiendo?.copy(numero = n.filter(Char::isDigit).take(10))) }
     fun cancelarCorreccion() {
         _estado.value.corrigiendo?.foto?.let { runCatching { File(it).delete() } }

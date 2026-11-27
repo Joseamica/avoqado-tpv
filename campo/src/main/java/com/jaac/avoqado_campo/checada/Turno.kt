@@ -123,8 +123,11 @@ fun puedeVender(
 fun turnoOlvidado(t: TurnoLocal?, staffId: String?, ahoraMs: Long, zona: ZoneId = ZoneId.systemDefault()): Long? =
     t?.takeIf { it.abierto && staffId != null && it.staffId == staffId && !turnoVigente(it, ahoraMs, zona) }?.abiertoAt
 
-/** El turno vive en Room (P3); aquí sólo se traduce. El de otra persona no cuenta (R5-2), ni el de un día ya terminado (D3). */
-fun refEntrada(t: TurnoLocal?, staffId: String?, ahoraMs: Long): RefEntrada? {
-    if (t == null || !tieneTurno(t, staffId, ahoraMs)) return null
+/**
+ * El turno vive en Room (P3); aquí sólo se traduce. El de otra persona no cuenta (R5-2), ni el de un día ya terminado (D3), ni
+ * el de otra sucursal que la de la sesión [venueId] (Codex r5 #1: en B se ofrece la entrada de B, nunca la salida de A).
+ */
+fun refEntrada(t: TurnoLocal?, staffId: String?, venueId: String?, ahoraMs: Long): RefEntrada? {
+    if (t == null || t.venueId != venueId || !tieneTurno(t, staffId, ahoraMs)) return null
     return t.timeEntryId?.let { RefEntrada.PorId(it) } ?: t.llaveEntrada?.let { RefEntrada.PorLlave(it) }
 }

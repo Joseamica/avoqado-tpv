@@ -7,22 +7,14 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
 import com.jaac.avoqado_campo.ui.BotonSecundario
-import com.jaac.avoqado_campo.ui.Recuadro
-import com.jaac.avoqado_campo.ui.Tono
-import kotlinx.coroutines.CancellationException
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
 import java.util.UUID
+import javax.inject.Inject
 
 /** La imagen elegida no se pudo abrir o no es una foto que el celular lea. */
 class ImagenIlegible : IOException(
@@ -71,40 +63,24 @@ internal fun comprimirCruda(dir: File, nombre: String, cruda: File): File {
 }
 
 /**
- * «Elegir de la galería», junto a «📷 Tomar la foto»: el selector del sistema (sin permisos). Lo que no se pudo leer lo dice
- * aquí mismo, en llano. [onCopiando] (Codex r3 #7): avisa mientras la foto se copia, para que «Registrar» o «Enviar» esperen
- * (si no, saldría la foto anterior); siempre termina en false, también si la pantalla se cierra a media copia.
+ * Codex r5 #4: la copia la hace el ViewModel con esto (su alcance sobrevive a abrir la cámara, que desmonta el botón).
+ */
+class Galeria @Inject constructor(@ApplicationContext private val context: Context) {
+    suspend fun copiar(uri: Uri): File = copiarDeLaGaleria(context, uri)
+}
+
+/**
+ * «Elegir de la galería», junto a «📷 Tomar la foto»: el selector del sistema (sin permisos). Sólo entrega la imagen elegida a
+ * [onElegida]; la copia, el «Guardando…» ([copiando]) y el aviso si no se pudo leer son del ViewModel de la pantalla.
  */
 @Composable
-fun BotonDeGaleria(enabled: Boolean, onCopiando: (Boolean) -> Unit = {}, onFoto: (File) -> Unit) {
-    val context = LocalContext.current
-    val alcance = rememberCoroutineScope()
-    var copiando by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
+fun BotonDeGaleria(enabled: Boolean, copiando: Boolean, onElegida: (Uri) -> Unit) {
     val elegir = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult // la persona no eligió nada
-        copiando = true
-        onCopiando(true)
-        error = null
-        alcance.launch {
-            try {
-                onFoto(copiarDeLaGaleria(context, uri))
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: ImagenIlegible) {
-                error = e.message
-            } catch (e: Exception) {
-                error = NO_SE_GUARDO_LA_FOTO
-            } finally {
-                copiando = false
-                onCopiando(false)
-            }
-        }
+        if (uri != null) onElegida(uri) // null = la persona no eligió nada
     }
     BotonSecundario(
         if (copiando) "Guardando…" else "Elegir de la galería",
         { elegir.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
         enabled = enabled && !copiando,
     )
-    error?.let { Recuadro(it, Tono.ERROR) }
 }

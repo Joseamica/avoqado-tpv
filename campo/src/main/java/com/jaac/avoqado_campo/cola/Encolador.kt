@@ -243,15 +243,16 @@ class Encolador(
     fun ahoraMs(): Long = reloj.ahora().epochMs
 
     /**
-     * ENTRADA: no debe haber turno VIVO de [staffId] (null). SALIDA: su turno vivo, de esa sucursal. Si no, lanza. D3: un turno
-     * de un día ya terminado no cuenta como abierto («salida olvidada»: el SERVIDOR lo cierra solo); la entrada nueva lo
-     * reemplaza en el celular.
+     * ENTRADA: no debe haber turno VIVO de [staffId] en ESA sucursal (null). SALIDA: su turno vivo, de esa sucursal. Si no, lanza.
+     * D3: un turno de un día ya terminado no cuenta como abierto («salida olvidada»: el SERVIDOR lo cierra solo); la entrada
+     * nueva lo reemplaza en el celular. Codex r5 #1: el turno vivo de OTRA sucursal tampoco impide checar aquí; la entrada nueva
+     * lo reemplaza en el celular sin mandarle salida (en el SERVIDOR sigue como esté: su salida o la salida olvidada).
      */
     private suspend fun turnoPara(tipo: String, staffId: String, venueId: String, aLaHora: Long = ahoraMs()): TurnoLocal? {
         val t = dao.turnoAhora()
         val vivo = t != null && turnoVigente(t, aLaHora)
         if (tipo == TipoPieza.ENTRADA) {
-            check(t == null || !vivo || t.staffId != staffId) { "Ya hay un turno abierto" }
+            check(t == null || !vivo || t.staffId != staffId || t.venueId != venueId) { "Ya hay un turno abierto" }
             return null
         }
         check(t != null && t.staffId == staffId && vivo) { "No hay turno abierto" }

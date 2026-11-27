@@ -1,5 +1,6 @@
 package com.jaac.avoqado_campo.pendientes
 
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,7 +44,6 @@ import com.jaac.avoqado_campo.ui.TituloDeSeccion
 import com.jaac.avoqado_campo.ui.Tono
 import com.jaac.avoqado_campo.ui.tema.ColoresCampo
 import com.jaac.avoqado_campo.ui.tema.TemaCampo
-import java.io.File
 
 @Composable
 fun PendientesScreen(vm: PendientesViewModel, onRegresar: () -> Unit, onMisSims: () -> Unit) {
@@ -59,7 +59,7 @@ fun PendientesScreen(vm: PendientesViewModel, onRegresar: () -> Unit, onMisSims:
         )
         c != null -> Correccion(
             e, c, { camara = true }, vm::alEscribirNumero, vm::enviarCorreccion, vm::cancelarCorreccion,
-            onGaleria = { vm.alTomarFoto(it.absolutePath) }, copiandoFoto = vm::alCopiarFoto,
+            onGaleria = vm::alElegirDeGaleria,
         )
         else -> PendientesContenido(filas, e, onRegresar) { id, accion ->
             when (accion) {
@@ -141,7 +141,7 @@ private fun FilaPorSubir(f: FilaPendiente) {
 @Composable
 private fun Correccion(
     e: EstadoPendientes, c: CorreccionDeEvidencia, foto: () -> Unit, numero: (String) -> Unit, enviar: () -> Unit, cancelar: () -> Unit,
-    onGaleria: (File) -> Unit, copiandoFoto: (Boolean) -> Unit,
+    onGaleria: (Uri) -> Unit,
 ) {
     PantallaCampo(
         "Corregir evidencia", onRegresar = cancelar, regresarHabilitado = !e.ocupado,
@@ -152,9 +152,10 @@ private fun Correccion(
     ) {
         if (c.foto != null) Text("📷 Foto ✓", color = ColoresCampo.VerdeTexto, fontWeight = FontWeight.SemiBold)
         BotonSecundario(
-            if (c.foto != null) "Tomar otra foto" else if (c.pideFoto) "📷 Tomar la foto" else "Tomar otra foto (si hace falta)", foto, enabled = !e.ocupado,
+            if (c.foto != null) "Tomar otra foto" else if (c.pideFoto) "📷 Tomar la foto" else "Tomar otra foto (si hace falta)", foto,
+            enabled = !e.ocupado && !e.copiandoFoto,
         )
-        BotonDeGaleria(enabled = !e.ocupado, onFoto = onGaleria, onCopiando = copiandoFoto)
+        BotonDeGaleria(enabled = !e.ocupado, copiando = e.copiandoFoto, onElegida = onGaleria)
         OutlinedTextField(
             c.numero, numero, Modifier.fillMaxWidth(), singleLine = true, enabled = !e.ocupado, shape = MaterialTheme.shapes.small,
             label = { Text(if (c.photoLabel == "Portabilidad") "Número portado" else "Número de vinculación") },

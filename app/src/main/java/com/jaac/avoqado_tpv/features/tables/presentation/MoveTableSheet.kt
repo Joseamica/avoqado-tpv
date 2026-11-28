@@ -37,6 +37,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
+import com.jaac.avoqado_tpv.features.tables.domain.etiquetaDeMesa
 import com.jaac.avoqado_tpv.features.tables.domain.model.DiningTable
 
 /**
@@ -138,7 +139,7 @@ private fun MoveTargetRow(table: DiningTable, enabled: Boolean, onClick: () -> U
             Spacer(Modifier.padding(start = Spacing.Space2))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Mesa ${table.number}",
+                    text = etiquetaDeMesa(table.number),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,

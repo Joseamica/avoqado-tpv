@@ -17,6 +17,7 @@ import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncIntentTypes
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox
 import com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator
+import com.jaac.avoqado_tpv.features.tables.domain.etiquetaDeMesa
 import com.jaac.avoqado_tpv.features.tables.domain.model.ActiveStaffMember
 import com.jaac.avoqado_tpv.features.tables.domain.model.DiningTable
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
@@ -303,7 +304,7 @@ class TableOrderViewModel @Inject constructor(
             _cuentaAparte.value = aparte?.let {
                 AvisoDeCuentaAparte(
                     orderId = it.orderId,
-                    texto = textoDeCuentaAparte(mesa = session.tableNumber?.let { n -> "Mesa $n" }, monto = it.total),
+                    texto = textoDeCuentaAparte(mesa = session.tableNumber?.let { n -> etiquetaDeMesa(n) }, monto = it.total),
                 )
             }
         }
@@ -949,9 +950,9 @@ class TableOrderViewModel @Inject constructor(
                         )
                     }
                     _notice.value = if (outcome.queued) {
-                        "Sin conexión — movimiento a Mesa ${target.number} guardado; se sincronizará solo"
+                        "Sin conexión — movimiento a ${etiquetaDeMesa(target.number)} guardado; se sincronizará solo"
                     } else {
-                        "Cuenta movida a Mesa ${target.number}"
+                        "Cuenta movida a ${etiquetaDeMesa(target.number)}"
                     }
                 },
                 onFailure = { e ->
@@ -1080,7 +1081,7 @@ class TableOrderViewModel @Inject constructor(
         val session = tableSession.current() ?: run { _error.value = "No hay mesa activa"; return }
         val sourceOrderId = source.primaryCheck?.id
         if (sourceOrderId == null) {
-            _error.value = "Mesa ${source.number} ya no tiene una cuenta abierta"
+            _error.value = "${etiquetaDeMesa(source.number)} ya no tiene una cuenta abierta"
             return
         }
         val vId = venueId ?: run { _error.value = "No hay venue configurado en este terminal"; return }
@@ -1094,7 +1095,7 @@ class TableOrderViewModel @Inject constructor(
                     _notice.value = if (outcome.queued) {
                         "Sin conexión — fusión guardada; se sincronizará sola"
                     } else {
-                        "Cuenta de Mesa ${source.number} fusionada" + (outcome.mergedOrderNumber?.let { " ($it)" } ?: "")
+                        "Cuenta de ${etiquetaDeMesa(source.number)} fusionada" + (outcome.mergedOrderNumber?.let { " ($it)" } ?: "")
                     }
                     if (!outcome.queued) loadCheck()
                 },

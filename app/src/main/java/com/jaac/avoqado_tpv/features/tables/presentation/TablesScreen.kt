@@ -72,6 +72,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.rememberResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
+import com.jaac.avoqado_tpv.features.tables.domain.etiquetaDeMesa
 import com.jaac.avoqado_tpv.features.tables.domain.model.DiningTable
 import com.jaac.avoqado_tpv.features.tables.domain.model.FloorElement
 
@@ -689,7 +690,7 @@ private fun TableListRow(table: DiningTable, isMySession: Boolean, onClick: () -
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "Mesa ${table.number}",
+                        text = etiquetaDeMesa(table.number),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,

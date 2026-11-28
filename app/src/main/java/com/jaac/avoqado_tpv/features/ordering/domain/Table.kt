@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.ordering.domain
 
+import com.jaac.avoqado_tpv.features.tables.domain.etiquetaDeMesa
 import java.math.BigDecimal
 
 /**
@@ -106,7 +107,7 @@ data class Table(
      * Display name for UI (e.g., "Mesa 1")
      */
     val displayName: String
-        get() = "Mesa $number"
+        get() = etiquetaDeMesa(number)
 
     /**
      * Has assigned position for floor plan?

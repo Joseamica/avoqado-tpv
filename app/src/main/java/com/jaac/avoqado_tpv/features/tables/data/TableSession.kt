@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.tables.data
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.AddOrderItemRequest
+import com.jaac.avoqado_tpv.features.tables.domain.etiquetaDeMesa
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -65,7 +66,7 @@ class TableSession @Inject constructor() {
          */
         val localOrderId: String? = null,
     ) {
-        val label: String get() = "Mesa ${tableNumber ?: tableId}" + (areaName?.let { " · $it" } ?: "")
+        val label: String get() = etiquetaDeMesa(tableNumber ?: tableId) + (areaName?.let { " · $it" } ?: "")
     }
 
     private val gson = Gson()

@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.payments.domain.models
 
+import com.jaac.avoqado_tpv.features.tables.domain.etiquetaDeMesa
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Instant
@@ -158,7 +159,7 @@ data class Payment(
      */
     fun getSourceLabel(): String {
         return if (tableName != null) {
-            "Mesa $tableName"
+            etiquetaDeMesa(tableName)
         } else {
             "Pago rápido"
         }
